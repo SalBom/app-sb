@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["python3", "postgresql", "gcc"]
+
+[phases.install]
+cmds = ["python -m venv .venv", ". .venv/bin/activate", "pip install -r requirements.txt"]
+
+[phases.start]
+cmds = [". .venv/bin/activate && gunicorn main:app --log-file -"]
