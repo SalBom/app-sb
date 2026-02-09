@@ -1789,8 +1789,6 @@ def calcular_descuentos():
         if pg_conn: pg_conn.close()
 
 # ====== Pedidos ======
-
-@app.route('/crear-pedido', methods=['POST'])
 @app.route('/crear-pedido', methods=['POST'])
 def crear_pedido():
     def _is_xmlrpc_conn_error(exc: Exception) -> bool:
@@ -2491,7 +2489,6 @@ def update_user_role(user_id):
         if pg_conn: pg_conn.close()
 
 # ===== Datos auxiliares cliente =====
-
 @app.route('/tipo-cambio', methods=['GET'])
 def get_tipo_cambio():
     """Obtiene la cotización del USD desde Odoo"""
