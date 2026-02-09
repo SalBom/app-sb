@@ -1,0 +1,11 @@
+Flask==2.3.3
+Flask-Cors
+odooly==2.1.9
+redis
+python-dotenv==1.0.1
+SQLAlchemy==1.4.27
+boto3==1.35.23
+psycopg2-binary
+alembic>=1.13
+requests>=2.31
+gunicorn

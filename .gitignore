@@ -1,0 +1,47 @@
+# Node modules
+node_modules/
+
+# Logs
+logs
+*.log
+
+# Builds
+.expo/
+dist/
+build/
+android/
+ios/
+
+# React Native
+*.apk
+*.keystore
+*.xcworkspace
+*.xcuserdata
+*.xcodeproj
+*.idea/
+*.gradle/
+*.iml
+
+# macOS
+.DS_Store
+
+# Env & config
+.env
+.env.local
+.env.production
+.env.development
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.sqlite3
+venv/
+.env/
+*.db
+
+# Redis dump (por si lo usás local)
+dump.rdb
