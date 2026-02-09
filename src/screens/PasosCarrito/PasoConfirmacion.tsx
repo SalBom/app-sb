@@ -26,7 +26,7 @@ import { API_URL } from '../../config';
 import PantallaExitoPedido from './PantallaExitoPedido';
 
 const SIDE_MARGIN = 10;
-const TIPO_CAMBIO_FALLBACK = 0;
+const TIPO_CAMBIO_FALLBACK = 1450;
 const SHADOW_OFFSET = 6;  
 const BLUR_RADIUS = 4;    
 const SVG_PAD = 20;       
@@ -89,6 +89,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const { items, clienteSeleccionado, plazoSeleccionado, envioSeleccionado, clearCart, consultaResumen, direccionEntrega } = useCartStore() as any;
 
   const [userRole, setUserRole] = useState<string>('');
+  const [loggedUserName, setLoggedUserName] = useState<string>(''); // Nuevo: Nombre del usuario
+  
   const [modalVisible, setModalVisible] = useState(false);
   const [editingItem, setEditingItem] = useState<any>(null);
   const [editValues, setEditValues] = useState({ price: '', d1: '', d2: '', d3: '' });
@@ -127,6 +129,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                 const res = await axios.get(`${API_URL}/usuario-perfil`, { params: { cuit } });
                 const data = res.data;
                 if (data?.role) setUserRole(data.role);
+                // Guardamos el nombre para enviarlo después
+                if (data?.name) setLoggedUserName(data.name);
             } catch (e) { }
         }
     };
@@ -136,6 +140,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
 
   const cargarDatos = useCallback(async () => {
     try {
+      // Obtenemos TC real desde Backend
       const r = await axios.get(`${API_URL}/tipo-cambio`);
       const tc = Number(r.data?.inverse_rate || r.data?.rate || 0);
       setTipoCambio(tc > 0 ? tc : TIPO_CAMBIO_FALLBACK);
@@ -203,10 +208,14 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           payment_term_id: plazoSeleccionado?.id,
           partner_shipping_id: direccionEntrega?.id || null, 
           
+          // Enviamos quién creó el pedido
+          created_by_name: loggedUserName, 
+
           items: items.map((it: any) => ({
               product_id: it.product_id,
               product_uom_qty: it.product_uom_qty,
               price_unit: it.price_unit,
+              // IMPORTANTE: Enviamos el plazo individual para la agrupación en backend
               payment_term_id: it.payment_term_id, 
               name: it.name, 
               discount1: it.discount1 || 0,
@@ -215,7 +224,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           })),
           
           carrier_id: null, 
-          observaciones: observationText // Enviamos la nota al backend
+          observaciones: observationText 
       };
 
       const resp = await axios.post(`${API_URL}/crear-pedido`, payload);
@@ -315,7 +324,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           </View>
         </View>
 
-        {/* --- BOTÓN DE OBSERVACIONES MOVIDO MÁS ABAJO --- */}
+        {/* --- BOTÓN DE OBSERVACIONES (Movido abajo) --- */}
         <View style={{ marginTop: 24, marginBottom: 16 }}>
             <TouchableOpacity style={styles.obsLink} onPress={() => setShowObservationModal(true)}>
                 <Text style={styles.obsLinkText}>
@@ -437,7 +446,7 @@ const styles = StyleSheet.create({
   modalBtnSave: { flex: 1, padding: 12, borderRadius: 8, alignItems: 'center', backgroundColor: '#1C9BD8' },
   modalBtnTextSave: { fontWeight: '700', color: '#FFF' },
   
-  obsLink: { alignSelf: 'center' }, // Quitamos el marginBottom que tenía antes
+  obsLink: { alignSelf: 'center' }, 
   obsLinkText: { color: '#1C9BD8', fontFamily: 'Rubik-Medium', textDecorationLine: 'underline' },
 });
 

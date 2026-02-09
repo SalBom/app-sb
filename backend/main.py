@@ -1791,6 +1791,7 @@ def calcular_descuentos():
 # ====== Pedidos ======
 
 @app.route('/crear-pedido', methods=['POST'])
+@app.route('/crear-pedido', methods=['POST'])
 def crear_pedido():
     def _is_xmlrpc_conn_error(exc: Exception) -> bool:
         s = f"{type(exc).__name__}:{exc}"
@@ -1804,8 +1805,9 @@ def crear_pedido():
         partner_shipping_id = data.get('partner_shipping_id')
         carrier_id          = data.get('carrier_id')
         
-        # --- NUEVO: CAPTURAR OBSERVACIONES ---
+        # Nuevos campos
         observaciones       = data.get('observaciones', '')
+        created_by_name     = data.get('created_by_name', '')
 
         if not cliente_cuit:
             return jsonify({"error": "Falta cliente_cuit"}), 400
@@ -1842,7 +1844,7 @@ def crear_pedido():
         except Exception as e:
             log.warning(f"Error fetching terms: {e}")
 
-        # 3. Obtener SKUs de Oferta desde PostgreSQL
+        # 3. Obtener SKUs de Oferta
         offer_skus = set()
         pg_conn = get_pg_connection()
         if pg_conn:
@@ -1857,7 +1859,7 @@ def crear_pedido():
             finally:
                 pg_conn.close()
 
-        # 4. Procesar Items y Agrupar por (EsOferta, ID_Plazo)
+        # 4. Agrupar Items
         groups = {} 
         vistos = set()
 
@@ -1906,7 +1908,7 @@ def crear_pedido():
                 groups[group_key] = []
             groups[group_key].append(line_vals)
 
-        # 5. Construir lista de comandos con Secciones
+        # 5. Construir orden con secciones
         sorted_keys = sorted(groups.keys(), key=lambda x: (1 if x[0] else 0, x[1]), reverse=True)
         order_lines_cmd = []
 
@@ -1952,15 +1954,25 @@ def crear_pedido():
 
         order = client.env['sale.order'].create(vals)
         
-        # --- NUEVO: INSERTAR OBSERVACIONES COMO NOTA INTERNA ---
+        # --- 7. NOTA INTERNA (Observaciones + Usuario) ---
+        mensajes_nota = []
         if observaciones:
+            mensajes_nota.append(f"📝 <b>Observaciones del cliente:</b><br/>{observaciones}")
+        if created_by_name:
+            mensajes_nota.append(f"👤 <b>Cargado por:</b> {created_by_name} (desde App)")
+            
+        if mensajes_nota:
+            full_body = "<br/><br/>".join(mensajes_nota)
             try:
-                # Usamos el modelo 'mail.message' indirectamente o 'message_post'
-                order.message_post(body=f"Nota enviada desde la APP: {observaciones}", message_type='comment', subtype_xmlid='mail.mt_note')
+                order.message_post(
+                    body=full_body, 
+                    message_type='comment', 
+                    subtype_xmlid='mail.mt_note' 
+                )
             except Exception as e:
                 log.warning(f"No se pudo guardar la nota interna: {e}")
-        # -------------------------------------------------------
-        
+        # ------------------------------------------------
+
         try:
             order._amount_all()
         except Exception:
@@ -2481,28 +2493,40 @@ def update_user_role(user_id):
 # ===== Datos auxiliares cliente =====
 
 @app.route('/tipo-cambio', methods=['GET'])
-def mostrar_tipo_cambio_al_inicio():
+def get_tipo_cambio():
+    """Obtiene la cotización del USD desde Odoo"""
     client = get_odoo_client()
     try:
-        key = "tipo_cambio"
-        def query():
-            currency_id = 2 
-            tasas = client.env['res.currency.rate'].search_read(
-                domain=[('currency_id', '=', currency_id)],
-                fields=['rate', 'name'],
-                order='name desc',
-                limit=1
-            )
-            if tasas:
-                rate = tasas[0]['rate']
-                inverse_rate = round(1 / rate, 2) if rate else None
-                return {"rate": rate, "inverse_rate": inverse_rate, "fecha": tasas[0]['name']}
-            return {"error": "No se encontró tipo de cambio"}
-        return jsonify(get_cache_or_execute(key, fallback_fn=query))
+        # Buscamos la moneda USD
+        currency = client.env['res.currency'].search_read(
+            [('name', '=', 'USD')], 
+            ['rate', 'inverse_rate'], 
+            limit=1
+        )
+        
+        if not currency:
+            return jsonify({"rate": 1450, "source": "fallback_backend"}), 200
+
+        data = currency[0]
+        rate = data.get('rate', 0)
+        inverse = data.get('inverse_rate', 0)
+
+        # Lógica de seguridad para obtener el valor ARS (ej: 1450)
+        final_rate = 1450
+        if inverse and inverse > 1:
+            final_rate = inverse
+        elif rate and rate > 0:
+            final_rate = 1.0 / rate
+
+        return jsonify({
+            "rate": final_rate,
+            "inverse_rate": final_rate, 
+            "source": "odoo"
+        })
+
     except Exception as e:
-        handle_connection_error(e)
-        log.error(f"❌ /tipo-cambio: {e}")
-        return jsonify({"error": str(e)}), 500
+        log.error(f"❌ Error obteniendo tipo de cambio: {e}")
+        return jsonify({"rate": 1450, "error": str(e)}), 200
     finally:
         release_odoo_client(client)
 
