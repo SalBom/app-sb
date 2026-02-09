@@ -2962,18 +2962,17 @@ def get_tipo_cambio():
         release_odoo_client(client)
 
 # --- 1. Traer usuarios internos de Odoo (Potenciales Vendedores) ---
-# --- NUEVOS ENDPOINTS PARA IMPORTAR STAFF ODOO ---
-
-@app.route('/odoo-staff', methods=['GET'])
-def get_odoo_staff():
-    """Trae usuarios de tipo empleado (no portal) desde Odoo para darles de alta."""
+@app.route('/odoo-users', methods=['GET'])
+def get_odoo_users():
+    """Trae TODOS los usuarios (Portal e Internos) desde Odoo."""
     client = get_odoo_client()
     try:
-        # Buscamos usuarios activos que NO sean 'share' (share=True es usuario portal/cliente)
+        # Buscamos TODOS los activos (quitamos el filtro 'share')
+        # share=True (Portal/Cliente), share=False (Interno/Empleado)
         users = client.env['res.users'].search_read(
-            [('share', '=', False), ('active', '=', True)],
-            ['name', 'login', 'partner_id'],
-            limit=100
+            [('active', '=', True)], 
+            ['name', 'login', 'partner_id', 'share'],
+            limit=200 # Aumentamos el límite
         )
         
         data = []
@@ -2981,94 +2980,74 @@ def get_odoo_staff():
             cuit = ''
             if u.get('partner_id'):
                 p_id = u['partner_id'][0]
-                # Intentamos leer el CUIT del partner asociado
                 p_data = client.env['res.partner'].read([p_id], ['vat'])
                 if p_data:
                     cuit = p_data[0].get('vat') or ''
             
+            # Identificamos qué tipo es para mostrarlo en el front si quieres
+            tipo = "Portal/Cliente" if u.get('share') else "Interno/Staff"
+
             data.append({
                 "name": u['name'],
-                "email": u['login'], # En Odoo el login suele ser el email
+                "email": u['login'],
                 "cuit": cuit,
-                "odoo_id": u['id']
+                "odoo_id": u['id'],
+                "tipo_odoo": tipo 
             })
             
         return jsonify(data)
     except Exception as e:
-        log.error(f"Error trayendo staff odoo: {e}")
+        log.error(f"Error trayendo usuarios odoo: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
         release_odoo_client(client)
 
 @app.route('/admin/preasignar', methods=['POST'])
 def preasignar_rol():
-    """Guarda o actualiza el rol de un usuario basado en su email/cuit."""
+    """Guarda o actualiza el rol seleccionado."""
     data = request.get_json()
     email = data.get('email')
     cuit = data.get('cuit')
     name = data.get('name')
-    role = data.get('role', 'Vendedor')
+    role = data.get('role') # Ahora tomamos el rol que viene del front
 
-    if not email:
-        return jsonify({"error": "Falta email"}), 400
+    if not email or not role:
+        return jsonify({"error": "Faltan datos"}), 400
 
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
         
-        # 1. Verificar si ya existe en la tabla de roles
-        # Nota: Usamos el email como identificador temporal si no tenemos user_id aún,
-        # pero idealmente necesitamos vincularlo al user_id real cuando se registre.
-        # Para simplificar, buscaremos primero en app_users para ver si ya existe el ID.
-        
+        # 1. Buscamos si ya existe el usuario por CUIT (para vincular ID)
         user_id = None
         cur.execute("SELECT id FROM app_users WHERE cuit = %s", (cuit,))
         row = cur.fetchone()
         
         if row:
             user_id = row[0]
-            # Si el usuario ya existe, actualizamos su rol directamente
+            # Actualizamos rol en tabla vinculada
             cur.execute("""
-                INSERT INTO app_user_roles (user_id, role_name)
-                VALUES (%s, %s)
-                ON CONFLICT (user_id) DO UPDATE SET role_name = EXCLUDED.role_name;
-            """, (user_id, role))
+                INSERT INTO app_user_roles (user_id, role_name, email, name, cuit)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE 
+                SET role_name = EXCLUDED.role_name;
+            """, (user_id, role, email, name, cuit))
             
-            # También actualizamos la tabla principal por si acaso
+            # Actualizamos tabla principal
             cur.execute("UPDATE app_users SET role = %s WHERE id = %s", (role, user_id))
-            msg = "Usuario existente actualizado a Vendedor."
         else:
-            # CASO ESPECIAL: El usuario NO se ha registrado en la App todavía.
-            # Lo creamos en app_users como "PRE-APROBADO" para que cuando haga login/register ya exista.
-            # Generamos un password dummy temporal o lo dejamos sin password (requerirá lógica de registro).
-            # Para tu flujo actual, lo mejor es INSERTARLO en app_users con un flag o simplemente dejar que
-            # el endpoint de registro lo maneje.
-            
-            # Estrategia: Lo insertamos en `app_user_roles` usando un ID negativo temporal o 
-            # (Mejor) Lo insertamos en `app_users` con estado activo y rol Vendedor.
-            from werkzeug.security import generate_password_hash
-            dummy_pass = generate_password_hash("Salbom123!") # Password temporal por seguridad
-            
+            # Si no existe en la App, lo guardamos en la tabla de roles usando el email
+            # como referencia temporal hasta que se registre.
             cur.execute("""
-                INSERT INTO app_users (cuit, password_hash, role, name, is_active)
-                VALUES (%s, %s, %s, %s, TRUE)
-                ON CONFLICT (cuit) DO UPDATE SET role = EXCLUDED.role
-                RETURNING id;
-            """, (cuit, dummy_pass, role, name))
-            new_uid = cur.fetchone()[0]
-            
-            # Y le asignamos el rol en la tabla vinculada
-            cur.execute("""
-                INSERT INTO app_user_roles (user_id, role_name)
-                VALUES (%s, %s)
-                ON CONFLICT (user_id) DO UPDATE SET role_name = EXCLUDED.role_name;
-            """, (new_uid, role))
-            
-            msg = "Usuario pre-cargado. Deberá usar 'Recuperar Contraseña' o se le debe informar la clave temporal."
+                INSERT INTO app_user_roles (email, role_name, name, cuit)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (email) DO UPDATE 
+                SET role_name = EXCLUDED.role_name, name = EXCLUDED.name, cuit = EXCLUDED.cuit;
+            """, (email, role, name, cuit))
 
         conn.commit()
         cur.close()
-        return jsonify({"message": msg})
+        return jsonify({"message": f"Asignado como {role}"})
     except Exception as e:
         conn.rollback()
         log.error(f"Error preasignando: {e}")
