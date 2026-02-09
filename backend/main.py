@@ -2961,6 +2961,90 @@ def get_tipo_cambio():
     finally:
         release_odoo_client(client)
 
+# --- 1. Traer usuarios internos de Odoo (Potenciales Vendedores) ---
+@app.route('/odoo-staff', methods=['GET'])
+def get_odoo_staff():
+    client = get_odoo_client()
+    try:
+        # Buscamos usuarios que NO sean "share" (share=True son clientes de portal, False son empleados)
+        users = client.env['res.users'].search_read(
+            [('share', '=', False), ('active', '=', True)],
+            ['name', 'login', 'partner_id'],
+            limit=100
+        )
+        
+        # Obtenemos también el CUIT del partner asociado si es posible
+        data = []
+        for u in users:
+            cuit = ''
+            if u.get('partner_id'):
+                p_id = u['partner_id'][0]
+                # Leemos el CUIT del partner
+                p_data = client.env['res.partner'].read([p_id], ['vat'])
+                if p_data:
+                    cuit = p_data[0].get('vat') or ''
+            
+            data.append({
+                "name": u['name'],
+                "email": u['login'], # En Odoo el login suele ser el email
+                "cuit": cuit,
+                "odoo_id": u['id']
+            })
+            
+        return jsonify(data)
+    except Exception as e:
+        log.error(f"Error trayendo staff odoo: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        release_odoo_client(client)
+
+# --- 2. Pre-asignar Rol (Guarda en DB local aunque no tenga UID de Firebase aún) ---
+@app.route('/admin/preasignar', methods=['POST'])
+def preasignar_rol():
+    data = request.get_json()
+    email = data.get('email')
+    cuit = data.get('cuit')
+    name = data.get('name')
+    role = data.get('role', 'Vendedor')
+
+    if not email:
+        return jsonify({"error": "Falta email"}), 400
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        
+        # 1. Verificamos si ya existe el usuario por email
+        cur.execute("SELECT user_id FROM app_user_roles WHERE email = %s", (email,))
+        row = cur.fetchone()
+        
+        if row:
+            # Si existe, le actualizamos el rol
+            cur.execute("""
+                UPDATE app_user_roles 
+                SET role = %s, cuit = COALESCE(cuit, %s)
+                WHERE email = %s
+            """, (role, cuit, email))
+            msg = "Rol actualizado correctamente."
+        else:
+            # Si NO existe, lo creamos "Pre-asignado".
+            # Usamos el email como 'user_id' temporal hasta que se registre realmente.
+            cur.execute("""
+                INSERT INTO app_user_roles (user_id, email, role, cuit, name)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (email, email, role, cuit, name))
+            msg = "Usuario pre-asignado correctamente."
+            
+        conn.commit()
+        cur.close()
+        return jsonify({"message": msg})
+    except Exception as e:
+        conn.rollback()
+        log.error(f"Error preasignando: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
 @app.route("/kpi-vendedor", methods=["GET"])
 def get_kpi_vendedor():
     cuit = request.args.get("cuit")
