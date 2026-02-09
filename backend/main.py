@@ -2488,7 +2488,7 @@ def update_user_role(user_id):
     finally:
         if pg_conn: pg_conn.close()
 
-# ===== Datos auxiliares cliente =====
+# ===== Datos auxiliares cliente ======
 @app.route('/tipo-cambio', methods=['GET'])
 def get_tipo_cambio():
     """Obtiene la cotización del USD desde Odoo"""
