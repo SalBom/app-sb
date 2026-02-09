@@ -6,10 +6,10 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import axios from 'axios';
+import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
 
 import { API_URL } from '../config';
 
-// Tipos de datos
 type User = {
   id?: number;
   odoo_id?: number;
@@ -18,6 +18,7 @@ type User = {
   cuit: string; 
   role?: string;
   created_at?: string;
+  tipo_odoo?: string; // Nuevo campo para saber si es Portal o Interno
 };
 
 const ROLES = ['Cliente', 'Vendedor', 'Admin', 'Vendedor Black'];
@@ -25,15 +26,16 @@ const ROLES = ['Cliente', 'Vendedor', 'Admin', 'Vendedor Black'];
 const GestionUsuarios = () => {
   const navigation = useNavigation<any>();
   
-  // AHORA TENEMOS 3 ESTADOS: usuarios | solicitudes | odoo
+  // Tabs: usuarios | solicitudes | odoo
   const [activeTab, setActiveTab] = useState<'usuarios' | 'solicitudes' | 'odoo'>('usuarios');
   
   const [dataList, setDataList] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Estados para Modal de Edición (Solo para usuarios ya registrados)
+  // Modal
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [isImporting, setIsImporting] = useState(false); // Para diferenciar si editamos o importamos
 
   useEffect(() => {
     fetchData();
@@ -45,92 +47,72 @@ const GestionUsuarios = () => {
     try {
       let res;
       if (activeTab === 'usuarios') {
-        // Trae usuarios ya registrados en la App
         res = await axios.get(`${API_URL}/admin/users/all`);
       } else if (activeTab === 'solicitudes') {
-        // Trae solicitudes pendientes
         res = await axios.get(`${API_URL}/admin/users/pending`);
       } else {
-        // NUEVO: Trae empleados desde Odoo
-        res = await axios.get(`${API_URL}/odoo-staff`);
+        // Endpoint nuevo que trae TODOS (Portal + Internos)
+        res = await axios.get(`${API_URL}/odoo-users`);
       }
       
       if (res.data) setDataList(res.data);
     } catch (e) {
       console.error(e);
-      // No mostramos alerta en 'usuarios' si está vacío al principio para no molestar
       if (activeTab !== 'usuarios') Alert.alert('Error', 'No se pudieron cargar los datos.');
     } finally {
       setLoading(false);
     }
   };
 
-  // --- LÓGICA ORIGINAL: APROBAR SOLICITUDES ---
   const handleApprove = async (id: number) => {
     try {
       await axios.post(`${API_URL}/admin/users/approve`, { id, role: 'Cliente' });
-      Alert.alert('Éxito', 'Usuario aprobado correctamente');
+      Alert.alert('Éxito', 'Usuario aprobado');
       fetchData();
     } catch (e) {
       Alert.alert('Error', 'No se pudo aprobar');
     }
   };
 
-  // --- LÓGICA ORIGINAL: CAMBIAR ROL ---
-  const openRoleModal = (user: User) => {
+  // --- ABRIR MODAL ---
+  const openRoleModal = (user: User, importing = false) => {
     setSelectedUser(user);
+    setIsImporting(importing); 
     setModalVisible(true);
   };
 
+  // --- GUARDAR ROL ---
   const handleChangeRole = async (newRole: string) => {
-    if (!selectedUser || !selectedUser.id) return;
+    if (!selectedUser) return;
     try {
-      // Usamos el endpoint existente para cambiar rol
-      await axios.post(`${API_URL}/admin/users/role`, {
-        id: selectedUser.id,
-        role: newRole
-      });
+      if (isImporting) {
+        // ALTA DE ODOO (Pre-asignar cualquier rol)
+        await axios.post(`${API_URL}/admin/preasignar`, {
+          email: selectedUser.email,
+          cuit: selectedUser.cuit,
+          name: selectedUser.name,
+          role: newRole // Enviamos el rol elegido
+        });
+        Alert.alert('Éxito', `Usuario importado como ${newRole}`);
+      } else {
+        // EDICIÓN NORMAL
+        if (!selectedUser.id) return;
+        await axios.post(`${API_URL}/admin/users/role`, {
+          id: selectedUser.id,
+          role: newRole
+        });
+        Alert.alert('Éxito', 'Rol actualizado');
+      }
       setModalVisible(false);
       fetchData();
-      Alert.alert('Éxito', 'Rol actualizado');
     } catch (e) {
-      Alert.alert('Error', 'No se pudo actualizar el rol');
+      Alert.alert('Error', 'No se pudo realizar la operación');
     }
   };
 
-  // --- NUEVA LÓGICA: DAR ALTA DESDE ODOO ---
-  const handlePreasignarOdoo = (odooUser: User) => {
-    Alert.alert(
-        'Confirmar Alta',
-        `¿Deseas dar de alta a ${odooUser.name} como Vendedor?`,
-        [
-            { text: 'Cancelar', style: 'cancel' },
-            { 
-                text: 'Sí, Asignar', 
-                onPress: async () => {
-                    try {
-                        await axios.post(`${API_URL}/admin/preasignar`, {
-                            email: odooUser.email,
-                            cuit: odooUser.cuit,
-                            name: odooUser.name,
-                            role: 'Vendedor' // Rol por defecto al importar
-                        });
-                        Alert.alert('Éxito', 'Usuario dado de alta como Vendedor.');
-                        // Opcional: Cambiar a tab usuarios para verlo
-                        // setActiveTab('usuarios');
-                    } catch (e) {
-                        Alert.alert('Error', 'No se pudo dar de alta.');
-                    }
-                }
-            }
-        ]
-    );
-  };
-
-  // --- RENDERIZADO DE ITEMS SEGÚN PESTAÑA ---
   const renderItem = ({ item }: { item: User }) => {
     
-    // 1. PESTAÑA USUARIOS (Ya registrados)
+    // TAB 1: USUARIOS
     if (activeTab === 'usuarios') {
         return (
             <View style={styles.card}>
@@ -140,14 +122,14 @@ const GestionUsuarios = () => {
                     <Text style={styles.role}>Rol: <Text style={{fontWeight:'bold'}}>{item.role || 'Cliente'}</Text></Text>
                     {item.email ? <Text style={styles.email}>{item.email}</Text> : null}
                 </View>
-                <TouchableOpacity onPress={() => openRoleModal(item)} style={styles.editBtn}>
+                <TouchableOpacity onPress={() => openRoleModal(item, false)} style={styles.editBtn}>
                     <Feather name="edit-2" size={18} color="#555" />
                 </TouchableOpacity>
             </View>
         );
     }
 
-    // 2. PESTAÑA SOLICITUDES (Pendientes)
+    // TAB 2: SOLICITUDES
     if (activeTab === 'solicitudes') {
         return (
             <View style={styles.card}>
@@ -167,32 +149,38 @@ const GestionUsuarios = () => {
         );
     }
 
-    // 3. PESTAÑA STAFF ODOO (NUEVA)
+    // TAB 3: IMPORTAR ODOO (NUEVA)
     if (activeTab === 'odoo') {
+        const isInternal = item.tipo_odoo?.includes('Interno');
         return (
             <View style={styles.card}>
                 <View style={styles.info}>
                     <Text style={styles.name}>{item.name}</Text>
-                    <Text style={styles.cuit}>Odoo ID: {item.odoo_id}</Text>
                     <Text style={styles.email}>{item.email || 'Sin email'}</Text>
-                    <Text style={styles.date}>CUIT Odoo: {item.cuit || 'No registrado'}</Text>
+                    <View style={{flexDirection:'row', gap:10, marginTop:4}}>
+                        <Text style={styles.cuit}>ID: {item.odoo_id}</Text>
+                        <Text style={[styles.role, {color: isInternal ? '#E67E22' : '#2980B9'}]}>
+                            {item.tipo_odoo || 'Usuario'}
+                        </Text>
+                    </View>
                 </View>
-                <TouchableOpacity onPress={() => handlePreasignarOdoo(item)} style={[styles.approveBtn, { backgroundColor: '#1C9BD8' }]}>
+                {/* AL TOCAR "ALTA", ABRIMOS MODAL DE SELECCIÓN */}
+                <TouchableOpacity onPress={() => openRoleModal(item, true)} style={[styles.approveBtn, { backgroundColor: '#1C9BD8' }]}>
                     <Ionicons name="add-circle-outline" size={18} color="#FFF" />
                     <Text style={styles.approveText}>ALTA</Text>
                 </TouchableOpacity>
             </View>
         );
     }
-
     return null;
   };
 
   return (
     <View style={styles.container}>
-      {/* Header personalizado */}
+      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+            <FlechaHeaderSvg width={24} height={24} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Gestión de Usuarios</Text>
         <View style={{width: 24}} />
@@ -215,7 +203,7 @@ const GestionUsuarios = () => {
         <TouchableOpacity 
           style={[styles.tab, activeTab === 'odoo' && styles.activeTab]} 
           onPress={() => setActiveTab('odoo')}>
-          <Text style={[styles.tabText, activeTab === 'odoo' && styles.activeTabText]}>Staff Odoo</Text>
+          <Text style={[styles.tabText, activeTab === 'odoo' && styles.activeTabText]}>Importar Odoo</Text>
         </TouchableOpacity>
       </View>
 
@@ -232,19 +220,25 @@ const GestionUsuarios = () => {
         />
       )}
 
-      {/* Modal Cambio Rol (Solo para usuarios registrados) */}
+      {/* Modal Selección de Rol */}
       <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => setModalVisible(false)}>
         <Pressable style={styles.modalOverlay} onPress={() => setModalVisible(false)}>
             <Pressable style={styles.modalContent}>
-                <Text style={styles.modalTitle}>Asignar Rol a {selectedUser?.name}</Text>
+                <Text style={styles.modalTitle}>
+                    {isImporting ? 'Dar Alta y Asignar Rol' : 'Cambiar Rol'}
+                </Text>
+                <Text style={{textAlign:'center', marginBottom:15, color:'#666'}}>
+                    Usuario: {selectedUser?.name}
+                </Text>
+                
                 {ROLES.map(r => (
                     <TouchableOpacity 
                         key={r} 
-                        style={[styles.roleOption, selectedUser?.role === r && styles.roleOptionSelected]}
+                        style={[styles.roleOption, selectedUser?.role === r && !isImporting && styles.roleOptionSelected]}
                         onPress={() => handleChangeRole(r)}
                     >
-                        <Text style={[styles.roleText, selectedUser?.role === r && styles.roleTextSelected]}>{r}</Text>
-                        {selectedUser?.role === r && <Ionicons name="checkmark" size={20} color="#1C9BD8" />}
+                        <Text style={[styles.roleText, selectedUser?.role === r && !isImporting && styles.roleTextSelected]}>{r}</Text>
+                        {selectedUser?.role === r && !isImporting && <Ionicons name="checkmark" size={20} color="#1C9BD8" />}
                     </TouchableOpacity>
                 ))}
             </Pressable>
@@ -293,7 +287,7 @@ const styles = StyleSheet.create({
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: 20 },
   modalContent: { backgroundColor: '#FFF', borderRadius: 12, padding: 20 },
-  modalTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 20, marginBottom: 15, color: '#333', textAlign: 'center' },
+  modalTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 20, marginBottom: 5, color: '#333', textAlign: 'center' },
   roleOption: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
   roleOptionSelected: { backgroundColor: '#F0F9FF', marginHorizontal: -20, paddingHorizontal: 20 },
   roleText: { fontSize: 16, color: '#555' },

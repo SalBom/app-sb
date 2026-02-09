@@ -2962,17 +2962,19 @@ def get_tipo_cambio():
         release_odoo_client(client)
 
 # --- 1. Traer usuarios internos de Odoo (Potenciales Vendedores) ---
+# --- ENDPOINTS GESTIÓN DE USUARIOS ODOO ---
+
 @app.route('/odoo-users', methods=['GET'])
 def get_odoo_users():
-    """Trae TODOS los usuarios (Portal e Internos) desde Odoo."""
+    """Trae TODOS los usuarios activos de Odoo (Internos y Portal)."""
     client = get_odoo_client()
     try:
-        # Buscamos TODOS los activos (quitamos el filtro 'share')
-        # share=True (Portal/Cliente), share=False (Interno/Empleado)
+        # Quitamos ('share', '=', False) para traer a TODOS.
+        # ('active', '=', True) es el único filtro importante.
         users = client.env['res.users'].search_read(
             [('active', '=', True)], 
-            ['name', 'login', 'partner_id', 'share'],
-            limit=200 # Aumentamos el límite
+            ['name', 'login', 'partner_id', 'share'], # Traemos 'share' para saber el tipo
+            limit=300
         )
         
         data = []
@@ -2984,8 +2986,8 @@ def get_odoo_users():
                 if p_data:
                     cuit = p_data[0].get('vat') or ''
             
-            # Identificamos qué tipo es para mostrarlo en el front si quieres
-            tipo = "Portal/Cliente" if u.get('share') else "Interno/Staff"
+            # share=True significa "Usuario de Portal/Externo". False es "Empleado/Interno"
+            tipo = "Portal" if u.get('share') else "Interno"
 
             data.append({
                 "name": u['name'],
@@ -3001,6 +3003,57 @@ def get_odoo_users():
         return jsonify({"error": str(e)}), 500
     finally:
         release_odoo_client(client)
+
+@app.route('/admin/preasignar', methods=['POST'])
+def preasignar_rol():
+    """Da de alta o pre-asigna un rol seleccionado."""
+    data = request.get_json()
+    email = data.get('email')
+    cuit = data.get('cuit')
+    name = data.get('name')
+    role = data.get('role') # Recibimos el rol elegido en el front
+
+    if not email or not role:
+        return jsonify({"error": "Faltan datos (email o rol)"}), 400
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        
+        # 1. Verificar si el usuario ya existe en App por CUIT
+        user_id = None
+        cur.execute("SELECT id FROM app_users WHERE cuit = %s", (cuit,))
+        row = cur.fetchone()
+        
+        if row:
+            user_id = row[0]
+            # Si existe, actualizamos su rol en la tabla de roles
+            cur.execute("""
+                INSERT INTO app_user_roles (user_id, role_name, email, name, cuit)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET role_name = EXCLUDED.role_name;
+            """, (user_id, role, email, name, cuit))
+            
+            # Y en la tabla principal
+            cur.execute("UPDATE app_users SET role = %s WHERE id = %s", (role, user_id))
+        else:
+            # Si NO existe, lo guardamos "Pre-asignado" usando el email como clave temporal
+            cur.execute("""
+                INSERT INTO app_user_roles (email, role_name, name, cuit)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (email) DO UPDATE 
+                SET role_name = EXCLUDED.role_name, name = EXCLUDED.name, cuit = EXCLUDED.cuit;
+            """, (email, role, name, cuit))
+
+        conn.commit()
+        cur.close()
+        return jsonify({"message": f"Usuario asignado como {role}"})
+    except Exception as e:
+        conn.rollback()
+        log.error(f"Error preasignando: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 @app.route('/admin/preasignar', methods=['POST'])
 def preasignar_rol():
