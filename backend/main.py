@@ -1202,49 +1202,6 @@ def get_mis_ventas():
         log.error(f"❌ /mis_ventas Error final: {e}")
         return jsonify({"error": str(e)}), 500
     
-@app.route('/tipo-cambio', methods=['GET'])
-def get_tipo_cambio():
-    """Obtiene la cotización del USD desde Odoo"""
-    client = get_odoo_client()
-    try:
-        # Buscamos la moneda USD
-        # Odoo suele guardar 'rate' (relativo a la moneda base) y 'inverse_rate' (valor en moneda base)
-        # Si tu base es ARS, 'inverse_rate' será aprox 1000+. Si no existe, calculamos 1/rate.
-        currency = client.env['res.currency'].search_read(
-            [('name', '=', 'USD')], 
-            ['rate', 'inverse_rate'], 
-            limit=1
-        )
-        
-        if not currency:
-            # Si no encuentra USD, devolvemos un error o fallback
-            return jsonify({"rate": 1450, "source": "fallback_backend"}), 200
-
-        data = currency[0]
-        rate = data.get('rate', 0)
-        inverse = data.get('inverse_rate', 0)
-
-        # Lógica de seguridad:
-        # Si hay 'inverse_rate' y es mayor a 1, usamos eso (ej: 1450.0).
-        # Si no, intentamos calcular 1 / rate (ej: 1 / 0.00068 = 1470).
-        final_rate = 1450 # Valor seguro inicial
-        
-        if inverse and inverse > 1:
-            final_rate = inverse
-        elif rate and rate > 0:
-            final_rate = 1.0 / rate
-
-        return jsonify({
-            "rate": final_rate,
-            "inverse_rate": final_rate, # Para compatibilidad con el frontend
-            "source": "odoo"
-        })
-
-    except Exception as e:
-        log.error(f"❌ Error obteniendo tipo de cambio: {e}")
-        return jsonify({"rate": 1450, "error": str(e)}), 200
-    finally:
-        release_odoo_client(client)
 
 @app.route("/mis_pedidos", methods=["GET"])
 def get_mis_pedidos():
@@ -2489,43 +2446,6 @@ def update_user_role(user_id):
         if pg_conn: pg_conn.close()
 
 # ===== Datos auxiliares cliente ======
-@app.route('/tipo-cambio', methods=['GET'])
-def get_tipo_cambio():
-    """Obtiene la cotización del USD desde Odoo"""
-    client = get_odoo_client()
-    try:
-        # Buscamos la moneda USD
-        currency = client.env['res.currency'].search_read(
-            [('name', '=', 'USD')], 
-            ['rate', 'inverse_rate'], 
-            limit=1
-        )
-        
-        if not currency:
-            return jsonify({"rate": 1450, "source": "fallback_backend"}), 200
-
-        data = currency[0]
-        rate = data.get('rate', 0)
-        inverse = data.get('inverse_rate', 0)
-
-        # Lógica de seguridad para obtener el valor ARS (ej: 1450)
-        final_rate = 1450
-        if inverse and inverse > 1:
-            final_rate = inverse
-        elif rate and rate > 0:
-            final_rate = 1.0 / rate
-
-        return jsonify({
-            "rate": final_rate,
-            "inverse_rate": final_rate, 
-            "source": "odoo"
-        })
-
-    except Exception as e:
-        log.error(f"❌ Error obteniendo tipo de cambio: {e}")
-        return jsonify({"rate": 1450, "error": str(e)}), 200
-    finally:
-        release_odoo_client(client)
 
 @app.route('/obtener-metodo-entrega', methods=['GET'])
 def obtener_metodo_entrega():
@@ -3000,6 +2920,44 @@ def get_mis_comprobantes_propios():
         handle_connection_error(e)
         log.error(f"❌ /mis_comprobantes_propios:\n{traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
+    finally:
+        release_odoo_client(client)
+
+@app.route('/tipo-cambio', methods=['GET'])
+def get_tipo_cambio():
+    """Obtiene la cotización del USD desde Odoo"""
+    client = get_odoo_client()
+    try:
+        # Buscamos la moneda USD
+        currency = client.env['res.currency'].search_read(
+            [('name', '=', 'USD')], 
+            ['rate', 'inverse_rate'], 
+            limit=1
+        )
+        
+        if not currency:
+            return jsonify({"rate": 1450, "source": "fallback_backend"}), 200
+
+        data = currency[0]
+        rate = data.get('rate', 0)
+        inverse = data.get('inverse_rate', 0)
+
+        # Lógica de seguridad para obtener el valor ARS (ej: 1450)
+        final_rate = 1450
+        if inverse and inverse > 1:
+            final_rate = inverse
+        elif rate and rate > 0:
+            final_rate = 1.0 / rate
+
+        return jsonify({
+            "rate": final_rate,
+            "inverse_rate": final_rate, 
+            "source": "odoo"
+        })
+
+    except Exception as e:
+        log.error(f"❌ Error obteniendo tipo de cambio: {e}")
+        return jsonify({"rate": 1450, "error": str(e)}), 200
     finally:
         release_odoo_client(client)
 
