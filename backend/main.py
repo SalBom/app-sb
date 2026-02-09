@@ -2962,24 +2962,26 @@ def get_tipo_cambio():
         release_odoo_client(client)
 
 # --- 1. Traer usuarios internos de Odoo (Potenciales Vendedores) ---
+# --- NUEVOS ENDPOINTS PARA IMPORTAR STAFF ODOO ---
+
 @app.route('/odoo-staff', methods=['GET'])
 def get_odoo_staff():
+    """Trae usuarios de tipo empleado (no portal) desde Odoo para darles de alta."""
     client = get_odoo_client()
     try:
-        # Buscamos usuarios que NO sean "share" (share=True son clientes de portal, False son empleados)
+        # Buscamos usuarios activos que NO sean 'share' (share=True es usuario portal/cliente)
         users = client.env['res.users'].search_read(
             [('share', '=', False), ('active', '=', True)],
             ['name', 'login', 'partner_id'],
             limit=100
         )
         
-        # Obtenemos también el CUIT del partner asociado si es posible
         data = []
         for u in users:
             cuit = ''
             if u.get('partner_id'):
                 p_id = u['partner_id'][0]
-                # Leemos el CUIT del partner
+                # Intentamos leer el CUIT del partner asociado
                 p_data = client.env['res.partner'].read([p_id], ['vat'])
                 if p_data:
                     cuit = p_data[0].get('vat') or ''
@@ -2998,9 +3000,9 @@ def get_odoo_staff():
     finally:
         release_odoo_client(client)
 
-# --- 2. Pre-asignar Rol (Guarda en DB local aunque no tenga UID de Firebase aún) ---
 @app.route('/admin/preasignar', methods=['POST'])
 def preasignar_rol():
+    """Guarda o actualiza el rol de un usuario basado en su email/cuit."""
     data = request.get_json()
     email = data.get('email')
     cuit = data.get('cuit')
@@ -3014,27 +3016,56 @@ def preasignar_rol():
     try:
         cur = conn.cursor()
         
-        # 1. Verificamos si ya existe el usuario por email
-        cur.execute("SELECT user_id FROM app_user_roles WHERE email = %s", (email,))
+        # 1. Verificar si ya existe en la tabla de roles
+        # Nota: Usamos el email como identificador temporal si no tenemos user_id aún,
+        # pero idealmente necesitamos vincularlo al user_id real cuando se registre.
+        # Para simplificar, buscaremos primero en app_users para ver si ya existe el ID.
+        
+        user_id = None
+        cur.execute("SELECT id FROM app_users WHERE cuit = %s", (cuit,))
         row = cur.fetchone()
         
         if row:
-            # Si existe, le actualizamos el rol
+            user_id = row[0]
+            # Si el usuario ya existe, actualizamos su rol directamente
             cur.execute("""
-                UPDATE app_user_roles 
-                SET role = %s, cuit = COALESCE(cuit, %s)
-                WHERE email = %s
-            """, (role, cuit, email))
-            msg = "Rol actualizado correctamente."
-        else:
-            # Si NO existe, lo creamos "Pre-asignado".
-            # Usamos el email como 'user_id' temporal hasta que se registre realmente.
-            cur.execute("""
-                INSERT INTO app_user_roles (user_id, email, role, cuit, name)
-                VALUES (%s, %s, %s, %s, %s)
-            """, (email, email, role, cuit, name))
-            msg = "Usuario pre-asignado correctamente."
+                INSERT INTO app_user_roles (user_id, role_name)
+                VALUES (%s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET role_name = EXCLUDED.role_name;
+            """, (user_id, role))
             
+            # También actualizamos la tabla principal por si acaso
+            cur.execute("UPDATE app_users SET role = %s WHERE id = %s", (role, user_id))
+            msg = "Usuario existente actualizado a Vendedor."
+        else:
+            # CASO ESPECIAL: El usuario NO se ha registrado en la App todavía.
+            # Lo creamos en app_users como "PRE-APROBADO" para que cuando haga login/register ya exista.
+            # Generamos un password dummy temporal o lo dejamos sin password (requerirá lógica de registro).
+            # Para tu flujo actual, lo mejor es INSERTARLO en app_users con un flag o simplemente dejar que
+            # el endpoint de registro lo maneje.
+            
+            # Estrategia: Lo insertamos en `app_user_roles` usando un ID negativo temporal o 
+            # (Mejor) Lo insertamos en `app_users` con estado activo y rol Vendedor.
+            from werkzeug.security import generate_password_hash
+            dummy_pass = generate_password_hash("Salbom123!") # Password temporal por seguridad
+            
+            cur.execute("""
+                INSERT INTO app_users (cuit, password_hash, role, name, is_active)
+                VALUES (%s, %s, %s, %s, TRUE)
+                ON CONFLICT (cuit) DO UPDATE SET role = EXCLUDED.role
+                RETURNING id;
+            """, (cuit, dummy_pass, role, name))
+            new_uid = cur.fetchone()[0]
+            
+            # Y le asignamos el rol en la tabla vinculada
+            cur.execute("""
+                INSERT INTO app_user_roles (user_id, role_name)
+                VALUES (%s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET role_name = EXCLUDED.role_name;
+            """, (new_uid, role))
+            
+            msg = "Usuario pre-cargado. Deberá usar 'Recuperar Contraseña' o se le debe informar la clave temporal."
+
         conn.commit()
         cur.close()
         return jsonify({"message": msg})

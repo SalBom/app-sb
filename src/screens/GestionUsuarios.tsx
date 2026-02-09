@@ -6,7 +6,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import axios from 'axios';
-import FlechaHeaderSvg from '../../assets/flechaHeader.svg'; // Asegúrate de que la ruta sea correcta
+import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
 
 import { API_URL } from '../config';
 
@@ -47,10 +47,10 @@ const GestionUsuarios = () => {
       let res;
       if (activeTab === 'usuarios') {
         // Trae usuarios ya registrados en la App
-        res = await axios.get(`${API_URL}/admin/users`);
+        res = await axios.get(`${API_URL}/admin/users/all`);
       } else if (activeTab === 'solicitudes') {
         // Trae solicitudes pendientes
-        res = await axios.get(`${API_URL}/admin/solicitudes`);
+        res = await axios.get(`${API_URL}/admin/users/pending`);
       } else {
         // NUEVO: Trae empleados desde Odoo
         res = await axios.get(`${API_URL}/odoo-staff`);
@@ -59,7 +59,7 @@ const GestionUsuarios = () => {
       if (res.data) setDataList(res.data);
     } catch (e) {
       console.error(e);
-      // No mostramos alerta en 'usuarios' si está vacío al principio, para no molestar
+      // No mostramos alerta en 'usuarios' si está vacío al principio para no molestar
       if (activeTab !== 'usuarios') Alert.alert('Error', 'No se pudieron cargar los datos.');
     } finally {
       setLoading(false);
@@ -69,7 +69,7 @@ const GestionUsuarios = () => {
   // --- LÓGICA ORIGINAL: APROBAR SOLICITUDES ---
   const handleApprove = async (id: number) => {
     try {
-      await axios.post(`${API_URL}/admin/approve`, { id });
+      await axios.post(`${API_URL}/admin/users/approve`, { id, role: 'Cliente' });
       Alert.alert('Éxito', 'Usuario aprobado correctamente');
       fetchData();
     } catch (e) {
@@ -84,14 +84,12 @@ const GestionUsuarios = () => {
   };
 
   const handleChangeRole = async (newRole: string) => {
-    if (!selectedUser) return;
+    if (!selectedUser || !selectedUser.id) return;
     try {
-      // Usamos el endpoint que actualiza por email o ID
-      await axios.post(`${API_URL}/admin/preasignar`, {
-        email: selectedUser.email,
-        role: newRole,
-        cuit: selectedUser.cuit,
-        name: selectedUser.name
+      // Usamos el endpoint existente para cambiar rol
+      await axios.post(`${API_URL}/admin/users/role`, {
+        id: selectedUser.id,
+        role: newRole
       });
       setModalVisible(false);
       fetchData();
@@ -116,13 +114,13 @@ const GestionUsuarios = () => {
                             email: odooUser.email,
                             cuit: odooUser.cuit,
                             name: odooUser.name,
-                            role: 'Vendedor' // Rol por defecto
+                            role: 'Vendedor' // Rol por defecto al importar
                         });
-                        Alert.alert('Éxito', 'Usuario pre-asignado. Ahora aparecerá en los reportes.');
+                        Alert.alert('Éxito', 'Usuario dado de alta como Vendedor.');
                         // Opcional: Cambiar a tab usuarios para verlo
                         // setActiveTab('usuarios');
                     } catch (e) {
-                        Alert.alert('Error', 'No se pudo asignar el rol.');
+                        Alert.alert('Error', 'No se pudo dar de alta.');
                     }
                 }
             }
@@ -141,7 +139,7 @@ const GestionUsuarios = () => {
                     <Text style={styles.name}>{item.name}</Text>
                     <Text style={styles.cuit}>CUIT: {item.cuit || '---'}</Text>
                     <Text style={styles.role}>Rol: <Text style={{fontWeight:'bold'}}>{item.role || 'Cliente'}</Text></Text>
-                    <Text style={styles.email}>{item.email}</Text>
+                    {item.email ? <Text style={styles.email}>{item.email}</Text> : null}
                 </View>
                 <TouchableOpacity onPress={() => openRoleModal(item)} style={styles.editBtn}>
                     <Feather name="edit-2" size={18} color="#555" />
@@ -158,7 +156,7 @@ const GestionUsuarios = () => {
                     <Text style={styles.name}>{item.name}</Text>
                     <Text style={styles.cuit}>CUIT: {item.cuit}</Text>
                     <Text style={styles.email}>{item.email}</Text>
-                    <Text style={styles.date}>Solicitado: {item.created_at ? item.created_at.substring(0,10) : '--'}</Text>
+                    <Text style={styles.date}>Solicitado: {item.created_at ? String(item.created_at).substring(0,10) : '--'}</Text>
                 </View>
                 <View style={styles.actions}>
                     <TouchableOpacity style={styles.approveBtn} onPress={() => item.id && handleApprove(item.id)}>
@@ -178,6 +176,7 @@ const GestionUsuarios = () => {
                     <Text style={styles.name}>{item.name}</Text>
                     <Text style={styles.cuit}>Odoo ID: {item.odoo_id}</Text>
                     <Text style={styles.email}>{item.email || 'Sin email'}</Text>
+                    <Text style={styles.date}>CUIT Odoo: {item.cuit || 'No registrado'}</Text>
                 </View>
                 <TouchableOpacity onPress={() => handlePreasignarOdoo(item)} style={[styles.approveBtn, { backgroundColor: '#1C9BD8' }]}>
                     <Ionicons name="add-circle-outline" size={18} color="#FFF" />
