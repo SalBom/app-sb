@@ -3086,6 +3086,46 @@ def preasignar_rol():
     finally:
         if conn: conn.close()
 
+# --- HERRAMIENTA DE REPARACIÓN DE BASE DE DATOS ---
+@app.route('/fix-db', methods=['GET'])
+def fix_db_force():
+    """Ejecuta las correcciones de tabla manualmente."""
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        log_msgs = []
+
+        # 1. Agregar columnas una por una
+        columns = ['email', 'name', 'cuit']
+        for col in columns:
+            try:
+                cur.execute(f"ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS {col} TEXT;")
+                log_msgs.append(f"Columna '{col}': OK")
+            except Exception as e:
+                log_msgs.append(f"Columna '{col}': {str(e)}")
+
+        # 2. Quitar restricción NOT NULL del user_id
+        try:
+            cur.execute("ALTER TABLE app_user_roles ALTER COLUMN user_id DROP NOT NULL;")
+            log_msgs.append("user_id NULL: OK")
+        except Exception as e:
+            log_msgs.append(f"user_id NULL: {str(e)}")
+            
+        # 3. Asegurar unicidad del email
+        try:
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email);")
+            log_msgs.append("Index Email: OK")
+        except Exception as e:
+             log_msgs.append(f"Index Email: {str(e)}")
+
+        conn.commit()
+        return jsonify({"status": "Finalizado", "detalles": log_msgs})
+    except Exception as e:
+        if conn: conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn: conn.close()
+
 @app.route("/kpi-vendedor", methods=["GET"])
 def get_kpi_vendedor():
     cuit = request.args.get("cuit")

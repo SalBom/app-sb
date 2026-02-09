@@ -6,7 +6,6 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import axios from 'axios';
-import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
 
 import { API_URL } from '../config';
 
@@ -180,7 +179,6 @@ const GestionUsuarios = () => {
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
-            <FlechaHeaderSvg width={24} height={24} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Gestión de Usuarios</Text>
         <View style={{width: 24}} />
