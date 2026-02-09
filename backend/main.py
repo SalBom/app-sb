@@ -3034,57 +3034,122 @@ def get_odoo_users():
     finally:
         release_odoo_client(client)
 
+# --- 1. FUNCIÓN PARA CORREGIR BASE DE DATOS (Arregla el error de columnas) ---
+@app.route('/fix-schema', methods=['GET'])
+def fix_schema_manual():
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        msg = []
+        
+        # A. Crear la tabla si no existe
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS app_user_roles (
+                user_id INTEGER,
+                role_name TEXT NOT NULL
+            );
+        """)
+        
+        # B. Agregar columnas faltantes (CUIT, Email, Name)
+        # Esto soluciona el error "column does not exist"
+        for col in ['cuit', 'email', 'name']:
+            try:
+                cur.execute(f"ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS {col} TEXT;")
+                msg.append(f"Columna {col}: OK")
+            except Exception as e:
+                msg.append(f"Columna {col}: {e}")
+
+        # C. Indices Únicos para poder usar "ON CONFLICT"
+        # Creamos indice en CUIT (Vital para tu caso)
+        try:
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_cuit ON app_user_roles (cuit) WHERE cuit IS NOT NULL;")
+            msg.append("Index CUIT: OK")
+        except: pass
+        
+        # Indice en Email (Opcional)
+        try:
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email) WHERE email IS NOT NULL;")
+            msg.append("Index Email: OK")
+        except: pass
+
+        conn.commit()
+        return jsonify({"status": "Schema Reparado", "detalles": msg})
+    except Exception as e:
+        if conn: conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn: conn.close()
+
+
+# --- 2. ENDPOINT PRE-ASIGNAR (Ahora prioriza CUIT) ---
 @app.route('/admin/preasignar', methods=['POST'])
 def preasignar_rol():
-    """Da de alta o pre-asigna un rol seleccionado."""
     data = request.get_json()
+    
+    # Datos recibidos
     email = data.get('email')
     cuit = data.get('cuit')
     name = data.get('name')
     role = data.get('role')
 
-    if not email or not role:
-        return jsonify({"error": "Faltan datos (email o rol)"}), 400
+    # VALIDACIÓN: Ahora permite CUIT *O* EMAIL
+    if not role:
+        return jsonify({"error": "Falta el rol"}), 400
+    if not cuit and not email:
+        return jsonify({"error": "Se requiere CUIT o Email para identificar al usuario"}), 400
 
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
         
-        # 1. Verificar si el usuario ya existe en App por CUIT
-        user_id = None
-        cur.execute("SELECT id FROM app_users WHERE cuit = %s", (cuit,))
-        row = cur.fetchone()
-        
-        if row:
-            user_id = row[0]
-            # Si existe el usuario real, vinculamos por ID
-            cur.execute("""
-                INSERT INTO app_user_roles (user_id, role_name, email, name, cuit)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (user_id) DO UPDATE SET role_name = EXCLUDED.role_name;
-            """, (user_id, role, email, name, cuit))
+        # ESTRATEGIA: Intentar asignar por CUIT primero (más seguro)
+        if cuit:
+            # 1. Verificamos si ya existe un usuario registrado con ese CUIT
+            cur.execute("SELECT id FROM app_users WHERE cuit = %s", (cuit,))
+            row = cur.fetchone()
             
-            # Actualizamos también la tabla principal
-            cur.execute("UPDATE app_users SET role = %s WHERE id = %s", (role, user_id))
-        else:
-            # Si NO existe, guardamos solo en roles usando el email como clave única
-            # Aquí es donde fallaba antes porque faltaban las columnas en la DB
+            if row:
+                # Usuario YA registrado en la App -> Actualizamos su rol
+                user_id = row[0]
+                cur.execute("""
+                    INSERT INTO app_user_roles (user_id, role_name, cuit, name, email)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET role_name = EXCLUDED.role_name;
+                """, (user_id, role, cuit, name, email))
+                cur.execute("UPDATE app_users SET role = %s WHERE id = %s", (role, user_id))
+                msg = f"Usuario registrado actualizado a {role}"
+            else:
+                # Usuario NO registrado -> Guardamos pre-asignación usando CUIT como clave
+                cur.execute("""
+                    INSERT INTO app_user_roles (cuit, role_name, name, email)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (cuit) DO UPDATE 
+                    SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
+                """, (cuit, role, name, email))
+                msg = f"Rol {role} pre-asignado por CUIT"
+
+        # Si NO hay CUIT, intentamos por Email (Plan B)
+        elif email:
             cur.execute("""
-                INSERT INTO app_user_roles (email, role_name, name, cuit)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO app_user_roles (email, role_name, name)
+                VALUES (%s, %s, %s)
                 ON CONFLICT (email) DO UPDATE 
-                SET role_name = EXCLUDED.role_name, name = EXCLUDED.name, cuit = EXCLUDED.cuit;
-            """, (email, role, name, cuit))
+                SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
+            """, (email, role, name))
+            msg = f"Rol {role} pre-asignado por Email"
 
         conn.commit()
-        cur.close()
-        return jsonify({"message": f"Usuario asignado como {role}"})
+        return jsonify({"message": msg})
+
     except Exception as e:
-        if conn: conn.rollback()
+        conn.rollback()
         log.error(f"Error preasignando: {e}")
+        # Si el error es de columnas faltantes, avisamos
+        if 'column' in str(e) and 'does not exist' in str(e):
+            return jsonify({"error": "Error de base de datos. Por favor ejecuta /fix-schema"}), 500
         return jsonify({"error": str(e)}), 500
     finally:
-        if conn: conn.close()
+        conn.close()
 
 # --- HERRAMIENTA DE REPARACIÓN DE BASE DE DATOS ---
 @app.route('/fix-db', methods=['GET'])
