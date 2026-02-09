@@ -18,7 +18,7 @@ const FacturaPDF: React.FC = () => {
   useEffect(() => {
     const prepararFactura = async () => {
       try {
-        const response = await fetch(`https://app-salbom-production.up.railway.app/factura_pdf?facturaId=${encodeURIComponent(facturaId)}`);
+        const response = await fetch(`https://app-sb-production.up.railway.app/factura_pdf?facturaId=${encodeURIComponent(facturaId)}`);
         const data = await response.json();
 
         if (response.ok) {
