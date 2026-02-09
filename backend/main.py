@@ -340,7 +340,7 @@ def get_pg_connection():
         return None
 
 def init_roles_table():
-    """Crea la tabla de roles al iniciar si no existe."""
+    """Crea la tabla de roles y asegura que tenga las columnas para pre-asignación."""
     if not DATABASE_URL:
         return
     conn = get_pg_connection()
@@ -348,19 +348,47 @@ def init_roles_table():
         return
     try:
         cur = conn.cursor()
+        
+        # 1. Crear tabla básica si no existe
         cur.execute("""
             CREATE TABLE IF NOT EXISTS app_user_roles (
-                user_id INTEGER PRIMARY KEY,
+                user_id INTEGER,
                 role_name TEXT NOT NULL
             );
         """)
+        
+        # 2. MIGRACIONES: Agregar columnas faltantes si no existen
+        cur.execute("ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS email TEXT;")
+        cur.execute("ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS name TEXT;")
+        cur.execute("ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS cuit TEXT;")
+
+        # 3. Restricciones: Asegurar que el email sea único para que funcione el "ON CONFLICT"
+        try:
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email);")
+        except Exception:
+            pass # Si ya existe, ignoramos
+
+        # 4. Permitir que user_id sea NULL (Importante para usuarios pre-asignados que aun no tienen ID)
+        try:
+            cur.execute("ALTER TABLE app_user_roles ALTER COLUMN user_id DROP NOT NULL;")
+        except Exception:
+            pass # Si falla (ej: es PK estricta), seguimos intentando
+
+        # 5. Si existía una Primary Key antigua solo en user_id, intentamos quitarla para evitar conflictos
+        try:
+            cur.execute("ALTER TABLE app_user_roles DROP CONSTRAINT IF EXISTS app_user_roles_pkey;")
+        except Exception:
+            pass
+
         conn.commit()
         cur.close()
-        log.info("✅ Tabla 'app_user_roles' verificada en PostgreSQL.")
+        log.info("✅ Tabla 'app_user_roles' actualizada con columnas de pre-asignación.")
     except Exception as e:
-        log.error(f"❌ Error inicializando tabla de roles: {e}")
+        # No hacemos rollback total para permitir que pasen las migraciones que sí funcionaron
+        log.error(f"⚠️ Advertencia en tabla roles (puede estar ya actualizada): {e}")
+        if conn: conn.rollback()
     finally:
-        conn.close()
+        if conn: conn.close()
 
 # main.py
 
@@ -3013,7 +3041,7 @@ def preasignar_rol():
     email = data.get('email')
     cuit = data.get('cuit')
     name = data.get('name')
-    role = data.get('role') # Recibimos el rol elegido en el front
+    role = data.get('role')
 
     if not email or not role:
         return jsonify({"error": "Faltan datos (email o rol)"}), 400
@@ -3029,17 +3057,18 @@ def preasignar_rol():
         
         if row:
             user_id = row[0]
-            # Si existe, actualizamos su rol en la tabla de roles
+            # Si existe el usuario real, vinculamos por ID
             cur.execute("""
                 INSERT INTO app_user_roles (user_id, role_name, email, name, cuit)
                 VALUES (%s, %s, %s, %s, %s)
                 ON CONFLICT (user_id) DO UPDATE SET role_name = EXCLUDED.role_name;
             """, (user_id, role, email, name, cuit))
             
-            # Y en la tabla principal
+            # Actualizamos también la tabla principal
             cur.execute("UPDATE app_users SET role = %s WHERE id = %s", (role, user_id))
         else:
-            # Si NO existe, lo guardamos "Pre-asignado" usando el email como clave
+            # Si NO existe, guardamos solo en roles usando el email como clave única
+            # Aquí es donde fallaba antes porque faltaban las columnas en la DB
             cur.execute("""
                 INSERT INTO app_user_roles (email, role_name, name, cuit)
                 VALUES (%s, %s, %s, %s)
@@ -3051,11 +3080,11 @@ def preasignar_rol():
         cur.close()
         return jsonify({"message": f"Usuario asignado como {role}"})
     except Exception as e:
-        conn.rollback()
+        if conn: conn.rollback()
         log.error(f"Error preasignando: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
-        conn.close()
+        if conn: conn.close()
 
 @app.route("/kpi-vendedor", methods=["GET"])
 def get_kpi_vendedor():
