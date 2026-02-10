@@ -6,18 +6,17 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import axios from 'axios';
+import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
 
 import { API_URL } from '../config';
 
 type User = {
-  id?: number;
-  odoo_id?: number;
+  id: number;
   name: string;
   email: string;
   cuit: string; 
   role?: string;
   created_at?: string;
-  tipo_odoo?: string; 
 };
 
 const ROLES = ['Cliente', 'Vendedor', 'Admin', 'Vendedor Black'];
@@ -25,15 +24,15 @@ const ROLES = ['Cliente', 'Vendedor', 'Admin', 'Vendedor Black'];
 const GestionUsuarios = () => {
   const navigation = useNavigation<any>();
   
-  // TABS: usuarios | solicitudes | odoo
-  const [activeTab, setActiveTab] = useState<'usuarios' | 'solicitudes' | 'odoo'>('usuarios');
+  // SOLO DOS PESTAÑAS: usuarios | solicitudes
+  const [activeTab, setActiveTab] = useState<'usuarios' | 'solicitudes'>('usuarios');
+  
   const [dataList, setDataList] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // MODAL
+  // Modal para cambiar rol (Solo edición)
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  const [isImporting, setIsImporting] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -45,69 +44,57 @@ const GestionUsuarios = () => {
     try {
       let res;
       if (activeTab === 'usuarios') {
+        // Usuarios ya registrados y aprobados
         res = await axios.get(`${API_URL}/admin/users/all`);
-      } else if (activeTab === 'solicitudes') {
-        res = await axios.get(`${API_URL}/admin/users/pending`);
       } else {
-        res = await axios.get(`${API_URL}/odoo-users`);
+        // Solicitudes pendientes de aprobación
+        res = await axios.get(`${API_URL}/admin/users/pending`);
       }
       
       if (res.data) setDataList(res.data);
     } catch (e) {
       console.error(e);
-      if (activeTab !== 'usuarios') Alert.alert('Error', 'No se pudieron cargar los datos.');
+      Alert.alert('Error', 'No se pudieron cargar los datos.');
     } finally {
       setLoading(false);
     }
   };
 
+  // --- APROBAR SOLICITUD ---
   const handleApprove = async (id: number) => {
     try {
       await axios.post(`${API_URL}/admin/users/approve`, { id, role: 'Cliente' });
-      Alert.alert('Éxito', 'Usuario aprobado');
+      Alert.alert('Éxito', 'Usuario aprobado correctamente');
       fetchData();
     } catch (e) {
       Alert.alert('Error', 'No se pudo aprobar');
     }
   };
 
-  const openRoleModal = (user: User, importing = false) => {
+  // --- CAMBIAR ROL (Solo usuarios existentes) ---
+  const openRoleModal = (user: User) => {
     setSelectedUser(user);
-    setIsImporting(importing); 
     setModalVisible(true);
   };
 
   const handleChangeRole = async (newRole: string) => {
     if (!selectedUser) return;
     try {
-      if (isImporting) {
-        // PRE-ASIGNAR ROL (No crea usuario, solo guarda la preferencia)
-        await axios.post(`${API_URL}/admin/preasignar`, {
-          email: selectedUser.email,
-          cuit: selectedUser.cuit,
-          name: selectedUser.name,
-          role: newRole 
-        });
-        Alert.alert('Listo', `Rol ${newRole} pre-asignado correctamente.`);
-      } else {
-        // EDICIÓN NORMAL
-        if (!selectedUser.id) return;
-        await axios.post(`${API_URL}/admin/users/role`, {
-          id: selectedUser.id,
-          role: newRole
-        });
-        Alert.alert('Éxito', 'Rol actualizado');
-      }
+      await axios.post(`${API_URL}/admin/users/role`, {
+        id: selectedUser.id,
+        role: newRole
+      });
       setModalVisible(false);
+      Alert.alert('Éxito', 'Rol actualizado');
       fetchData();
     } catch (e) {
-      Alert.alert('Error', 'No se pudo realizar la operación');
+      Alert.alert('Error', 'No se pudo actualizar el rol');
     }
   };
 
   const renderItem = ({ item }: { item: User }) => {
     
-    // TAB 1: USUARIOS APP
+    // VISTA DE USUARIOS
     if (activeTab === 'usuarios') {
         return (
             <View style={styles.card}>
@@ -117,14 +104,14 @@ const GestionUsuarios = () => {
                     <Text style={styles.role}>Rol: <Text style={{fontWeight:'bold'}}>{item.role || 'Cliente'}</Text></Text>
                     {item.email ? <Text style={styles.email}>{item.email}</Text> : null}
                 </View>
-                <TouchableOpacity onPress={() => openRoleModal(item, false)} style={styles.editBtn}>
+                <TouchableOpacity onPress={() => openRoleModal(item)} style={styles.editBtn}>
                     <Feather name="edit-2" size={18} color="#555" />
                 </TouchableOpacity>
             </View>
         );
     }
 
-    // TAB 2: SOLICITUDES
+    // VISTA DE SOLICITUDES
     if (activeTab === 'solicitudes') {
         return (
             <View style={styles.card}>
@@ -135,37 +122,11 @@ const GestionUsuarios = () => {
                     <Text style={styles.date}>Solicitado: {item.created_at ? String(item.created_at).substring(0,10) : '--'}</Text>
                 </View>
                 <View style={styles.actions}>
-                    <TouchableOpacity style={styles.approveBtn} onPress={() => item.id && handleApprove(item.id)}>
+                    <TouchableOpacity style={styles.approveBtn} onPress={() => handleApprove(item.id)}>
                         <Ionicons name="checkmark-circle" size={18} color="#FFF" />
                         <Text style={styles.approveText}>Aprobar</Text>
                     </TouchableOpacity>
                 </View>
-            </View>
-        );
-    }
-
-    // TAB 3: IMPORTAR ODOO (TEXTOS CORREGIDOS)
-    if (activeTab === 'odoo') {
-        const isInternal = item.tipo_odoo === 'Interno';
-        return (
-            <View style={styles.card}>
-                <View style={styles.info}>
-                    <Text style={styles.name}>{item.name}</Text>
-                    <Text style={styles.email}>{item.email || 'Sin email'}</Text>
-                    <View style={{flexDirection:'row', gap:10, marginTop:4}}>
-                        <Text style={styles.cuit}>ID: {item.odoo_id}</Text>
-                        <View style={[styles.badge, { backgroundColor: isInternal ? '#FFF3E0' : '#E3F2FD' }]}>
-                            <Text style={{fontSize:10, fontWeight:'bold', color: isInternal ? '#E67E22' : '#1C9BD8'}}>
-                                {item.tipo_odoo?.toUpperCase()}
-                            </Text>
-                        </View>
-                    </View>
-                </View>
-                {/* Botón cambiado a "ASIGNAR ROL" */}
-                <TouchableOpacity onPress={() => openRoleModal(item, true)} style={[styles.approveBtn, { backgroundColor: '#6C757D' }]}>
-                    <Ionicons name="pricetag-outline" size={16} color="#FFF" />
-                    <Text style={styles.approveText}>ASIGNAR ROL</Text>
-                </TouchableOpacity>
             </View>
         );
     }
@@ -174,13 +135,16 @@ const GestionUsuarios = () => {
 
   return (
     <View style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+            <FlechaHeaderSvg width={24} height={24} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Gestión de Usuarios</Text>
         <View style={{width: 24}} />
       </View>
 
+      {/* Tabs Simples */}
       <View style={styles.tabContainer}>
         <TouchableOpacity 
           style={[styles.tab, activeTab === 'usuarios' && styles.activeTab]} 
@@ -193,12 +157,6 @@ const GestionUsuarios = () => {
           onPress={() => setActiveTab('solicitudes')}>
           <Text style={[styles.tabText, activeTab === 'solicitudes' && styles.activeTabText]}>Solicitudes</Text>
         </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={[styles.tab, activeTab === 'odoo' && styles.activeTab]} 
-          onPress={() => setActiveTab('odoo')}>
-          <Text style={[styles.tabText, activeTab === 'odoo' && styles.activeTabText]}>Importar Odoo</Text>
-        </TouchableOpacity>
       </View>
 
       {loading ? (
@@ -206,19 +164,18 @@ const GestionUsuarios = () => {
       ) : (
         <FlatList
           data={dataList}
-          keyExtractor={(item, index) => String(item.id || item.odoo_id || index)}
+          keyExtractor={(item) => String(item.id)}
           renderItem={renderItem}
           contentContainerStyle={{ padding: 15 }}
           ListEmptyComponent={<Text style={styles.emptyText}>No hay registros.</Text>}
         />
       )}
 
+      {/* Modal Cambio de Rol */}
       <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => setModalVisible(false)}>
         <Pressable style={styles.modalOverlay} onPress={() => setModalVisible(false)}>
             <Pressable style={styles.modalContent}>
-                <Text style={styles.modalTitle}>
-                    {isImporting ? 'Pre-asignar Rol' : 'Cambiar Rol'}
-                </Text>
+                <Text style={styles.modalTitle}>Cambiar Rol</Text>
                 <Text style={{textAlign:'center', marginBottom:15, color:'#666'}}>
                     Usuario: {selectedUser?.name}
                 </Text>
@@ -226,11 +183,11 @@ const GestionUsuarios = () => {
                 {ROLES.map(r => (
                     <TouchableOpacity 
                         key={r} 
-                        style={[styles.roleOption, selectedUser?.role === r && !isImporting && styles.roleOptionSelected]}
+                        style={[styles.roleOption, selectedUser?.role === r && styles.roleOptionSelected]}
                         onPress={() => handleChangeRole(r)}
                     >
-                        <Text style={[styles.roleText, selectedUser?.role === r && !isImporting && styles.roleTextSelected]}>{r}</Text>
-                        {selectedUser?.role === r && !isImporting && <Ionicons name="checkmark" size={20} color="#1C9BD8" />}
+                        <Text style={[styles.roleText, selectedUser?.role === r && styles.roleTextSelected]}>{r}</Text>
+                        {selectedUser?.role === r && <Ionicons name="checkmark" size={20} color="#1C9BD8" />}
                     </TouchableOpacity>
                 ))}
             </Pressable>
@@ -264,13 +221,12 @@ const styles = StyleSheet.create({
   email: { fontSize: 13, color: '#888', fontStyle: 'italic', marginTop: 2 },
   role: { fontSize: 13, color: '#1C9BD8', marginTop: 4, fontFamily: 'BarlowCondensed-SemiBold' },
   date: { fontSize: 12, color: '#9CA3AF', marginTop: 4 },
-  badge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
   actions: { marginLeft: 10, justifyContent: 'center' },
   approveBtn: { 
     backgroundColor: '#10B981', flexDirection: 'row', alignItems: 'center', 
     paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, alignSelf: 'center'
   },
-  approveText: { color: '#FFF', fontSize: 10, fontFamily: 'BarlowCondensed-Bold', marginLeft: 4 },
+  approveText: { color: '#FFF', fontSize: 12, fontFamily: 'BarlowCondensed-Bold', marginLeft: 4 },
   editBtn: { padding: 10, backgroundColor: '#F3F4F6', borderRadius: 8, justifyContent: 'center', alignSelf: 'center' },
   emptyText: { textAlign: 'center', marginTop: 50, color: '#999', fontSize: 16, fontFamily: 'BarlowCondensed-Regular' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: 20 },
