@@ -6,6 +6,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import axios from 'axios';
+import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
 
 import { API_URL } from '../config';
 
@@ -17,7 +18,7 @@ type User = {
   cuit: string; 
   role?: string;
   created_at?: string;
-  tipo_odoo?: string; // Nuevo campo para saber si es Portal o Interno
+  tipo_odoo?: string; 
 };
 
 const ROLES = ['Cliente', 'Vendedor', 'Admin', 'Vendedor Black'];
@@ -25,16 +26,15 @@ const ROLES = ['Cliente', 'Vendedor', 'Admin', 'Vendedor Black'];
 const GestionUsuarios = () => {
   const navigation = useNavigation<any>();
   
-  // Tabs: usuarios | solicitudes | odoo
+  // TABS: usuarios | solicitudes | odoo
   const [activeTab, setActiveTab] = useState<'usuarios' | 'solicitudes' | 'odoo'>('usuarios');
-  
   const [dataList, setDataList] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Modal
+  // MODAL
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
-  const [isImporting, setIsImporting] = useState(false); // Para diferenciar si editamos o importamos
+  const [isImporting, setIsImporting] = useState(false);
 
   useEffect(() => {
     fetchData();
@@ -50,7 +50,6 @@ const GestionUsuarios = () => {
       } else if (activeTab === 'solicitudes') {
         res = await axios.get(`${API_URL}/admin/users/pending`);
       } else {
-        // Endpoint nuevo que trae TODOS (Portal + Internos)
         res = await axios.get(`${API_URL}/odoo-users`);
       }
       
@@ -73,26 +72,24 @@ const GestionUsuarios = () => {
     }
   };
 
-  // --- ABRIR MODAL ---
   const openRoleModal = (user: User, importing = false) => {
     setSelectedUser(user);
     setIsImporting(importing); 
     setModalVisible(true);
   };
 
-  // --- GUARDAR ROL ---
   const handleChangeRole = async (newRole: string) => {
     if (!selectedUser) return;
     try {
       if (isImporting) {
-        // ALTA DE ODOO (Pre-asignar cualquier rol)
+        // PRE-ASIGNAR ROL (No crea usuario, solo guarda la preferencia)
         await axios.post(`${API_URL}/admin/preasignar`, {
           email: selectedUser.email,
           cuit: selectedUser.cuit,
           name: selectedUser.name,
-          role: newRole // Enviamos el rol elegido
+          role: newRole 
         });
-        Alert.alert('Éxito', `Usuario importado como ${newRole}`);
+        Alert.alert('Listo', `Rol ${newRole} pre-asignado correctamente.`);
       } else {
         // EDICIÓN NORMAL
         if (!selectedUser.id) return;
@@ -111,7 +108,7 @@ const GestionUsuarios = () => {
 
   const renderItem = ({ item }: { item: User }) => {
     
-    // TAB 1: USUARIOS
+    // TAB 1: USUARIOS APP
     if (activeTab === 'usuarios') {
         return (
             <View style={styles.card}>
@@ -148,9 +145,9 @@ const GestionUsuarios = () => {
         );
     }
 
-    // TAB 3: IMPORTAR ODOO (NUEVA)
+    // TAB 3: IMPORTAR ODOO (TEXTOS CORREGIDOS)
     if (activeTab === 'odoo') {
-        const isInternal = item.tipo_odoo?.includes('Interno');
+        const isInternal = item.tipo_odoo === 'Interno';
         return (
             <View style={styles.card}>
                 <View style={styles.info}>
@@ -158,15 +155,17 @@ const GestionUsuarios = () => {
                     <Text style={styles.email}>{item.email || 'Sin email'}</Text>
                     <View style={{flexDirection:'row', gap:10, marginTop:4}}>
                         <Text style={styles.cuit}>ID: {item.odoo_id}</Text>
-                        <Text style={[styles.role, {color: isInternal ? '#E67E22' : '#2980B9'}]}>
-                            {item.tipo_odoo || 'Usuario'}
-                        </Text>
+                        <View style={[styles.badge, { backgroundColor: isInternal ? '#FFF3E0' : '#E3F2FD' }]}>
+                            <Text style={{fontSize:10, fontWeight:'bold', color: isInternal ? '#E67E22' : '#1C9BD8'}}>
+                                {item.tipo_odoo?.toUpperCase()}
+                            </Text>
+                        </View>
                     </View>
                 </View>
-                {/* AL TOCAR "ALTA", ABRIMOS MODAL DE SELECCIÓN */}
-                <TouchableOpacity onPress={() => openRoleModal(item, true)} style={[styles.approveBtn, { backgroundColor: '#1C9BD8' }]}>
-                    <Ionicons name="add-circle-outline" size={18} color="#FFF" />
-                    <Text style={styles.approveText}>ALTA</Text>
+                {/* Botón cambiado a "ASIGNAR ROL" */}
+                <TouchableOpacity onPress={() => openRoleModal(item, true)} style={[styles.approveBtn, { backgroundColor: '#6C757D' }]}>
+                    <Ionicons name="pricetag-outline" size={16} color="#FFF" />
+                    <Text style={styles.approveText}>ASIGNAR ROL</Text>
                 </TouchableOpacity>
             </View>
         );
@@ -176,15 +175,14 @@ const GestionUsuarios = () => {
 
   return (
     <View style={styles.container}>
-      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+            <FlechaHeaderSvg width={24} height={24} />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Gestión de Usuarios</Text>
         <View style={{width: 24}} />
       </View>
 
-      {/* Tabs */}
       <View style={styles.tabContainer}>
         <TouchableOpacity 
           style={[styles.tab, activeTab === 'usuarios' && styles.activeTab]} 
@@ -205,7 +203,6 @@ const GestionUsuarios = () => {
         </TouchableOpacity>
       </View>
 
-      {/* Lista */}
       {loading ? (
         <ActivityIndicator size="large" color="#1C9BD8" style={{ marginTop: 40 }} />
       ) : (
@@ -218,12 +215,11 @@ const GestionUsuarios = () => {
         />
       )}
 
-      {/* Modal Selección de Rol */}
       <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => setModalVisible(false)}>
         <Pressable style={styles.modalOverlay} onPress={() => setModalVisible(false)}>
             <Pressable style={styles.modalContent}>
                 <Text style={styles.modalTitle}>
-                    {isImporting ? 'Dar Alta y Asignar Rol' : 'Cambiar Rol'}
+                    {isImporting ? 'Pre-asignar Rol' : 'Cambiar Rol'}
                 </Text>
                 <Text style={{textAlign:'center', marginBottom:15, color:'#666'}}>
                     Usuario: {selectedUser?.name}
@@ -255,13 +251,11 @@ const styles = StyleSheet.create({
   },
   headerTitle: { fontSize: 18, fontFamily: 'BarlowCondensed-Bold', color: '#333' },
   backBtn: { padding: 5 },
-
   tabContainer: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#EEE' },
   tab: { flex: 1, paddingVertical: 15, alignItems: 'center' },
   activeTab: { borderBottomWidth: 3, borderBottomColor: '#1C9BD8' },
   tabText: { fontSize: 14, color: '#999', fontFamily: 'BarlowCondensed-SemiBold' },
   activeTabText: { color: '#1C9BD8' },
-
   card: { 
     flexDirection: 'row', backgroundColor: '#FFF', padding: 15, borderRadius: 10, 
     marginBottom: 10, elevation: 2, shadowColor: '#000', shadowOpacity: 0.1, shadowOffset: {width:0, height:2} 
@@ -272,17 +266,15 @@ const styles = StyleSheet.create({
   email: { fontSize: 13, color: '#888', fontStyle: 'italic', marginTop: 2 },
   role: { fontSize: 13, color: '#1C9BD8', marginTop: 4, fontFamily: 'BarlowCondensed-SemiBold' },
   date: { fontSize: 12, color: '#9CA3AF', marginTop: 4 },
-
+  badge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
   actions: { marginLeft: 10, justifyContent: 'center' },
   approveBtn: { 
     backgroundColor: '#10B981', flexDirection: 'row', alignItems: 'center', 
     paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, alignSelf: 'center'
   },
-  approveText: { color: '#FFF', fontSize: 12, fontFamily: 'BarlowCondensed-Bold', marginLeft: 4 },
+  approveText: { color: '#FFF', fontSize: 10, fontFamily: 'BarlowCondensed-Bold', marginLeft: 4 },
   editBtn: { padding: 10, backgroundColor: '#F3F4F6', borderRadius: 8, justifyContent: 'center', alignSelf: 'center' },
-
   emptyText: { textAlign: 'center', marginTop: 50, color: '#999', fontSize: 16, fontFamily: 'BarlowCondensed-Regular' },
-
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: 20 },
   modalContent: { backgroundColor: '#FFF', borderRadius: 12, padding: 20 },
   modalTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 20, marginBottom: 5, color: '#333', textAlign: 'center' },

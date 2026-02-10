@@ -340,7 +340,7 @@ def get_pg_connection():
         return None
 
 def init_roles_table():
-    """Crea la tabla de roles y asegura que tenga las columnas para pre-asignación."""
+    """Inicializa la tabla de roles y repara índices faltantes."""
     if not DATABASE_URL:
         return
     conn = get_pg_connection()
@@ -349,44 +349,34 @@ def init_roles_table():
     try:
         cur = conn.cursor()
         
-        # 1. Crear tabla básica si no existe
+        # 1. Tabla Base
         cur.execute("""
             CREATE TABLE IF NOT EXISTS app_user_roles (
-                user_id INTEGER,
+                user_id INTEGER PRIMARY KEY,
                 role_name TEXT NOT NULL
             );
         """)
         
-        # 2. MIGRACIONES: Agregar columnas faltantes si no existen
-        cur.execute("ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS email TEXT;")
-        cur.execute("ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS name TEXT;")
-        cur.execute("ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS cuit TEXT;")
+        # 2. Agregar columnas (email, name, cuit)
+        for col in ['email', 'name', 'cuit']:
+            cur.execute(f"ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS {col} TEXT;")
 
-        # 3. Restricciones: Asegurar que el email sea único para que funcione el "ON CONFLICT"
-        try:
-            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email);")
-        except Exception:
-            pass # Si ya existe, ignoramos
-
-        # 4. Permitir que user_id sea NULL (Importante para usuarios pre-asignados que aun no tienen ID)
+        # 3. Hacer user_id opcional (para pre-asignados)
         try:
             cur.execute("ALTER TABLE app_user_roles ALTER COLUMN user_id DROP NOT NULL;")
-        except Exception:
-            pass # Si falla (ej: es PK estricta), seguimos intentando
+        except: pass
 
-        # 5. Si existía una Primary Key antigua solo en user_id, intentamos quitarla para evitar conflictos
-        try:
-            cur.execute("ALTER TABLE app_user_roles DROP CONSTRAINT IF EXISTS app_user_roles_pkey;")
-        except Exception:
-            pass
+        # 4. CREAR ÍNDICES ÚNICOS (SOLUCIÓN AL ERROR)
+        # Esto permite que "ON CONFLICT (cuit)" funcione
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_cuit ON app_user_roles (cuit) WHERE cuit IS NOT NULL;")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email) WHERE email IS NOT NULL;")
 
         conn.commit()
         cur.close()
-        log.info("✅ Tabla 'app_user_roles' actualizada con columnas de pre-asignación.")
+        log.info("✅ Tabla 'app_user_roles' verificada y reparada.")
     except Exception as e:
-        # No hacemos rollback total para permitir que pasen las migraciones que sí funcionaron
-        log.error(f"⚠️ Advertencia en tabla roles (puede estar ya actualizada): {e}")
         if conn: conn.rollback()
+        log.error(f"❌ Error init_roles_table: {e}")
     finally:
         if conn: conn.close()
 
