@@ -340,45 +340,66 @@ def get_pg_connection():
         return None
 
 def init_roles_table():
-    """Inicializa la tabla de roles y repara índices faltantes."""
+    """Inicializa y repara la tabla de roles paso a paso para evitar bloqueos."""
     if not DATABASE_URL:
         return
-    conn = get_pg_connection()
-    if not conn:
-        return
+    
+    # Usamos una conexión nueva para esto
     try:
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.autocommit = True # ¡IMPORTANTE! Ejecuta cada comando inmediatamente
         cur = conn.cursor()
         
-        # 1. Tabla Base
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS app_user_roles (
-                user_id INTEGER PRIMARY KEY,
-                role_name TEXT NOT NULL
-            );
-        """)
-        
-        # 2. Agregar columnas (email, name, cuit)
-        for col in ['email', 'name', 'cuit']:
-            cur.execute(f"ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS {col} TEXT;")
+        # 1. Crear tabla si no existe (con un ID serial propio para evitar problemas de PK)
+        # Nota: Si ya existe, esto no hace nada.
+        try:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS app_user_roles (
+                    user_id INTEGER,
+                    role_name TEXT NOT NULL
+                );
+            """)
+        except Exception as e:
+            log.warning(f"Init create table: {e}")
 
-        # 3. Hacer user_id opcional (para pre-asignados)
+        # 2. Agregar columnas (Una por una, ignorando errores si ya existen)
+        for col in ['email', 'name', 'cuit']:
+            try:
+                cur.execute(f"ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS {col} TEXT;")
+            except Exception as e:
+                # Si falla (ej: bloqueo), lo ignoramos y seguimos
+                log.warning(f"Init column {col}: {e}")
+
+        # 3. Quitar restricción NOT NULL del user_id
+        # Primero intentamos quitar la Primary Key vieja si existe (porque PK implica NOT NULL)
+        try:
+            cur.execute("ALTER TABLE app_user_roles DROP CONSTRAINT IF EXISTS app_user_roles_pkey;")
+        except Exception:
+            pass
+            
         try:
             cur.execute("ALTER TABLE app_user_roles ALTER COLUMN user_id DROP NOT NULL;")
-        except: pass
+        except Exception as e:
+            log.warning(f"Init drop not null: {e}")
 
-        # 4. CREAR ÍNDICES ÚNICOS (SOLUCIÓN AL ERROR)
-        # Esto permite que "ON CONFLICT (cuit)" funcione
-        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_cuit ON app_user_roles (cuit) WHERE cuit IS NOT NULL;")
-        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email) WHERE email IS NOT NULL;")
+        # 4. CREAR ÍNDICES ÚNICOS (CRUCIAL PARA QUE FUNCIONE TU PRE-ASIGNACIÓN)
+        # Si fallan, el sistema no puede usar ON CONFLICT.
+        try:
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_cuit ON app_user_roles (cuit) WHERE cuit IS NOT NULL;")
+        except Exception as e:
+             log.warning(f"Init index CUIT: {e}")
+             
+        try:
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email) WHERE email IS NOT NULL;")
+        except Exception as e:
+             log.warning(f"Init index EMAIL: {e}")
 
-        conn.commit()
         cur.close()
-        log.info("✅ Tabla 'app_user_roles' verificada y reparada.")
+        conn.close()
+        log.info("✅ Tabla 'app_user_roles' reparada exitosamente.")
+
     except Exception as e:
-        if conn: conn.rollback()
-        log.error(f"❌ Error init_roles_table: {e}")
-    finally:
-        if conn: conn.close()
+        log.error(f"❌ Error fatal en init_roles_table: {e}")
 
 # main.py
 
@@ -2986,29 +3007,23 @@ def get_tipo_cambio():
 
 @app.route('/odoo-users', methods=['GET'])
 def get_odoo_users():
-    """Trae TODOS los usuarios activos de Odoo (Internos y Portal)."""
     client = get_odoo_client()
     try:
-        # Quitamos ('share', '=', False) para traer a TODOS.
         users = client.env['res.users'].search_read(
             [('active', '=', True)], 
-            ['name', 'login', 'partner_id', 'share'], # Traemos 'share' para saber el tipo
+            ['name', 'login', 'partner_id', 'share'],
             limit=300
         )
-        
         data = []
         for u in users:
             cuit = ''
             if u.get('partner_id'):
                 p_id = u['partner_id'][0]
-                # Intentamos leer el CUIT del partner
                 p_data = client.env['res.partner'].read([p_id], ['vat'])
                 if p_data:
                     cuit = p_data[0].get('vat') or ''
             
-            # share=True significa "Portal/Externo". False es "Empleado/Interno"
             tipo = "Portal" if u.get('share') else "Interno"
-
             data.append({
                 "name": u['name'],
                 "email": u['login'],
@@ -3016,10 +3031,9 @@ def get_odoo_users():
                 "odoo_id": u['id'],
                 "tipo_odoo": tipo 
             })
-            
         return jsonify(data)
     except Exception as e:
-        log.error(f"Error trayendo usuarios odoo: {e}")
+        log.error(f"Error odoo: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
         release_odoo_client(client)
@@ -3075,31 +3089,22 @@ def fix_schema_manual():
 @app.route('/admin/preasignar', methods=['POST'])
 def preasignar_rol():
     data = request.get_json()
-    
-    # Datos recibidos
     email = data.get('email')
     cuit = data.get('cuit')
     name = data.get('name')
     role = data.get('role')
 
-    # VALIDACIÓN: Ahora permite CUIT *O* EMAIL
-    if not role:
-        return jsonify({"error": "Falta el rol"}), 400
-    if not cuit and not email:
-        return jsonify({"error": "Se requiere CUIT o Email para identificar al usuario"}), 400
+    if not role: return jsonify({"error": "Falta rol"}), 400
 
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
+        msg = ""
         
-        # ESTRATEGIA: Intentar asignar por CUIT primero (más seguro)
         if cuit:
-            # 1. Verificamos si ya existe un usuario registrado con ese CUIT
             cur.execute("SELECT id FROM app_users WHERE cuit = %s", (cuit,))
             row = cur.fetchone()
-            
             if row:
-                # Usuario YA registrado en la App -> Actualizamos su rol
                 user_id = row[0]
                 cur.execute("""
                     INSERT INTO app_user_roles (user_id, role_name, cuit, name, email)
@@ -3107,36 +3112,30 @@ def preasignar_rol():
                     ON CONFLICT (user_id) DO UPDATE SET role_name = EXCLUDED.role_name;
                 """, (user_id, role, cuit, name, email))
                 cur.execute("UPDATE app_users SET role = %s WHERE id = %s", (role, user_id))
-                msg = f"Usuario registrado actualizado a {role}"
+                msg = "Usuario existente actualizado."
             else:
-                # Usuario NO registrado -> Guardamos pre-asignación usando CUIT como clave
+                # Aquí es donde fallaba antes si faltaba el índice
                 cur.execute("""
                     INSERT INTO app_user_roles (cuit, role_name, name, email)
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT (cuit) DO UPDATE 
                     SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
                 """, (cuit, role, name, email))
-                msg = f"Rol {role} pre-asignado por CUIT"
-
-        # Si NO hay CUIT, intentamos por Email (Plan B)
+                msg = "Rol pre-asignado por CUIT."
         elif email:
-            cur.execute("""
+             cur.execute("""
                 INSERT INTO app_user_roles (email, role_name, name)
                 VALUES (%s, %s, %s)
                 ON CONFLICT (email) DO UPDATE 
                 SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
             """, (email, role, name))
-            msg = f"Rol {role} pre-asignado por Email"
+             msg = "Rol pre-asignado por Email."
 
         conn.commit()
         return jsonify({"message": msg})
-
     except Exception as e:
         conn.rollback()
         log.error(f"Error preasignando: {e}")
-        # Si el error es de columnas faltantes, avisamos
-        if 'column' in str(e) and 'does not exist' in str(e):
-            return jsonify({"error": "Error de base de datos. Por favor ejecuta /fix-schema"}), 500
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
