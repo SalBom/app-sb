@@ -381,20 +381,70 @@ def init_roles_table():
     except Exception as e:
         log.error(f"⚠️ Error init_roles_table: {e}")
 
-# --- 2. ENDPOINT UNIFICADO PARA EL DASHBOARD (Reemplazar o agregar /users) ---
-@app.route('/users', methods=['GET'])
-def get_users_public():
+# --- ENDPOINTS OPTIMIZADOS ---
+
+@app.route('/odoo-users', methods=['GET'])
+def get_odoo_users():
     """
-    Retorna usuarios registrados Y pre-asignados.
-    Vital para que el Dashboard vea a los vendedores de Odoo aunque no se hayan registrado.
+    Versión ULTRA-RÁPIDA: Trae usuarios y sus CUITs en solo 2 consultas (Batch).
+    Evita el error 'Worker Timeout' incluso con conexiones lentas.
+    """
+    client = get_odoo_client()
+    try:
+        # 1. Traemos los usuarios (Solo campos necesarios)
+        users = client.env['res.users'].search_read(
+            [('active', '=', True)], 
+            ['name', 'login', 'partner_id', 'share'],
+            limit=400 
+        )
+        
+        # 2. Recolectamos todos los IDs de partners para pedir sus CUITs en LOTE
+        partner_ids = [u['partner_id'][0] for u in users if u.get('partner_id')]
+        
+        # 3. Traemos los CUITs de TODOS esos partners en UNA sola llamada
+        partners_data = []
+        if partner_ids:
+            partners_data = client.env['res.partner'].read(partner_ids, ['vat'])
+        
+        # 4. Creamos un diccionario rápido en memoria: { id_partner: cuit }
+        vat_map = {p['id']: p.get('vat', '') for p in partners_data}
+
+        # 5. Armamos la respuesta cruzando datos
+        data = []
+        for u in users:
+            cuit = ''
+            if u.get('partner_id'):
+                pid = u['partner_id'][0]
+                cuit = vat_map.get(pid, '') # Buscamos en el mapa (instantáneo)
+            
+            tipo = "Portal" if u.get('share') else "Interno"
+
+            data.append({
+                "name": u['name'],
+                "email": u['login'],
+                "cuit": cuit,
+                "odoo_id": u['id'],
+                "tipo_odoo": tipo 
+            })
+            
+        return jsonify(data)
+    except Exception as e:
+        log.error(f"Error optimizado odoo: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        release_odoo_client(client)
+
+@app.route('/users', methods=['GET'])
+def get_users_dashboard():
+    """
+    Endpoint UNIFICADO: Devuelve usuarios registrados + pre-asignados.
+    Esto permite que el Dashboard muestre vendedores que aún no se han registrado.
     """
     conn = get_pg_connection()
     if not conn: return jsonify([]), 500
     try:
         cur = conn.cursor()
-        # Traemos:
-        # 1. Usuarios reales de la App
-        # 2. Usuarios pre-asignados (de Odoo) que aún no tienen ID de usuario real
+        # UNION: Usuarios Activos de la App + Pre-asignados en la tabla de roles
         cur.execute("""
             SELECT name, email, cuit, role, id FROM app_users WHERE is_active = TRUE
             UNION ALL
@@ -420,37 +470,9 @@ def get_users_public():
         cur.close()
         conn.close()
 
-# --- 3. ENDPOINTS GESTIÓN Y ODOO (Agregar al final) ---
-
-@app.route('/odoo-users', methods=['GET'])
-def get_odoo_users():
-    """Trae usuarios de Odoo (Internos y Portal)."""
-    client = get_odoo_client()
-    try:
-        users = client.env['res.users'].search_read(
-            [('active', '=', True)], 
-            ['name', 'login', 'partner_id', 'share'],
-            limit=300
-        )
-        data = []
-        for u in users:
-            cuit = ''
-            if u.get('partner_id'):
-                p_id = u['partner_id'][0]
-                p_data = client.env['res.partner'].read([p_id], ['vat'])
-                if p_data: cuit = p_data[0].get('vat') or ''
-            
-            tipo = "Portal" if u.get('share') else "Interno"
-            data.append({ "name": u['name'], "email": u['login'], "cuit": cuit, "odoo_id": u['id'], "tipo_odoo": tipo })
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    finally:
-        release_odoo_client(client)
-
 @app.route('/admin/preasignar', methods=['POST'])
 def preasignar_rol():
-    """Guarda el rol para un usuario (Registrado o Futuro)."""
+    """Guarda el rol (Vendedor) antes de que el usuario se registre."""
     data = request.get_json()
     email = data.get('email')
     cuit = data.get('cuit')
@@ -462,37 +484,33 @@ def preasignar_rol():
     conn = get_pg_connection()
     try:
         cur = conn.cursor()
-        msg = ""
         
-        # Lógica inteligente: Si tiene CUIT usa CUIT, si no usa Email
+        # Prioridad CUIT, luego Email
         if cuit:
+            # Si ya existe, actualizamos
             cur.execute("SELECT id FROM app_users WHERE cuit = %s", (cuit,))
             row = cur.fetchone()
             if row:
-                # Usuario YA existe -> Actualizamos
                 user_id = row[0]
                 cur.execute("""
                     INSERT INTO app_user_roles (user_id, role_name, cuit, name, email) VALUES (%s, %s, %s, %s, %s)
                     ON CONFLICT (user_id) DO UPDATE SET role_name = EXCLUDED.role_name;
                 """, (user_id, role, cuit, name, email))
                 cur.execute("UPDATE app_users SET role = %s WHERE id = %s", (role, user_id))
-                msg = "Usuario actualizado."
             else:
-                # Usuario NO existe -> Pre-asignamos
+                # Pre-asignar por CUIT
                 cur.execute("""
                     INSERT INTO app_user_roles (cuit, role_name, name, email) VALUES (%s, %s, %s, %s)
                     ON CONFLICT (cuit) DO UPDATE SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
                 """, (cuit, role, name, email))
-                msg = "Vendedor pre-asignado. Aparecerá en el Dashboard."
         elif email:
              cur.execute("""
                 INSERT INTO app_user_roles (email, role_name, name) VALUES (%s, %s, %s)
                 ON CONFLICT (email) DO UPDATE SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
             """, (email, role, name))
-             msg = "Vendedor pre-asignado por Email."
 
         conn.commit()
-        return jsonify({"message": msg})
+        return jsonify({"message": "Rol asignado correctamente."})
     except Exception as e:
         conn.rollback()
         return jsonify({"error": str(e)}), 500
