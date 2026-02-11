@@ -4133,11 +4133,12 @@ def get_all_app_users():
 @app.route('/users', methods=['GET'])
 def get_users_unified():
     conn = get_pg_connection()
-    if not conn: return jsonify([]), 500
+    if not conn: 
+        return jsonify([]), 500
     try:
         cur = conn.cursor()
-        # Eliminamos 'email' para que coincida con tu preferencia y evitar el error de columna inexistente
-        # El UNION ahora pide exactamente las mismas columnas en ambas tablas
+        # Se elimina 'email' de ambos SELECT para evitar el error "column does not exist"
+        # Ahora ambas tablas devuelven exactamente: name, cuit, role e id
         cur.execute("""
             SELECT name, cuit, role, id FROM app_users WHERE is_active = TRUE
             UNION ALL
@@ -4146,11 +4147,12 @@ def get_users_unified():
             WHERE user_id IS NULL
         """)
         rows = cur.fetchall()
+        
         users = []
         for r in rows:
             users.append({
                 "name": r[0],
-                "cuit": r[1],
+                "cuit": r[2] if len(r) > 2 else r[1], # Ajuste de seguridad por el orden del CUIT
                 "role": r[2],
                 "id": r[3]
             })
