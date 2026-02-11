@@ -384,38 +384,6 @@ def fix_schema_manual():
     finally:
         conn.close()
 
-# --- ENDPOINT UNIFICADO (El que daba error de 'column email does not exist') ---
-@app.route('/users', methods=['GET'])
-def get_users_unified():
-    conn = get_pg_connection()
-    if not conn: return jsonify([]), 500
-    try:
-        cur = conn.cursor()
-        # Ahora funcionará porque /fix-schema habrá creado las columnas
-        cur.execute("""
-            SELECT name, email, cuit, role, id FROM app_users WHERE is_active = TRUE
-            UNION ALL
-            SELECT name, email, cuit, role_name as role, -1 as id 
-            FROM app_user_roles 
-            WHERE user_id IS NULL
-        """)
-        rows = cur.fetchall()
-        users = []
-        for r in rows:
-            users.append({
-                "name": r[0],
-                "email": r[1],
-                "cuit": r[2],
-                "role": r[3],
-                "id": r[4]
-            })
-        return jsonify(users)
-    except Exception as e:
-        log.error(f"Error get_users: {e}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        cur.close()
-        conn.close()
 
 # ───────────────────────── ENDPOINTS ─────────────────────────
 
@@ -483,42 +451,6 @@ def init_roles_table():
     finally:
         if conn: conn.close()
 # --- ENDPOINTS GESTIÓN USUARIOS (Pre-asignación) ---
-
-@app.route('/users', methods=['GET'])
-def get_users_unified():
-    """
-    Trae usuarios de la App Y usuarios pre-asignados.
-    Esto permite que el Dashboard muestre vendedores que aún no se registraron.
-    """
-    conn = get_pg_connection()
-    if not conn: return jsonify([]), 500
-    try:
-        cur = conn.cursor()
-        # UNION: Usuarios Registrados + Pre-asignados (que tienen user_id NULL)
-        cur.execute("""
-            SELECT name, email, cuit, role, id FROM app_users WHERE is_active = TRUE
-            UNION ALL
-            SELECT name, email, cuit, role_name as role, -1 as id 
-            FROM app_user_roles 
-            WHERE user_id IS NULL
-        """)
-        rows = cur.fetchall()
-        users = []
-        for r in rows:
-            users.append({
-                "name": r[0],
-                "email": r[1],
-                "cuit": r[2],
-                "role": r[3],
-                "id": r[4]
-            })
-        return jsonify(users)
-    except Exception as e:
-        log.error(f"Error get_users: {e}")
-        return jsonify([]), 500
-    finally:
-        cur.close()
-        conn.close()
 
 @app.route('/odoo-users', methods=['GET'])
 def get_odoo_users():
@@ -4236,6 +4168,37 @@ def get_all_app_users():
     finally:
         if pg_conn: pg_conn.close()
 
+@app.route('/users', methods=['GET'])
+def get_users_unified():
+    conn = get_pg_connection()
+    if not conn: return jsonify([]), 500
+    try:
+        cur = conn.cursor()
+        # Ahora funcionará porque /fix-schema habrá creado las columnas
+        cur.execute("""
+            SELECT name, email, cuit, role, id FROM app_users WHERE is_active = TRUE
+            UNION ALL
+            SELECT name, email, cuit, role_name as role, -1 as id 
+            FROM app_user_roles 
+            WHERE user_id IS NULL
+        """)
+        rows = cur.fetchall()
+        users = []
+        for r in rows:
+            users.append({
+                "name": r[0],
+                "email": r[1],
+                "cuit": r[2],
+                "role": r[3],
+                "id": r[4]
+            })
+        return jsonify(users)
+    except Exception as e:
+        log.error(f"Error get_users: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 # 3. Aprobar Usuario (Pasa de PENDING a Cliente)
 @app.route('/admin/users/approve', methods=['POST'])
