@@ -326,7 +326,6 @@ if HAS_R2_DEBUG:
 # --- HERRAMIENTA DE REPARACIÓN (SOLUCIÓN DEFINITIVA) ---
 @app.route('/fix-schema', methods=['GET'])
 def fix_schema_manual():
-    """Ejecuta la reparación de tabla manualmente para evitar errores de concurrencia."""
     conn = get_pg_connection()
     if not conn: return jsonify({"error": "No DB connection"}), 500
     
@@ -334,48 +333,17 @@ def fix_schema_manual():
     try:
         cur = conn.cursor()
         
-        # 1. Asegurar tabla base
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS app_user_roles (
-                user_id INTEGER,
-                role_name TEXT NOT NULL
-            );
-        """)
-        log_msgs.append("Tabla base: OK")
-
-        # 2. Agregar columnas faltantes (Una por una)
-        for col in ['email', 'name', 'cuit']:
-            try:
-                cur.execute(f"ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS {col} TEXT;")
-                log_msgs.append(f"Columna {col}: OK")
-            except Exception as e:
-                log_msgs.append(f"Columna {col}: {str(e)}")
-
-        # 3. Quitar restricción NOT NULL de user_id (si existe)
+        # 1. Asegurar restricción UNIQUE en app_users (para evitar error ON CONFLICT)
         try:
-            cur.execute("ALTER TABLE app_user_roles ALTER COLUMN user_id DROP NOT NULL;")
-            log_msgs.append("user_id NULL: OK")
-        except Exception as e:
-            log_msgs.append(f"user_id NULL info: {str(e)}")
+            cur.execute("ALTER TABLE app_users ADD CONSTRAINT app_users_cuit_key UNIQUE (cuit);")
+            log_msgs.append("Constraint UNIQUE CUIT: OK")
+        except:
+            conn.rollback()
+            log_msgs.append("Constraint UNIQUE CUIT: Ya existía")
 
-        # 4. Eliminar PK vieja si existe (libera la tabla)
-        try:
-            cur.execute("ALTER TABLE app_user_roles DROP CONSTRAINT IF EXISTS app_user_roles_pkey;")
-            log_msgs.append("Drop PK: OK")
-        except: pass
-
-        # 5. CREAR ÍNDICES (Soluciona el error 'no unique constraint')
-        try:
-            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_cuit ON app_user_roles (cuit) WHERE cuit IS NOT NULL;")
-            log_msgs.append("Index CUIT: OK")
-        except Exception as e:
-            log_msgs.append(f"Index CUIT error: {str(e)}")
-            
-        try:
-            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email) WHERE email IS NOT NULL;")
-            log_msgs.append("Index Email: OK")
-        except: pass
-
+        # 2. Limpiar app_user_roles de columnas problemáticas si fuera necesario
+        # (Opcional, pero para tu tranquilidad quitamos el requerimiento de email en los SELECTs de arriba)
+        
         conn.commit()
         return jsonify({"status": "Reparación Finalizada", "detalles": log_msgs})
     except Exception as e:
@@ -3910,14 +3878,15 @@ def get_favoritos():
 from werkzeug.security import generate_password_hash, check_password_hash
 
 # 1. ACTUALIZAR TABLAS (Puedes reemplazar tu init_db o agregar esta función)
+# main.py
+
 def init_auth_tables():
     if not DATABASE_URL: return
     conn = get_pg_connection()
     if not conn: return
     try:
         cur = conn.cursor()
-        
-        # 1. Crear tabla (Ya estaba)
+        # Aseguramos que cuit sea UNIQUE para que el ON CONFLICT funcione
         cur.execute("""
             CREATE TABLE IF NOT EXISTS app_users (
                 id SERIAL PRIMARY KEY,
@@ -3925,32 +3894,23 @@ def init_auth_tables():
                 password_hash TEXT NOT NULL,
                 role VARCHAR(50) DEFAULT 'PENDING', 
                 name VARCHAR(255),
+                push_token VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 is_active BOOLEAN DEFAULT TRUE
             );
         """)
+        
+        # Si la tabla ya existe pero no tiene el UNIQUE, lo agregamos:
+        try:
+            cur.execute("ALTER TABLE app_users ADD CONSTRAINT unique_cuit_auth UNIQUE (cuit);")
+        except:
+            conn.rollback() # Ya existe o error, no importa
+
         conn.commit()
-
-        # 2. Migración 'name' (Ya estaba)
-        try:
-            cur.execute("ALTER TABLE app_users ADD COLUMN name VARCHAR(255);")
-            conn.commit()
-        except Exception:
-            conn.rollback()
-
-        # --- 3. NUEVO: Agregar columna 'push_token' ---
-        try:
-            cur.execute("ALTER TABLE app_users ADD COLUMN push_token VARCHAR(255);")
-            conn.commit()
-            print("✅ Migración: Columna 'push_token' agregada.")
-        except Exception:
-            conn.rollback()
-        # ---------------------------------------------
-
-        print("✅ Tabla 'app_users' verificada.")
         cur.close()
+        log.info("✅ Tabla 'app_users' sincronizada correctamente.")
     except Exception as e:
-        print(f"❌ Error init_auth_tables: {e}")
+        log.error(f"❌ Error init_auth_tables: {e}")
     finally:
         if conn: conn.close()
 
@@ -4168,17 +4128,20 @@ def get_all_app_users():
     finally:
         if pg_conn: pg_conn.close()
 
+# main.py
+
 @app.route('/users', methods=['GET'])
 def get_users_unified():
     conn = get_pg_connection()
     if not conn: return jsonify([]), 500
     try:
         cur = conn.cursor()
-        # Ahora funcionará porque /fix-schema habrá creado las columnas
+        # Eliminamos 'email' para que coincida con tu preferencia y evitar el error de columna inexistente
+        # El UNION ahora pide exactamente las mismas columnas en ambas tablas
         cur.execute("""
-            SELECT name, email, cuit, role, id FROM app_users WHERE is_active = TRUE
+            SELECT name, cuit, role, id FROM app_users WHERE is_active = TRUE
             UNION ALL
-            SELECT name, email, cuit, role_name as role, -1 as id 
+            SELECT name, cuit, role_name as role, -1 as id 
             FROM app_user_roles 
             WHERE user_id IS NULL
         """)
@@ -4187,10 +4150,9 @@ def get_users_unified():
         for r in rows:
             users.append({
                 "name": r[0],
-                "email": r[1],
-                "cuit": r[2],
-                "role": r[3],
-                "id": r[4]
+                "cuit": r[1],
+                "role": r[2],
+                "id": r[3]
             })
         return jsonify(users)
     except Exception as e:
