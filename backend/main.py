@@ -341,8 +341,8 @@ def get_pg_connection():
 
 def init_roles_table():
     """
-    Inicializa la tabla de roles permitiendo pre-asignación (user_id opcional).
-    Crea índices para evitar duplicados.
+    Inicializa la tabla de roles permitiendo pre-asignación.
+    Crea las columnas 'cuit' y 'name' necesarias para usuarios Odoo.
     """
     if not DATABASE_URL: return
     conn = get_pg_connection()
@@ -350,7 +350,7 @@ def init_roles_table():
     try:
         cur = conn.cursor()
         
-        # 1. Crear tabla si no existe
+        # 1. Crear tabla base (si no estaba)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS app_user_roles (
                 user_id INTEGER,
@@ -358,23 +358,25 @@ def init_roles_table():
             );
         """)
         
-        # 2. Agregar columnas necesarias para pre-asignar (email, cuit, name)
+        # 2. AGREGAR COLUMNAS FALTANTES
+        # Es fundamental agregar 'cuit' y 'name' para que funcione la pre-asignación
         for col in ['email', 'name', 'cuit']:
             cur.execute(f"ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS {col} TEXT;")
 
-        # 3. Permitir que user_id sea NULL (Clave para pre-asignados)
+        # 3. Permitir que user_id sea NULL (Para usuarios que aún no existen en la App)
         try:
             cur.execute("ALTER TABLE app_user_roles ALTER COLUMN user_id DROP NOT NULL;")
         except: pass
 
-        # 4. Crear Índices Únicos para que funcione el "ON CONFLICT"
-        # Esto evita que se rompa si intentas asignar el rol dos veces
+        # 4. Crear Índices (Para evitar CUITs duplicados)
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_cuit ON app_user_roles (cuit) WHERE cuit IS NOT NULL;")
+        
+        # (Opcional) Índice de email, lo dejamos por si algún día lo usas, no molesta
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email) WHERE email IS NOT NULL;")
 
         conn.commit()
         cur.close()
-        log.info("✅ Tabla 'app_user_roles' lista para pre-asignaciones.")
+        log.info("✅ Tabla 'app_user_roles' lista para pre-asignaciones (Con CUIT).")
     except Exception as e:
         if conn: conn.rollback()
         log.warning(f"⚠️ Init Roles: {e}")
@@ -474,7 +476,10 @@ def get_odoo_users():
 
 @app.route('/admin/preasignar', methods=['POST'])
 def preasignar_rol():
-    """Asigna rol por CUIT/Email antes o después del registro."""
+    """
+    Asigna rol prioritariamente por CUIT.
+    Si hay CUIT, ignoramos el email para evitar conflictos de unicidad.
+    """
     data = request.get_json()
     email = data.get('email')
     cuit = data.get('cuit')
@@ -488,39 +493,58 @@ def preasignar_rol():
         cur = conn.cursor()
         msg = ""
         
-        # Prioridad: CUIT -> Email
+        # CASO 1: Tenemos CUIT (El más seguro y común en Odoo)
         if cuit:
-            # ¿El usuario ya se registró?
+            # A. Chequear si ya existe el usuario registrado en la App
             cur.execute("SELECT id FROM app_users WHERE cuit = %s", (cuit,))
             row = cur.fetchone()
+            
             if row:
-                # SI: Actualizamos su rol real
+                # Usuario YA registrado -> Actualizamos su rol
                 user_id = row[0]
+                # En la tabla de roles, guardamos CUIT y Nombre, pero NO el email (para no chocar)
                 cur.execute("""
-                    INSERT INTO app_user_roles (user_id, role_name, cuit, name, email) VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO app_user_roles (user_id, role_name, cuit, name) 
+                    VALUES (%s, %s, %s, %s)
                     ON CONFLICT (user_id) DO UPDATE SET role_name = EXCLUDED.role_name;
-                """, (user_id, role, cuit, name, email))
+                """, (user_id, role, cuit, name))
+                
+                # Actualizamos tabla principal
                 cur.execute("UPDATE app_users SET role = %s WHERE id = %s", (role, user_id))
-                msg = "Usuario existente actualizado."
+                msg = "Usuario App actualizado correctamente."
             else:
-                # NO: Pre-asignamos usando CUIT como clave
+                # Usuario NO registrado -> Pre-asignamos solo con CUIT
+                # IMPORTANTE: No guardamos 'email' aquí para evitar errores de duplicados/vacíos
                 cur.execute("""
-                    INSERT INTO app_user_roles (cuit, role_name, name, email) VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (cuit) DO UPDATE SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
-                """, (cuit, role, name, email))
-                msg = "Rol pre-asignado (Pendiente de registro)."
+                    INSERT INTO app_user_roles (cuit, role_name, name) 
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (cuit) DO UPDATE 
+                    SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
+                """, (cuit, role, name))
+                msg = "Rol pre-asignado por CUIT (Email ignorado)."
+
+        # CASO 2: No hay CUIT, usamos Email (Plan B)
         elif email:
-             # Fallback por Email
              cur.execute("""
-                INSERT INTO app_user_roles (email, role_name, name) VALUES (%s, %s, %s)
-                ON CONFLICT (email) DO UPDATE SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
+                INSERT INTO app_user_roles (email, role_name, name) 
+                VALUES (%s, %s, %s)
+                ON CONFLICT (email) DO UPDATE 
+                SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
             """, (email, role, name))
              msg = "Rol pre-asignado por Email."
+        
+        else:
+            return jsonify({"error": "Se requiere CUIT o Email"}), 400
 
         conn.commit()
         return jsonify({"message": msg})
+
     except Exception as e:
         conn.rollback()
+        log.error(f"Error preasignar: {e}")
+        # Mensaje de error más amigable para el frontend
+        if "unique constraint" in str(e):
+            return jsonify({"error": "El usuario ya tiene un rol asignado."}), 400
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
