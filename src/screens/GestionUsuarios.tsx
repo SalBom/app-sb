@@ -25,44 +25,62 @@ const ROLES = ['Cliente', 'Vendedor', 'Admin', 'Vendedor Black'];
 const GestionUsuarios = () => {
   const navigation = useNavigation<any>();
   
-  // 3 PESTAÑAS ACTIVAS
+  // TRES PESTAÑAS: 
+  // 1. usuarios (Muestra los ya asignados/registrados)
+  // 2. solicitudes (Nuevos registros esperando aprobación)
+  // 3. odoo (Lista cruda de Odoo para pre-asignar)
   const [activeTab, setActiveTab] = useState<'usuarios' | 'solicitudes' | 'odoo'>('usuarios');
+  
   const [dataList, setDataList] = useState<User[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Modal
+  // Modal de Asignación/Cambio de Rol
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [isImporting, setIsImporting] = useState(false);
 
-  useEffect(() => { fetchData(); }, [activeTab]);
+  useEffect(() => {
+    fetchData();
+  }, [activeTab]);
 
   const fetchData = async () => {
     setLoading(true);
     setDataList([]);
     try {
       let res;
-      if (activeTab === 'usuarios') res = await axios.get(`${API_URL}/admin/users/all`);
-      else if (activeTab === 'solicitudes') res = await axios.get(`${API_URL}/admin/users/pending`);
-      else res = await axios.get(`${API_URL}/odoo-users`); // Llama al endpoint optimizado
+      if (activeTab === 'usuarios') {
+        // Trae la lista unificada (Registrados + Pre-asignados)
+        res = await axios.get(`${API_URL}/users`);
+      } else if (activeTab === 'solicitudes') {
+        // Trae usuarios que se registraron pero no tienen rol
+        res = await axios.get(`${API_URL}/admin/users/pending`);
+      } else {
+        // Trae usuarios directos de Odoo (Optimizado)
+        res = await axios.get(`${API_URL}/odoo-users`);
+      }
       
       if (res.data) setDataList(res.data);
     } catch (e) {
-      if (activeTab !== 'usuarios') Alert.alert('Error', 'No se pudieron cargar los datos.');
-    } finally { setLoading(false); }
+      console.error(e);
+      if (activeTab !== 'usuarios') Alert.alert('Aviso', 'No se pudieron cargar los datos de esta sección.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleApprove = async (id: number) => {
     try {
       await axios.post(`${API_URL}/admin/users/approve`, { id, role: 'Cliente' });
-      Alert.alert('Éxito', 'Aprobado');
+      Alert.alert('Éxito', 'Usuario aprobado');
       fetchData();
-    } catch (e) { Alert.alert('Error', 'Falló aprobación'); }
+    } catch (e) {
+      Alert.alert('Error', 'No se pudo aprobar');
+    }
   };
 
   const openRoleModal = (user: User, importing = false) => {
     setSelectedUser(user);
-    setIsImporting(importing); 
+    setIsImporting(importing); // true si viene de la pestaña Odoo
     setModalVisible(true);
   };
 
@@ -70,31 +88,45 @@ const GestionUsuarios = () => {
     if (!selectedUser) return;
     try {
       if (isImporting) {
-        // Llama a preasignar
+        // CASO 1: Pre-asignar desde Odoo
+        // Enviamos CUIT y Email. El backend priorizará CUIT y si existe, ignorará el email.
         await axios.post(`${API_URL}/admin/preasignar`, {
-          email: selectedUser.email, cuit: selectedUser.cuit,
-          name: selectedUser.name, role: newRole 
+          email: selectedUser.email,
+          cuit: selectedUser.cuit,
+          name: selectedUser.name,
+          role: newRole 
         });
-        Alert.alert('Listo', `Rol asignado. ${selectedUser.name} aparecerá en el Dashboard.`);
+        Alert.alert('Listo', `Rol asignado a ${selectedUser.name}. Ya aparecerá en el Dashboard.`);
       } else {
-        // Edición normal
+        // CASO 2: Cambiar rol a usuario ya existente en la App
         if (!selectedUser.id) return;
-        await axios.post(`${API_URL}/admin/users/role`, { id: selectedUser.id, role: newRole });
+        await axios.post(`${API_URL}/admin/users/role`, {
+          id: selectedUser.id,
+          role: newRole
+        });
         Alert.alert('Éxito', 'Rol actualizado');
       }
       setModalVisible(false);
-      fetchData();
-    } catch (e) { Alert.alert('Error', 'No se pudo guardar'); }
+      fetchData(); // Recargar lista
+    } catch (e: any) {
+      const msg = e.response?.data?.error || 'No se pudo realizar la operación';
+      Alert.alert('Error', msg);
+    }
   };
 
   const renderItem = ({ item }: { item: User }) => {
+    
+    // TAB 1: USUARIOS (Registrados + Pre-asignados)
     if (activeTab === 'usuarios') {
         return (
             <View style={styles.card}>
                 <View style={styles.info}>
                     <Text style={styles.name}>{item.name}</Text>
                     <Text style={styles.cuit}>{item.cuit || '---'}</Text>
-                    <Text style={styles.role}>{item.role || 'Cliente'}</Text>
+                    <Text style={styles.role}>Rol: <Text style={{fontWeight:'bold'}}>{item.role || 'Cliente'}</Text></Text>
+                    {item.id === -1 && (
+                        <Text style={{fontSize:10, color:'#E67E22', marginTop:2}}>* Pre-asignado (No registrado)</Text>
+                    )}
                 </View>
                 <TouchableOpacity onPress={() => openRoleModal(item, false)} style={styles.editBtn}>
                     <Feather name="edit-2" size={18} color="#555" />
@@ -102,6 +134,8 @@ const GestionUsuarios = () => {
             </View>
         );
     }
+
+    // TAB 2: SOLICITUDES
     if (activeTab === 'solicitudes') {
         return (
             <View style={styles.card}>
@@ -111,27 +145,31 @@ const GestionUsuarios = () => {
                     <Text style={styles.date}>{item.email}</Text>
                 </View>
                 <TouchableOpacity style={styles.approveBtn} onPress={() => item.id && handleApprove(item.id)}>
+                    <Ionicons name="checkmark-circle" size={18} color="#FFF" />
                     <Text style={styles.approveText}>Aprobar</Text>
                 </TouchableOpacity>
             </View>
         );
     }
-    // PESTAÑA ODOO
+
+    // TAB 3: USUARIOS ODOO (Para importar)
     if (activeTab === 'odoo') {
         const isInternal = item.tipo_odoo === 'Interno';
         return (
             <View style={styles.card}>
                 <View style={styles.info}>
                     <Text style={styles.name}>{item.name}</Text>
-                    <View style={{flexDirection:'row', gap:8, marginTop:2}}>
-                        <Text style={[styles.badge, {color: isInternal ? '#E67E22':'#1C9BD8'}]}>
-                            {item.tipo_odoo}
-                        </Text>
+                    <View style={{flexDirection:'row', gap:8, alignItems:'center', marginTop:4}}>
+                        <View style={[styles.badge, { backgroundColor: isInternal ? '#FFF3E0' : '#E3F2FD' }]}>
+                            <Text style={{fontSize:10, fontWeight:'bold', color: isInternal ? '#E67E22' : '#1C9BD8'}}>
+                                {item.tipo_odoo?.toUpperCase()}
+                            </Text>
+                        </View>
                         <Text style={styles.cuit}>{item.cuit || 'Sin CUIT'}</Text>
                     </View>
                 </View>
-                <TouchableOpacity onPress={() => openRoleModal(item, true)} style={styles.actionBtn}>
-                    <Text style={styles.actionText}>ASIGNAR ROL</Text>
+                <TouchableOpacity onPress={() => openRoleModal(item, true)} style={[styles.approveBtn, { backgroundColor: '#6C757D' }]}>
+                    <Text style={styles.approveText}>ASIGNAR ROL</Text>
                 </TouchableOpacity>
             </View>
         );
@@ -141,68 +179,116 @@ const GestionUsuarios = () => {
 
   return (
     <View style={styles.container}>
+      {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}><FlechaHeaderSvg width={24}/></TouchableOpacity>
-        <Text style={styles.headerTitle}>Gestión Usuarios</Text>
-        <View style={{width:24}}/>
+        <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backBtn}>
+            <FlechaHeaderSvg width={24} height={24} />
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Gestión de Usuarios</Text>
+        <View style={{width: 24}} />
       </View>
 
+      {/* Selector de Pestañas */}
       <View style={styles.tabContainer}>
-        {['usuarios', 'solicitudes', 'odoo'].map((t: any) => (
-            <TouchableOpacity key={t} style={[styles.tab, activeTab===t && styles.activeTab]} onPress={()=>setActiveTab(t)}>
-                <Text style={[styles.tabText, activeTab===t && styles.activeTabText]}>
-                    {t === 'odoo' ? 'Usuarios Odoo' : t.charAt(0).toUpperCase() + t.slice(1)}
-                </Text>
-            </TouchableOpacity>
-        ))}
+        <TouchableOpacity 
+          style={[styles.tab, activeTab === 'usuarios' && styles.activeTab]} 
+          onPress={() => setActiveTab('usuarios')}>
+          <Text style={[styles.tabText, activeTab === 'usuarios' && styles.activeTabText]}>Usuarios</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity 
+          style={[styles.tab, activeTab === 'solicitudes' && styles.activeTab]} 
+          onPress={() => setActiveTab('solicitudes')}>
+          <Text style={[styles.tabText, activeTab === 'solicitudes' && styles.activeTabText]}>Solicitudes</Text>
+        </TouchableOpacity>
+        
+        <TouchableOpacity 
+          style={[styles.tab, activeTab === 'odoo' && styles.activeTab]} 
+          onPress={() => setActiveTab('odoo')}>
+          <Text style={[styles.tabText, activeTab === 'odoo' && styles.activeTabText]}>Usuarios Odoo</Text>
+        </TouchableOpacity>
       </View>
 
-      {loading ? <ActivityIndicator color="#1C9BD8" style={{marginTop:20}}/> :
-        <FlatList data={dataList} renderItem={renderItem} contentContainerStyle={{padding:15}}/>
-      }
+      {/* Lista */}
+      {loading ? (
+        <ActivityIndicator size="large" color="#1C9BD8" style={{ marginTop: 40 }} />
+      ) : (
+        <FlatList
+          data={dataList}
+          keyExtractor={(item, index) => String(item.id || item.odoo_id || index)}
+          renderItem={renderItem}
+          contentContainerStyle={{ padding: 15 }}
+          ListEmptyComponent={<Text style={styles.emptyText}>No hay registros.</Text>}
+        />
+      )}
 
-      <Modal visible={modalVisible} transparent onRequestClose={()=>setModalVisible(false)}>
-        <Pressable style={styles.modalOverlay} onPress={()=>setModalVisible(false)}>
+      {/* Modal */}
+      <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => setModalVisible(false)}>
+        <Pressable style={styles.modalOverlay} onPress={() => setModalVisible(false)}>
             <Pressable style={styles.modalContent}>
-                <Text style={styles.modalTitle}>{isImporting ? 'Asignar Rol (Pre-alta)' : 'Cambiar Rol'}</Text>
+                <Text style={styles.modalTitle}>
+                    {isImporting ? 'Asignar Rol (Pre-alta)' : 'Cambiar Rol'}
+                </Text>
+                <Text style={{textAlign:'center', marginBottom:15, color:'#666'}}>
+                    Usuario: {selectedUser?.name}
+                </Text>
+                
                 {ROLES.map(r => (
-                    <TouchableOpacity key={r} style={styles.roleOption} onPress={()=>handleChangeRole(r)}>
-                        <Text style={styles.roleText}>{r}</Text>
+                    <TouchableOpacity 
+                        key={r} 
+                        style={[styles.roleOption, selectedUser?.role === r && !isImporting && styles.roleOptionSelected]}
+                        onPress={() => handleChangeRole(r)}
+                    >
+                        <Text style={[styles.roleText, selectedUser?.role === r && !isImporting && styles.roleTextSelected]}>{r}</Text>
+                        {selectedUser?.role === r && !isImporting && <Ionicons name="checkmark" size={20} color="#1C9BD8" />}
                     </TouchableOpacity>
                 ))}
             </Pressable>
         </Pressable>
       </Modal>
+
     </View>
   );
 };
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFF' },
-  header: { height: 60, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 15, borderBottomWidth: 1, borderColor: '#EEE' },
+  header: { 
+    height: 60, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', 
+    paddingHorizontal: 15, borderBottomWidth: 1, borderBottomColor: '#EEE', paddingTop: 10 
+  },
   headerTitle: { fontSize: 18, fontFamily: 'BarlowCondensed-Bold', color: '#333' },
-  tabContainer: { flexDirection: 'row', borderBottomWidth: 1, borderColor: '#EEE' },
+  backBtn: { padding: 5 },
+  tabContainer: { flexDirection: 'row', borderBottomWidth: 1, borderBottomColor: '#EEE' },
   tab: { flex: 1, paddingVertical: 15, alignItems: 'center' },
-  activeTab: { borderBottomWidth: 3, borderColor: '#1C9BD8' },
-  tabText: { color: '#999', fontFamily: 'BarlowCondensed-SemiBold' },
+  activeTab: { borderBottomWidth: 3, borderBottomColor: '#1C9BD8' },
+  tabText: { fontSize: 14, color: '#999', fontFamily: 'BarlowCondensed-SemiBold' },
   activeTabText: { color: '#1C9BD8' },
-  card: { flexDirection: 'row', backgroundColor: '#FFF', padding: 15, borderRadius: 10, marginBottom: 10, elevation: 2 },
+  card: { 
+    flexDirection: 'row', backgroundColor: '#FFF', padding: 15, borderRadius: 10, 
+    marginBottom: 10, elevation: 2, shadowColor: '#000', shadowOpacity: 0.1, shadowOffset: {width:0, height:2} 
+  },
   info: { flex: 1 },
   name: { fontSize: 16, fontFamily: 'BarlowCondensed-Bold', color: '#333' },
-  cuit: { fontSize: 13, color: '#666' },
-  role: { fontSize: 13, color: '#1C9BD8', fontWeight: 'bold' },
-  date: { fontSize: 12, color: '#999' },
-  badge: { fontSize: 12, fontWeight: 'bold' },
-  approveBtn: { backgroundColor: '#10B981', padding: 8, borderRadius: 6, justifyContent:'center' },
-  approveText: { color: '#FFF', fontSize: 12, fontWeight:'bold' },
-  editBtn: { padding: 10, backgroundColor: '#F3F4F6', borderRadius: 8, justifyContent:'center' },
-  actionBtn: { backgroundColor: '#6C757D', paddingHorizontal: 12, paddingVertical:8, borderRadius: 6, justifyContent:'center' },
-  actionText: { color: '#FFF', fontSize: 10, fontWeight:'bold' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
+  cuit: { fontSize: 13, color: '#666', marginTop: 2 },
+  email: { fontSize: 13, color: '#888', fontStyle: 'italic', marginTop: 2 },
+  role: { fontSize: 13, color: '#1C9BD8', marginTop: 4, fontFamily: 'BarlowCondensed-SemiBold' },
+  date: { fontSize: 12, color: '#9CA3AF', marginTop: 4 },
+  badge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  approveBtn: { 
+    backgroundColor: '#10B981', flexDirection: 'row', alignItems: 'center', 
+    paddingVertical: 8, paddingHorizontal: 12, borderRadius: 6, alignSelf: 'center'
+  },
+  approveText: { color: '#FFF', fontSize: 10, fontFamily: 'BarlowCondensed-Bold', marginLeft: 4 },
+  editBtn: { padding: 10, backgroundColor: '#F3F4F6', borderRadius: 8, justifyContent: 'center', alignSelf: 'center' },
+  emptyText: { textAlign: 'center', marginTop: 50, color: '#999', fontSize: 16, fontFamily: 'BarlowCondensed-Regular' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: 20 },
   modalContent: { backgroundColor: '#FFF', borderRadius: 12, padding: 20 },
-  modalTitle: { fontSize: 18, fontFamily: 'BarlowCondensed-Bold', textAlign: 'center', marginBottom: 15 },
-  roleOption: { paddingVertical: 15, borderBottomWidth: 1, borderColor: '#EEE' },
-  roleText: { fontSize: 16, color: '#333' }
+  modalTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 20, marginBottom: 5, color: '#333', textAlign: 'center' },
+  roleOption: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
+  roleOptionSelected: { backgroundColor: '#F0F9FF', marginHorizontal: -20, paddingHorizontal: 20 },
+  roleText: { fontSize: 16, color: '#555' },
+  roleTextSelected: { color: '#1C9BD8', fontWeight: 'bold' }
 });
 
 export default GestionUsuarios;
