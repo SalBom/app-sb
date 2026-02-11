@@ -322,6 +322,100 @@ if HAS_R2_DEBUG:
         if not code:
             return jsonify({"error": "Parámetro code requerido"}), 400
         return jsonify(find_media_for_code(code))
+    
+# --- HERRAMIENTA DE REPARACIÓN (SOLUCIÓN DEFINITIVA) ---
+@app.route('/fix-schema', methods=['GET'])
+def fix_schema_manual():
+    """Ejecuta la reparación de tabla manualmente para evitar errores de concurrencia."""
+    conn = get_pg_connection()
+    if not conn: return jsonify({"error": "No DB connection"}), 500
+    
+    log_msgs = []
+    try:
+        cur = conn.cursor()
+        
+        # 1. Asegurar tabla base
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS app_user_roles (
+                user_id INTEGER,
+                role_name TEXT NOT NULL
+            );
+        """)
+        log_msgs.append("Tabla base: OK")
+
+        # 2. Agregar columnas faltantes (Una por una)
+        for col in ['email', 'name', 'cuit']:
+            try:
+                cur.execute(f"ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS {col} TEXT;")
+                log_msgs.append(f"Columna {col}: OK")
+            except Exception as e:
+                log_msgs.append(f"Columna {col}: {str(e)}")
+
+        # 3. Quitar restricción NOT NULL de user_id (si existe)
+        try:
+            cur.execute("ALTER TABLE app_user_roles ALTER COLUMN user_id DROP NOT NULL;")
+            log_msgs.append("user_id NULL: OK")
+        except Exception as e:
+            log_msgs.append(f"user_id NULL info: {str(e)}")
+
+        # 4. Eliminar PK vieja si existe (libera la tabla)
+        try:
+            cur.execute("ALTER TABLE app_user_roles DROP CONSTRAINT IF EXISTS app_user_roles_pkey;")
+            log_msgs.append("Drop PK: OK")
+        except: pass
+
+        # 5. CREAR ÍNDICES (Soluciona el error 'no unique constraint')
+        try:
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_cuit ON app_user_roles (cuit) WHERE cuit IS NOT NULL;")
+            log_msgs.append("Index CUIT: OK")
+        except Exception as e:
+            log_msgs.append(f"Index CUIT error: {str(e)}")
+            
+        try:
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email) WHERE email IS NOT NULL;")
+            log_msgs.append("Index Email: OK")
+        except: pass
+
+        conn.commit()
+        return jsonify({"status": "Reparación Finalizada", "detalles": log_msgs})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# --- ENDPOINT UNIFICADO (El que daba error de 'column email does not exist') ---
+@app.route('/users', methods=['GET'])
+def get_users_unified():
+    conn = get_pg_connection()
+    if not conn: return jsonify([]), 500
+    try:
+        cur = conn.cursor()
+        # Ahora funcionará porque /fix-schema habrá creado las columnas
+        cur.execute("""
+            SELECT name, email, cuit, role, id FROM app_users WHERE is_active = TRUE
+            UNION ALL
+            SELECT name, email, cuit, role_name as role, -1 as id 
+            FROM app_user_roles 
+            WHERE user_id IS NULL
+        """)
+        rows = cur.fetchall()
+        users = []
+        for r in rows:
+            users.append({
+                "name": r[0],
+                "email": r[1],
+                "cuit": r[2],
+                "role": r[3],
+                "id": r[4]
+            })
+        return jsonify(users)
+    except Exception as e:
+        log.error(f"Error get_users: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
 
 # ───────────────────────── ENDPOINTS ─────────────────────────
 
@@ -388,7 +482,6 @@ def init_roles_table():
         log.error(f"⚠️ Init Roles Error: {e}")
     finally:
         if conn: conn.close()
-
 # --- ENDPOINTS GESTIÓN USUARIOS (Pre-asignación) ---
 
 @app.route('/users', methods=['GET'])
