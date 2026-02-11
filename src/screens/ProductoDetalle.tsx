@@ -66,7 +66,7 @@ type ProductoLite = {
   brand?: string;
 };
 
-const RAW = (process.env.EXPO_PUBLIC_API_URL || 'https://app-sb-production.up.railway.app').trim();
+const RAW = (process.env.EXPO_PUBLIC_API_URL || 'https://app-salbom-production.up.railway.app').trim();
 const API_URL = RAW.replace(/\/+$/, '');
 
 const ACTIVE_BG = '#139EDB';

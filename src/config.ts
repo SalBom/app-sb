@@ -1,1 +1,1 @@
-export const API_URL = 'https://app-sb-production.up.railway.app';
+export const API_URL = 'https://app-salbom-production.up.railway.app';

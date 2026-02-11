@@ -71,7 +71,7 @@ export const useDashboardStore = create<DashboardState>((set) => ({
       set({ loading: true, error: null, cuit });
 
       // 1. Pedidos
-      const pedidosRes = await axios.get('https://app-sb-production.up.railway.app/pedidos-vendedor', {
+      const pedidosRes = await axios.get('https://app-salbom-production.up.railway.app/pedidos-vendedor', {
         params: { cuit },
       });
 
@@ -79,12 +79,12 @@ export const useDashboardStore = create<DashboardState>((set) => ({
       // NOTA: Si tu endpoint /clientes-del-vendedor devuelve la lista completa, mantenemos esto.
       // Si quieres que coincida con el backend, deberías usar /clientes-por-estado,
       // pero por ahora mantengo tu lógica de "clasificarClientes" local si funciona bien para ti.
-      const clientesRes = await axios.get('https://app-sb-production.up.railway.app/clientes-del-vendedor', {
+      const clientesRes = await axios.get('https://app-salbom-production.up.railway.app/clientes-del-vendedor', {
         params: { cuit },
       });
 
       // 3. KPIs (El Backend YA calcula esto, usémoslo)
-      const kpiRes = await axios.get('https://app-sb-production.up.railway.app/kpi-vendedor', {
+      const kpiRes = await axios.get('https://app-salbom-production.up.railway.app/kpi-vendedor', {
         params: { cuit },
       });
 

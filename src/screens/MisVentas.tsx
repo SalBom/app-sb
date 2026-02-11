@@ -46,10 +46,10 @@ const MisVentas: React.FC = () => {
           return;
         }
 
-        console.log(`📡 Intentando conectar con: https://app-sb-production.up.railway.app/mis_ventas?cuit=${cuit}`);
+        console.log(`📡 Intentando conectar con: https://app-salbom-production.up.railway.app/mis_ventas?cuit=${cuit}`);
 
         const response = await axios.get<{ ventas: Venta[] }>(
-          `https://app-sb-production.up.railway.app/mis_ventas?cuit=${cuit}`
+          `https://app-salbom-production.up.railway.app/mis_ventas?cuit=${cuit}`
         );
 
         /* console.log("📥 Respuesta del servidor:", response.data); */

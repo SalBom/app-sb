@@ -3,7 +3,7 @@ export const getFacturasPorCuit = async (cuit: string) => {
     console.log(`📡 Solicitando facturas para CUIT: ${cuit}...`);
 
     const response = await fetch(
-      `https://app-sb-production.up.railway.app/facturas?cuit=${cuit}`,
+      `https://app-salbom-production.up.railway.app/facturas?cuit=${cuit}`,
       {
         method: "GET",
         headers: { "Content-Type": "application/json" },
@@ -30,7 +30,7 @@ export const getProductosLinea = async () => {
   try {
     console.log("📡 Solicitando productos con categoría 'Linea'...");
 
-    const response = await fetch("https://app-sb-production.up.railway.app/productos", {
+    const response = await fetch("https://app-salbom-production.up.railway.app/productos", {
       method: "GET",
       headers: { "Content-Type": "application/json" },
     });
@@ -62,7 +62,7 @@ export const getMisVentasPorCuit = async (cuit: string) => {
     console.log(`📡 Solicitando ventas para CUIT: ${cuit}...`);
 
     const response = await fetch(
-      `https://app-sb-production.up.railway.app/mis_ventas?cuit=${cuit}`,
+      `https://app-salbom-production.up.railway.app/mis_ventas?cuit=${cuit}`,
       {
         method: "GET",
         headers: { "Content-Type": "application/json" },
