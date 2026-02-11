@@ -339,19 +339,18 @@ def get_pg_connection():
         log.error(f"❌ Error conectando a Postgres: {e}")
         return None
 
+# --- 1. FUNCIÓN DE INICIO ROBUSTA (Reemplazar init_roles_table) ---
 def init_roles_table():
-    """Inicializa y repara la tabla de roles paso a paso para evitar bloqueos."""
-    if not DATABASE_URL:
-        return
+    """Inicializa la tabla de roles y asegura índices para pre-asignación."""
+    if not DATABASE_URL: return
     
-    # Usamos una conexión nueva para esto
+    # Usamos conexión directa con autocommit para evitar bloqueos
     try:
         conn = psycopg2.connect(DATABASE_URL)
-        conn.autocommit = True # ¡IMPORTANTE! Ejecuta cada comando inmediatamente
+        conn.autocommit = True 
         cur = conn.cursor()
         
-        # 1. Crear tabla si no existe (con un ID serial propio para evitar problemas de PK)
-        # Nota: Si ya existe, esto no hace nada.
+        # Crear tabla
         try:
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS app_user_roles (
@@ -359,47 +358,146 @@ def init_roles_table():
                     role_name TEXT NOT NULL
                 );
             """)
-        except Exception as e:
-            log.warning(f"Init create table: {e}")
+        except: pass
 
-        # 2. Agregar columnas (Una por una, ignorando errores si ya existen)
+        # Agregar columnas necesarias
         for col in ['email', 'name', 'cuit']:
-            try:
-                cur.execute(f"ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS {col} TEXT;")
-            except Exception as e:
-                # Si falla (ej: bloqueo), lo ignoramos y seguimos
-                log.warning(f"Init column {col}: {e}")
+            try: cur.execute(f"ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS {col} TEXT;")
+            except: pass
 
-        # 3. Quitar restricción NOT NULL del user_id
-        # Primero intentamos quitar la Primary Key vieja si existe (porque PK implica NOT NULL)
-        try:
-            cur.execute("ALTER TABLE app_user_roles DROP CONSTRAINT IF EXISTS app_user_roles_pkey;")
-        except Exception:
-            pass
-            
-        try:
-            cur.execute("ALTER TABLE app_user_roles ALTER COLUMN user_id DROP NOT NULL;")
-        except Exception as e:
-            log.warning(f"Init drop not null: {e}")
+        # Hacer nullable el user_id (para los pre-asignados)
+        try: cur.execute("ALTER TABLE app_user_roles ALTER COLUMN user_id DROP NOT NULL;")
+        except: pass
 
-        # 4. CREAR ÍNDICES ÚNICOS (CRUCIAL PARA QUE FUNCIONE TU PRE-ASIGNACIÓN)
-        # Si fallan, el sistema no puede usar ON CONFLICT.
-        try:
-            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_cuit ON app_user_roles (cuit) WHERE cuit IS NOT NULL;")
-        except Exception as e:
-             log.warning(f"Init index CUIT: {e}")
-             
-        try:
-            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email) WHERE email IS NOT NULL;")
-        except Exception as e:
-             log.warning(f"Init index EMAIL: {e}")
+        # CREAR ÍNDICES ÚNICOS (Vital para que no falle al guardar)
+        try: cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_cuit ON app_user_roles (cuit) WHERE cuit IS NOT NULL;")
+        except: pass
+        try: cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email) WHERE email IS NOT NULL;")
+        except: pass
 
         cur.close()
         conn.close()
-        log.info("✅ Tabla 'app_user_roles' reparada exitosamente.")
-
+        log.info("✅ Tabla roles reparada y lista para pre-asignaciones.")
     except Exception as e:
-        log.error(f"❌ Error fatal en init_roles_table: {e}")
+        log.error(f"⚠️ Error init_roles_table: {e}")
+
+# --- 2. ENDPOINT UNIFICADO PARA EL DASHBOARD (Reemplazar o agregar /users) ---
+@app.route('/users', methods=['GET'])
+def get_users_public():
+    """
+    Retorna usuarios registrados Y pre-asignados.
+    Vital para que el Dashboard vea a los vendedores de Odoo aunque no se hayan registrado.
+    """
+    conn = get_pg_connection()
+    if not conn: return jsonify([]), 500
+    try:
+        cur = conn.cursor()
+        # Traemos:
+        # 1. Usuarios reales de la App
+        # 2. Usuarios pre-asignados (de Odoo) que aún no tienen ID de usuario real
+        cur.execute("""
+            SELECT name, email, cuit, role, id FROM app_users WHERE is_active = TRUE
+            UNION ALL
+            SELECT name, email, cuit, role_name as role, -1 as id 
+            FROM app_user_roles 
+            WHERE user_id IS NULL
+        """)
+        rows = cur.fetchall()
+        users = []
+        for r in rows:
+            users.append({
+                "name": r[0],
+                "email": r[1],
+                "cuit": r[2],
+                "role": r[3],
+                "id": r[4]
+            })
+        return jsonify(users)
+    except Exception as e:
+        log.error(f"Error get_users: {e}")
+        return jsonify([]), 500
+    finally:
+        cur.close()
+        conn.close()
+
+# --- 3. ENDPOINTS GESTIÓN Y ODOO (Agregar al final) ---
+
+@app.route('/odoo-users', methods=['GET'])
+def get_odoo_users():
+    """Trae usuarios de Odoo (Internos y Portal)."""
+    client = get_odoo_client()
+    try:
+        users = client.env['res.users'].search_read(
+            [('active', '=', True)], 
+            ['name', 'login', 'partner_id', 'share'],
+            limit=300
+        )
+        data = []
+        for u in users:
+            cuit = ''
+            if u.get('partner_id'):
+                p_id = u['partner_id'][0]
+                p_data = client.env['res.partner'].read([p_id], ['vat'])
+                if p_data: cuit = p_data[0].get('vat') or ''
+            
+            tipo = "Portal" if u.get('share') else "Interno"
+            data.append({ "name": u['name'], "email": u['login'], "cuit": cuit, "odoo_id": u['id'], "tipo_odoo": tipo })
+        return jsonify(data)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        release_odoo_client(client)
+
+@app.route('/admin/preasignar', methods=['POST'])
+def preasignar_rol():
+    """Guarda el rol para un usuario (Registrado o Futuro)."""
+    data = request.get_json()
+    email = data.get('email')
+    cuit = data.get('cuit')
+    name = data.get('name')
+    role = data.get('role')
+
+    if not role: return jsonify({"error": "Falta rol"}), 400
+
+    conn = get_pg_connection()
+    try:
+        cur = conn.cursor()
+        msg = ""
+        
+        # Lógica inteligente: Si tiene CUIT usa CUIT, si no usa Email
+        if cuit:
+            cur.execute("SELECT id FROM app_users WHERE cuit = %s", (cuit,))
+            row = cur.fetchone()
+            if row:
+                # Usuario YA existe -> Actualizamos
+                user_id = row[0]
+                cur.execute("""
+                    INSERT INTO app_user_roles (user_id, role_name, cuit, name, email) VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET role_name = EXCLUDED.role_name;
+                """, (user_id, role, cuit, name, email))
+                cur.execute("UPDATE app_users SET role = %s WHERE id = %s", (role, user_id))
+                msg = "Usuario actualizado."
+            else:
+                # Usuario NO existe -> Pre-asignamos
+                cur.execute("""
+                    INSERT INTO app_user_roles (cuit, role_name, name, email) VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (cuit) DO UPDATE SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
+                """, (cuit, role, name, email))
+                msg = "Vendedor pre-asignado. Aparecerá en el Dashboard."
+        elif email:
+             cur.execute("""
+                INSERT INTO app_user_roles (email, role_name, name) VALUES (%s, %s, %s)
+                ON CONFLICT (email) DO UPDATE SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
+            """, (email, role, name))
+             msg = "Vendedor pre-asignado por Email."
+
+        conn.commit()
+        return jsonify({"message": msg})
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 # main.py
 
