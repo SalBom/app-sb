@@ -341,62 +341,49 @@ def get_pg_connection():
 
 # --- 1. FUNCIÓN DE INICIO ROBUSTA (Reemplazar init_roles_table) ---
 def init_roles_table():
-    """Inicializa la tabla de roles y asegura índices para pre-asignación."""
-    if not DATABASE_URL: return
-    
-    # Usamos conexión directa con autocommit para evitar bloqueos
+    """
+    Inicializa la tabla de roles.
+    Versión LIMPIA: Solo vincula user_id con su rol.
+    """
+    if not DATABASE_URL:
+        return
+    conn = get_pg_connection()
+    if not conn:
+        return
     try:
-        conn = psycopg2.connect(DATABASE_URL)
-        conn.autocommit = True 
         cur = conn.cursor()
         
-        # Crear tabla
-        try:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS app_user_roles (
-                    user_id INTEGER,
-                    role_name TEXT NOT NULL
-                );
-            """)
-        except: pass
+        # Solo necesitamos user_id y el nombre del rol.
+        # user_id es Primary Key porque un usuario solo tiene un rol activo a la vez.
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS app_user_roles (
+                user_id INTEGER PRIMARY KEY,
+                role_name TEXT NOT NULL
+            );
+        """)
 
-        # Agregar columnas necesarias
-        for col in ['email', 'name', 'cuit']:
-            try: cur.execute(f"ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS {col} TEXT;")
-            except: pass
-
-        # Hacer nullable el user_id (para los pre-asignados)
-        try: cur.execute("ALTER TABLE app_user_roles ALTER COLUMN user_id DROP NOT NULL;")
-        except: pass
-
-        # CREAR ÍNDICES ÚNICOS (Vital para que no falle al guardar)
-        try: cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_cuit ON app_user_roles (cuit) WHERE cuit IS NOT NULL;")
-        except: pass
-        try: cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email) WHERE email IS NOT NULL;")
-        except: pass
-
+        conn.commit()
         cur.close()
-        conn.close()
-        log.info("✅ Tabla roles reparada y lista para pre-asignaciones.")
+        log.info("✅ Tabla 'app_user_roles' verificada (Modo Estándar).")
     except Exception as e:
-        log.error(f"⚠️ Error init_roles_table: {e}")
-
-# --- ENDPOINTS OPTIMIZADOS ---
+        # Si la tabla ya existe, no pasa nada.
+        if conn: conn.rollback()
+        log.warning(f"⚠️ Nota en init_roles_table: {e}")
+    finally:
+        if conn: conn.close()
 
 # --- ENDPOINTS OPTIMIZADOS ---
 
 @app.route('/users', methods=['GET'])
 def get_users():
     """
-    Versión ESTABLE: Solo trae usuarios registrados en la App.
-    Sin Odoo, sin demoras, sin Timeouts.
+    Versión ESTABLE: Solo trae usuarios registrados en la App desde PostgreSQL.
     """
     conn = get_pg_connection()
     if not conn: return jsonify([]), 500
     try:
         cur = conn.cursor()
-        # Consulta SQL directa y rápida
-        cur.execute("SELECT name, email, cuit, role, id FROM app_users WHERE is_active = TRUE")
+        cur.execute("SELECT name, email, cuit, role, id FROM app_users WHERE is_active = TRUE ORDER BY name ASC")
         rows = cur.fetchall()
         users = []
         for r in rows:
@@ -412,8 +399,9 @@ def get_users():
         log.error(f"Error get_users: {e}")
         return jsonify([]), 500
     finally:
-        cur.close()
-        conn.close()
+        if conn:
+            cur.close()
+            conn.close()
 
 # --- INICIALIZAR TABLA DE CONFIGURACIONES GENERALES ---
 def init_config_table():
