@@ -1917,238 +1917,183 @@ def crear_pedido():
 
     def _do_create_and_summarize(client):
         data = request.get_json() or {}
-        cliente_cuit        = data.get('cliente_cuit') or data.get('partner_vat')
-        items               = data.get('items', [])
-        global_term_id      = data.get('payment_term_id')
-        partner_shipping_id = data.get('partner_shipping_id')
-        carrier_id          = data.get('carrier_id')
         
-        # Nuevos campos
-        observaciones       = data.get('observaciones', '')
-        created_by_name     = data.get('created_by_name', '')
+        # --- 1. DATOS CLAVE ---
+        transaction_id = data.get('transaction_id')
+        order_id_to_update = data.get('order_id_to_update') # ID del pedido borrador (si existe)
+        
+        cliente_cuit = data.get('cliente_cuit') or data.get('partner_vat')
+        items = data.get('items', [])
+        global_term_id = data.get('payment_term_id')
+        partner_shipping_id = data.get('partner_shipping_id')
+        carrier_id = data.get('carrier_id')
+        observaciones = data.get('observaciones', '')
+        created_by_name = data.get('created_by_name', '')
 
-        if not cliente_cuit:
-            return jsonify({"error": "Falta cliente_cuit"}), 400
-        if not items or not isinstance(items, list):
-            return jsonify({"error": "Faltan items"}), 400
-        if not global_term_id:
-            return jsonify({"error": "Falta payment_term_id global"}), 400
+        if not transaction_id:
+            return jsonify({"error": "Falta transaction_id"}), 400
 
-        # 1. Buscar Cliente
+        # --- 2. IDEMPOTENCIA (Evitar duplicados por error de red) ---
+        pg_conn = get_pg_connection()
+        if pg_conn:
+            try:
+                cur = pg_conn.cursor(cursor_factory=RealDictCursor)
+                cur.execute("SELECT respuesta_json FROM pedido_cache WHERE payload_json->>'transaction_id' = %s", (transaction_id,))
+                cache = cur.fetchone()
+                if cache:
+                    log.info(f"Pedido duplicado detectado (txn: {transaction_id}). Devolviendo cache.")
+                    return jsonify(cache['respuesta_json']), 200
+                cur.close()
+            except Exception as e:
+                log.error(f"Error checking cache: {e}")
+            finally:
+                pg_conn.close()
+
+        # --- 3. VALIDACIONES BÁSICAS ---
+        if not cliente_cuit: return jsonify({"error": "Falta cliente_cuit"}), 400
+        if not items or not isinstance(items, list): return jsonify({"error": "Faltan items"}), 400
+        if not global_term_id: return jsonify({"error": "Falta payment_term_id global"}), 400
+
+        # --- 4. PREPARAR DATOS ODOO ---
         cliente = client.env['res.partner'].search([('vat', '=', cliente_cuit)], limit=1)
-        if not cliente:
-            return jsonify({"error": "Cliente no encontrado"}), 404
+        if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
         cliente = cliente[0]
-
         pricelist_id = cliente.property_product_pricelist.id if cliente.property_product_pricelist else None
-        if not pricelist_id:
-            return jsonify({"error": "Cliente sin lista de precios"}), 400
 
-        # 2. Cargar Nombres de Plazos de Pago (Para los títulos)
+        # --- 5. LOGICA DE LÍNEAS Y OFERTAS ---
+        # (Misma lógica de agrupación que tenías antes)
         term_ids_to_fetch = {int(global_term_id)}
         for it in items:
-            if it.get('payment_term_id'):
-                term_ids_to_fetch.add(int(it.get('payment_term_id')))
+            if it.get('payment_term_id'): term_ids_to_fetch.add(int(it.get('payment_term_id')))
         
-        terms_map = {} 
+        terms_map = {}
         try:
             term_recs = client.env['account.payment.term'].browse(list(term_ids_to_fetch))
             for t in term_recs:
-                t_name = t.name
-                if t_name and "inmediato" in t_name.lower():
-                    terms_map[t.id] = "CONTADO"
-                else:
-                    terms_map[t.id] = t_name
-        except Exception as e:
-            log.warning(f"Error fetching terms: {e}")
+                terms_map[t.id] = "CONTADO" if t.name and "inmediato" in t.name.lower() else t.name
+        except Exception as e: log.warning(f"Error terms: {e}")
 
-        # 3. Obtener SKUs de Oferta
         offer_skus = set()
         pg_conn = get_pg_connection()
         if pg_conn:
             try:
                 cur = pg_conn.cursor()
                 cur.execute("SELECT sku FROM app_product_offers WHERE is_active = TRUE")
-                rows = cur.fetchall()
-                offer_skus = {r[0] for r in rows}
+                offer_skus = {r[0] for r in cur.fetchall()}
                 cur.close()
-            except Exception as e:
-                log.error(f"Error cargando ofertas: {e}")
-            finally:
-                pg_conn.close()
+            finally: pg_conn.close()
 
-        # 4. Agrupar Items
-        groups = {} 
+        groups = {}
         vistos = set()
-
         for it in items:
             tmpl_id = it.get('product_id')
-            qty     = it.get('product_uom_qty') or it.get('qty') or 1
-            price   = it.get('price_unit')
-            name    = it.get('name')
-            item_term_id = int(it.get('payment_term_id') or global_term_id)
-
-            d1 = float(it.get('discount1', 0) or 0.0)
-            d2 = float(it.get('discount2', 0) or 0.0)
-            d3 = float(it.get('discount3', 0) or 0.0)
-            discount_eq = 100.0 * (1.0 - (1.0 - d1/100.0)*(1.0 - d2/100.0)*(1.0 - d3/100.0))
-
-            if not tmpl_id or price is None:
-                continue 
-
-            if tmpl_id in vistos:
-                pass 
+            if not tmpl_id or tmpl_id in vistos: continue
             vistos.add(tmpl_id)
 
             variant = client.env['product.product'].search([('product_tmpl_id', '=', tmpl_id)], limit=1)
-            if not variant:
-                return jsonify({"error": f"Variante no encontrada para template {tmpl_id}"}), 404
+            if not variant: continue
             
-            variant_obj = variant[0]
-            sku = str(variant_obj.default_code or "").strip()
+            v_obj = variant[0]
+            sku = str(v_obj.default_code or "").strip()
+            item_term_id = int(it.get('payment_term_id') or global_term_id)
+            
+            d1, d2, d3 = float(it.get('discount1', 0)), float(it.get('discount2', 0)), float(it.get('discount3', 0))
+            disc_eq = 100.0 * (1.0 - (1.0 - d1/100.0)*(1.0 - d2/100.0)*(1.0 - d3/100.0))
 
             line_vals = {
-                "product_id": variant_obj.id,
-                "product_uom_qty": float(qty),
-                "price_unit": float(price),
-                "discount": round(discount_eq, 4),
-                "discount1": d1,
-                "discount2": d2,
-                "discount3": d3
+                "product_id": v_obj.id, "product_uom_qty": float(it.get('qty', 1)),
+                "price_unit": float(it.get('price_unit', 0)), "discount": round(disc_eq, 4),
+                "discount1": d1, "discount2": d2, "discount3": d3, "name": it.get('name')
             }
-            if name:
-                line_vals["name"] = str(name)
+            key = (sku in offer_skus, item_term_id)
+            if key not in groups: groups[key] = []
+            groups[key].append(line_vals)
 
-            is_offer = sku in offer_skus
-            group_key = (is_offer, item_term_id)
-            
-            if group_key not in groups:
-                groups[group_key] = []
-            groups[group_key].append(line_vals)
-
-        # 5. Construir orden con secciones
-        sorted_keys = sorted(groups.keys(), key=lambda x: (1 if x[0] else 0, x[1]), reverse=True)
         order_lines_cmd = []
+        sorted_keys = sorted(groups.keys(), key=lambda x: (1 if x[0] else 0, x[1]), reverse=True)
+        for (is_offer, t_id) in sorted_keys:
+            title = f"[{'OFERTA' if is_offer else 'LISTA DE PRECIOS'}] {terms_map.get(t_id, 'Estandar')}"
+            order_lines_cmd.append((0, 0, {'display_type': 'line_section', 'name': title}))
+            for l in groups[(is_offer, t_id)]: order_lines_cmd.append((0, 0, l))
 
-        for (is_offer, term_id) in sorted_keys:
-            lines = groups[(is_offer, term_id)]
-            term_name = terms_map.get(term_id, "Estandar")
-            
-            if is_offer:
-                title = f"[OFERTA] {term_name}"
-            else:
-                title = f"[LISTA DE PRECIOS] {term_name}"
-            
-            order_lines_cmd.append((0, 0, {
-                'display_type': 'line_section',
-                'name': title
-            }))
-            
-            for l in lines:
-                order_lines_cmd.append((0, 0, l))
-
-        # 6. Crear Pedido
-        ship_id = None
-        try:
-            if partner_shipping_id and str(partner_shipping_id).isdigit():
-                ship_id = int(partner_shipping_id)
-        except:
-            ship_id = None
+        # --- 6. CREAR O ACTUALIZAR PEDIDO ---
+        ship_id = int(partner_shipping_id) if partner_shipping_id and str(partner_shipping_id).isdigit() else cliente.id
+        
+        # Si actualizamos, agregamos el comando (5,0,0) al inicio para borrar líneas viejas y reescribir
+        final_lines = [(5, 0, 0)] + order_lines_cmd if order_id_to_update else order_lines_cmd
 
         vals = {
-            "partner_id": cliente.id,
-            "partner_invoice_id": cliente.id,
-            "partner_shipping_id": ship_id if ship_id else (cliente.id),
-            "pricelist_id": pricelist_id,
-            "payment_term_id": int(global_term_id),
-            "order_line": order_lines_cmd,
+            "partner_id": cliente.id, "partner_invoice_id": cliente.id, "partner_shipping_id": ship_id,
+            "pricelist_id": pricelist_id, "payment_term_id": int(global_term_id),
+            "order_line": final_lines, 
             "origin": "APP SALBOM"
         }
-        try:
-            if carrier_id and str(carrier_id).isdigit():
-                vals["carrier_id"] = int(carrier_id)
-        except:
-            pass
+        if carrier_id: vals["carrier_id"] = int(carrier_id)
 
-        order = client.env['sale.order'].create(vals)
+        order = None
         
-        # --- 7. NOTA INTERNA (Observaciones + Usuario) ---
-        mensajes_nota = []
-        if observaciones:
-            mensajes_nota.append(f"📝 <b>Observaciones del cliente:</b><br/>{observaciones}")
-        if created_by_name:
-            mensajes_nota.append(f"👤 <b>Cargado por:</b> {created_by_name} (desde App)")
-            
-        if mensajes_nota:
-            full_body = "<br/><br/>".join(mensajes_nota)
+        if order_id_to_update:
+            # Intentar buscar el pedido existente
             try:
-                order.message_post(
-                    body=full_body, 
-                    message_type='comment', 
-                    subtype_xmlid='mail.mt_note' 
-                )
+                existing_order = client.env['sale.order'].browse(int(order_id_to_update))
+                if existing_order.exists() and existing_order.state in ['draft', 'sent']:
+                    log.info(f"♻️ Actualizando pedido existente ID: {order_id_to_update}")
+                    existing_order.write(vals)
+                    order = existing_order
             except Exception as e:
-                log.warning(f"No se pudo guardar la nota interna: {e}")
-        # ------------------------------------------------
+                log.warning(f"No se pudo actualizar pedido {order_id_to_update}, creando nuevo: {e}")
 
+        # Si no se pudo actualizar o no había ID, crear uno nuevo
+        if not order:
+            order = client.env['sale.order'].create(vals)
+
+        # --- 7. NOTAS Y CONFIRMACIÓN ---
+        full_body = "<br/>".join(filter(None, [
+            f"📝 <b>Obs:</b> {observaciones}" if observaciones else None,
+            f"👤 <b>Por:</b> {created_by_name}" if created_by_name else None
+        ]))
+        if full_body: 
+            order.message_post(body=full_body, message_type='comment', subtype_xmlid='mail.mt_note')
+
+        # FORZAR CONFIRMACIÓN (Pasar a Pedido de Venta)
         try:
-            order._amount_all()
-        except Exception:
-            pass
-
-        currency        = order.currency_id.name if order.currency_id else "USD"
-        amount_untaxed  = float(order.amount_untaxed or 0.0)
-        amount_total    = float(order.amount_total or 0.0)
-
-        groups_tax, tax_totals_raw = [], None
-        try:
-            tt = getattr(order, 'tax_totals_json', None) or getattr(order, 'tax_totals', None)
-            if isinstance(tt, str):
-                try: tt = json.loads(tt)
-                except: tt = None
-            if isinstance(tt, dict):
-                tax_totals_raw = tt
-                gbs = tt.get('groups_by_subtotal') or {}
-                tmp = []
-                for _k, arr in (gbs.items() if isinstance(gbs, dict) else []):
-                    if isinstance(arr, list):
-                        for g in arr:
-                            name = g.get('tax_group_name') or g.get('name') or g.get('group_name')
-                            amount = float(g.get('tax_group_amount') or g.get('amount') or 0.0)
-                            base = float(g.get('base') or 0.0)
-                            if name:
-                                tmp.append({"name": name, "amount": amount, "base": base})
-                groups_tax = tmp
+            if order.state in ['draft', 'sent']:
+                order.action_confirm()
         except Exception as e:
-            log.warning(f"tax_totals parse: {e}")
+            log.warning(f"Error al confirmar pedido automáticamente: {e}")
 
-        return jsonify({
-            "pedido_id": order.id,
+        # Recalcular totales para respuesta
+        order._amount_all()
+
+        respuesta_final = {
+            "pedido_id": order.id, 
             "nro_pedido": order.name,
-            "currency": currency,
-            "base_imponible": round(amount_untaxed, 2),
-            "impuestos": round(amount_total - amount_untaxed, 2),
-            "total": round(amount_total, 2),
-            "groups": groups_tax,
-            "tax_totals": tax_totals_raw
-        })
+            "currency": order.currency_id.name if order.currency_id else "USD",
+            "total": round(float(order.amount_total), 2)
+        }
+
+        # Guardar en cache
+        from repos import insert_pedido_cache_db
+        insert_pedido_cache_db(
+            cliente_id=cliente.id, moneda=respuesta_final["currency"], tipo_cambio=1.0,
+            base_imponible=float(order.amount_untaxed), impuestos_totales=float(order.amount_total - order.amount_untaxed),
+            total=respuesta_final["total"], payload=data, respuesta=respuesta_final
+        )
+
+        return jsonify(respuesta_final), 200
 
     client = get_odoo_client()
     try:
-        try:
-            return _do_create_and_summarize(client)
+        try: return _do_create_and_summarize(client)
         except Exception as e:
             if _is_xmlrpc_conn_error(e):
                 release_odoo_client(client)
-                client = get_odoo_client()
-                return _do_create_and_summarize(client)
+                return _do_create_and_summarize(get_odoo_client())
             raise
     except Exception as e:
-        handle_connection_error(e)
-        log.error(f"❌ crear_pedido:\n{traceback.format_exc()}")
+        log.error(f"❌ crear_pedido: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
-    finally:
-        release_odoo_client(client)
+    finally: release_odoo_client(client)
 
 @app.route('/usuario-perfil/editar', methods=['POST'])
 def editar_perfil():
