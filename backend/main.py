@@ -1909,8 +1909,64 @@ def calcular_descuentos():
         if pg_conn: pg_conn.close()
 
 # ====== Pedidos ======
+# ---------------------------------------------------------
+# 1. CORRECCIÓN: Endpoint Clientes (ADMIN ve todo)
+# ---------------------------------------------------------
+@app.route('/clients', methods=['GET'])
+def get_clients():
+    # Se espera que el frontend envíe ?cuit=... o ?user_id=... para identificar quién pide
+    cuit_solicitante = request.args.get('cuit')
+    
+    conn = get_pg_connection()
+    if not conn: return jsonify([]), 500
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        
+        # A. Verificar ROL del solicitante
+        rol = "VENDEDOR" # Default
+        if cuit_solicitante:
+            cur.execute("SELECT role FROM app_users WHERE cuit = %s", (cuit_solicitante,))
+            user_data = cur.fetchone()
+            if user_data:
+                rol = user_data['role']
+        
+        # B. Construir consulta según ROL
+        if rol == 'ADMIN':
+            # Si es ADMIN, trae TODOS los clientes de la base local
+            log.info(f"👑 ADMIN {cuit_solicitante} solicitando cartera completa.")
+            cur.execute("""
+                SELECT * FROM partners 
+                WHERE active = TRUE 
+                ORDER BY name ASC
+            """)
+        else:
+            # Si es VENDEDOR/USUARIO, trae solo los asignados por coincidencia de vendedor
+            # (Asumiendo que 'email_comercial' en partners coincide con el usuario, 
+            #  o ajusta el WHERE según tu lógica de asignación actual)
+            cur.execute("""
+                SELECT * FROM partners 
+                WHERE active = TRUE 
+                AND (
+                    vat = %s  -- El usuario se ve a sí mismo
+                    OR email_comercial IN (SELECT email FROM app_users WHERE cuit = %s) -- Sus clientes asignados
+                )
+                ORDER BY name ASC
+            """, (cuit_solicitante, cuit_solicitante))
+
+        rows = cur.fetchall()
+        return jsonify(rows)
+    except Exception as e:
+        log.error(f"Error getting clients: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+# ---------------------------------------------------------
+# 2. CORRECCIÓN: Endpoint Crear Pedido (Sin error transaction_id)
+# ---------------------------------------------------------
 @app.route('/crear-pedido', methods=['POST'])
 def crear_pedido():
+    # Función auxiliar para reintentos
     def _is_xmlrpc_conn_error(exc: Exception) -> bool:
         s = f"{type(exc).__name__}:{exc}"
         return ("CannotSendRequest" in s) or ("ResponseNotReady" in s) or ("RemoteDisconnected" in s) or ("Idle" in s)
@@ -1918,10 +1974,15 @@ def crear_pedido():
     def _do_create_and_summarize(client):
         data = request.get_json() or {}
         
-        # --- 1. DATOS CLAVE ---
+        # --- CORRECCIÓN ERROR TRANSACTION_ID ---
         transaction_id = data.get('transaction_id')
-        order_id_to_update = data.get('order_id_to_update') # ID del pedido borrador (si existe)
-        
+        if not transaction_id:
+            # Si el frontend (PasoDatos) no manda ID (es una cotización/borrador),
+            # generamos uno temporal para que NO falle.
+            transaction_id = f"auto_draft_{int(time.time()*1000)}"
+            log.info(f"⚠️ Transaction ID no recibido. Generado temporal: {transaction_id}")
+
+        order_id_to_update = data.get('order_id_to_update')
         cliente_cuit = data.get('cliente_cuit') or data.get('partner_vat')
         items = data.get('items', [])
         global_term_id = data.get('payment_term_id')
@@ -1930,38 +1991,36 @@ def crear_pedido():
         observaciones = data.get('observaciones', '')
         created_by_name = data.get('created_by_name', '')
 
-        if not transaction_id:
-            return jsonify({"error": "Falta transaction_id"}), 400
+        # --- IDEMPOTENCIA ---
+        # Solo verificamos cache si NO es un autogenerado (los autogenerados son siempre nuevos drafts)
+        if not transaction_id.startswith("auto_draft"):
+            pg_conn = get_pg_connection()
+            if pg_conn:
+                try:
+                    cur = pg_conn.cursor(cursor_factory=RealDictCursor)
+                    cur.execute("SELECT respuesta_json FROM pedido_cache WHERE payload_json->>'transaction_id' = %s", (transaction_id,))
+                    cache = cur.fetchone()
+                    if cache:
+                        log.info(f"Pedido duplicado detectado (txn: {transaction_id}). Devolviendo cache.")
+                        return jsonify(cache['respuesta_json']), 200
+                    cur.close()
+                except Exception as e:
+                    log.error(f"Error checking cache: {e}")
+                finally:
+                    pg_conn.close()
 
-        # --- 2. IDEMPOTENCIA (Evitar duplicados por error de red) ---
-        pg_conn = get_pg_connection()
-        if pg_conn:
-            try:
-                cur = pg_conn.cursor(cursor_factory=RealDictCursor)
-                cur.execute("SELECT respuesta_json FROM pedido_cache WHERE payload_json->>'transaction_id' = %s", (transaction_id,))
-                cache = cur.fetchone()
-                if cache:
-                    log.info(f"Pedido duplicado detectado (txn: {transaction_id}). Devolviendo cache.")
-                    return jsonify(cache['respuesta_json']), 200
-                cur.close()
-            except Exception as e:
-                log.error(f"Error checking cache: {e}")
-            finally:
-                pg_conn.close()
-
-        # --- 3. VALIDACIONES BÁSICAS ---
+        # --- VALIDACIONES ---
         if not cliente_cuit: return jsonify({"error": "Falta cliente_cuit"}), 400
         if not items or not isinstance(items, list): return jsonify({"error": "Faltan items"}), 400
         if not global_term_id: return jsonify({"error": "Falta payment_term_id global"}), 400
 
-        # --- 4. PREPARAR DATOS ODOO ---
+        # --- BUSCAR CLIENTE ---
         cliente = client.env['res.partner'].search([('vat', '=', cliente_cuit)], limit=1)
-        if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
+        if not cliente: return jsonify({"error": "Cliente no encontrado en Odoo"}), 404
         cliente = cliente[0]
         pricelist_id = cliente.property_product_pricelist.id if cliente.property_product_pricelist else None
 
-        # --- 5. LOGICA DE LÍNEAS Y OFERTAS ---
-        # (Misma lógica de agrupación que tenías antes)
+        # --- ARMAR LÍNEAS (Ofertas vs Lista) ---
         term_ids_to_fetch = {int(global_term_id)}
         for it in items:
             if it.get('payment_term_id'): term_ids_to_fetch.add(int(it.get('payment_term_id')))
@@ -1971,7 +2030,7 @@ def crear_pedido():
             term_recs = client.env['account.payment.term'].browse(list(term_ids_to_fetch))
             for t in term_recs:
                 terms_map[t.id] = "CONTADO" if t.name and "inmediato" in t.name.lower() else t.name
-        except Exception as e: log.warning(f"Error terms: {e}")
+        except: pass
 
         offer_skus = set()
         pg_conn = get_pg_connection()
@@ -2016,10 +2075,10 @@ def crear_pedido():
             order_lines_cmd.append((0, 0, {'display_type': 'line_section', 'name': title}))
             for l in groups[(is_offer, t_id)]: order_lines_cmd.append((0, 0, l))
 
-        # --- 6. CREAR O ACTUALIZAR PEDIDO ---
+        # --- CREAR O ACTUALIZAR PEDIDO ---
         ship_id = int(partner_shipping_id) if partner_shipping_id and str(partner_shipping_id).isdigit() else cliente.id
         
-        # Si actualizamos, agregamos el comando (5,0,0) al inicio para borrar líneas viejas y reescribir
+        # (5,0,0) limpia las lineas anteriores si es una actualización
         final_lines = [(5, 0, 0)] + order_lines_cmd if order_id_to_update else order_lines_cmd
 
         vals = {
@@ -2031,23 +2090,20 @@ def crear_pedido():
         if carrier_id: vals["carrier_id"] = int(carrier_id)
 
         order = None
-        
         if order_id_to_update:
-            # Intentar buscar el pedido existente
             try:
-                existing_order = client.env['sale.order'].browse(int(order_id_to_update))
-                if existing_order.exists() and existing_order.state in ['draft', 'sent']:
-                    log.info(f"♻️ Actualizando pedido existente ID: {order_id_to_update}")
-                    existing_order.write(vals)
-                    order = existing_order
+                existing = client.env['sale.order'].browse(int(order_id_to_update))
+                if existing.exists() and existing.state in ['draft', 'sent']:
+                    log.info(f"♻️ Actualizando pedido borrador ID: {order_id_to_update}")
+                    existing.write(vals)
+                    order = existing
             except Exception as e:
-                log.warning(f"No se pudo actualizar pedido {order_id_to_update}, creando nuevo: {e}")
+                log.warning(f"No se pudo actualizar {order_id_to_update}: {e}")
 
-        # Si no se pudo actualizar o no había ID, crear uno nuevo
         if not order:
             order = client.env['sale.order'].create(vals)
 
-        # --- 7. NOTAS Y CONFIRMACIÓN ---
+        # Notas y confirmación
         full_body = "<br/>".join(filter(None, [
             f"📝 <b>Obs:</b> {observaciones}" if observaciones else None,
             f"👤 <b>Por:</b> {created_by_name}" if created_by_name else None
@@ -2055,30 +2111,31 @@ def crear_pedido():
         if full_body: 
             order.message_post(body=full_body, message_type='comment', subtype_xmlid='mail.mt_note')
 
-        # FORZAR CONFIRMACIÓN (Pasar a Pedido de Venta)
-        try:
-            if order.state in ['draft', 'sent']:
-                order.action_confirm()
-        except Exception as e:
-            log.warning(f"Error al confirmar pedido automáticamente: {e}")
-
-        # Recalcular totales para respuesta
+        # CALCULO DE TOTALES (Importante para el paso de impuestos)
         order._amount_all()
+        
+        # Obtener desglose de impuestos (compatibilidad Odoo 14/15/16)
+        tax_totals = getattr(order, 'tax_totals_json', None) or getattr(order, 'tax_totals', None) or {}
+        if isinstance(tax_totals, str): tax_totals = json.loads(tax_totals)
 
         respuesta_final = {
             "pedido_id": order.id, 
             "nro_pedido": order.name,
             "currency": order.currency_id.name if order.currency_id else "USD",
-            "total": round(float(order.amount_total), 2)
+            "base_imponible": round(float(order.amount_untaxed), 2),
+            "impuestos": round(float(order.amount_tax), 2),
+            "total": round(float(order.amount_total), 2),
+            "tax_totals": tax_totals
         }
 
-        # Guardar en cache
-        from repos import insert_pedido_cache_db
-        insert_pedido_cache_db(
-            cliente_id=cliente.id, moneda=respuesta_final["currency"], tipo_cambio=1.0,
-            base_imponible=float(order.amount_untaxed), impuestos_totales=float(order.amount_total - order.amount_untaxed),
-            total=respuesta_final["total"], payload=data, respuesta=respuesta_final
-        )
+        # Guardar en cache solo si es confirmación real (no draft automático)
+        if not transaction_id.startswith("auto_draft"):
+            from repos import insert_pedido_cache_db
+            insert_pedido_cache_db(
+                cliente_id=cliente.id, moneda=respuesta_final["currency"], tipo_cambio=1.0,
+                base_imponible=respuesta_final["base_imponible"], impuestos_totales=respuesta_final["impuestos"],
+                total=respuesta_final["total"], payload=data, respuesta=respuesta_final
+            )
 
         return jsonify(respuesta_final), 200
 
