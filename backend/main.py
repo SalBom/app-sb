@@ -4133,12 +4133,10 @@ def get_all_app_users():
 @app.route('/users', methods=['GET'])
 def get_users_unified():
     conn = get_pg_connection()
-    if not conn: 
-        return jsonify([]), 500
+    if not conn: return jsonify([]), 500
     try:
         cur = conn.cursor()
-        # Se elimina 'email' de ambos SELECT para evitar el error "column does not exist"
-        # Ahora ambas tablas devuelven exactamente: name, cuit, role e id
+        # Mantenemos la consulta sin 'email' para evitar el error anterior
         cur.execute("""
             SELECT name, cuit, role, id FROM app_users WHERE is_active = TRUE
             UNION ALL
@@ -4149,12 +4147,22 @@ def get_users_unified():
         rows = cur.fetchall()
         
         users = []
+        # Usamos un contador para generar IDs únicos negativos para los pre-asignados
+        temp_id_counter = -1
+        
         for r in rows:
+            current_id = r[3]
+            
+            # Si el ID es -1 (viene de app_user_roles), le asignamos uno único
+            if current_id == -1:
+                current_id = temp_id_counter
+                temp_id_counter -= 1 # El siguiente será -2, -3, etc.
+            
             users.append({
                 "name": r[0],
-                "cuit": r[2] if len(r) > 2 else r[1], # Ajuste de seguridad por el orden del CUIT
+                "cuit": r[1],
                 "role": r[2],
-                "id": r[3]
+                "id": current_id # Ahora cada usuario tendrá un ID diferente
             })
         return jsonify(users)
     except Exception as e:
