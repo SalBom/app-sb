@@ -1976,16 +1976,15 @@ def get_clients():
 
 @app.route('/crear-pedido', methods=['POST'])
 def crear_pedido():
-    # Función interna para la lógica
     def _logic(client):
         data = request.get_json() or {}
         
-        # --- 1. Datos Generales ---
+        # Datos del Cliente
         cliente_cuit = data.get('cliente_cuit') or data.get('partner_vat')
         items = data.get('items', [])
         global_term_id = data.get('payment_term_id')
         
-        # --- RECUPERADO: Notas y Referencias ---
+        # --- RECUPERADO DE TU VERSIÓN ANTERIOR ---
         nota_cliente = data.get('note') or data.get('nota') or ""
         obs_internas = data.get('observaciones') or data.get('internal_note')
         ref_cliente  = data.get('client_order_ref') or data.get('ref') or f"APP-{int(time.time())}"
@@ -1998,44 +1997,40 @@ def crear_pedido():
         if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
         cliente = cliente[0]
 
-        # --- 2. Preparar líneas (CON PROTECCIÓN ANTI-CRASH) ---
+        # Preparar líneas (CON SEGURIDAD ANTI-CRASH)
         order_lines_cmd = []
         
         for item in items:
             try:
                 raw_id = item.get('product_id')
                 
-                # Usamos el helper seguro para evitar el error XML-RPC
+                # Usamos el helper para filtrar IDs gigantes
                 variant_id = _get_variant_id(client, raw_id)
                 
                 if not variant_id:
-                    log.warning(f"⚠️ Producto omitido (ID inválido): {raw_id}")
+                    # Si el ID es inválido, lo saltamos silenciosamente
                     continue
 
                 qty = float(item.get('qty', 1))
                 price = float(item.get('price_unit', 0))
+                discount = float(item.get('discount', 0)) # Recuperamos descuento si existe
                 
-                # Recuperar descuento si viene del front
-                discount = float(item.get('discount', 0))
-
-                line_val = {
+                order_lines_cmd.append((0, 0, {
                     'product_id': variant_id,
                     'product_uom_qty': qty,
                     'price_unit': price,
                     'discount': discount
-                }
-                
-                order_lines_cmd.append((0, 0, line_val))
+                }))
             except (ValueError, TypeError):
                 continue
 
         if not order_lines_cmd:
             return jsonify({
-                "error": "No se pudieron procesar los productos. Intente vaciar el carrito.",
+                "error": "Error procesando productos. Vacíe el carrito e intente nuevamente.",
                 "code": "EMPTY_LINES"
             }), 400
 
-        # --- 3. Armar el Diccionario del Pedido ---
+        # Armar el objeto pedido
         vals = {
             "partner_id": cliente.id,
             "partner_invoice_id": cliente.id,
@@ -2043,52 +2038,47 @@ def crear_pedido():
             "payment_term_id": int(global_term_id) if global_term_id else False,
             "order_line": order_lines_cmd,
             "origin": "APP SALBOM",
-            
-            # --- RESTAURADO: Campos de texto ---
-            "note": nota_cliente,             # Nota que ve el cliente
-            "client_order_ref": ref_cliente,  # Referencia
+            "note": nota_cliente,             # Nota visible en PDF
+            "client_order_ref": ref_cliente,  # Referencia cliente
         }
 
-        # --- 4. Crear el Pedido en Odoo ---
         try:
+            # Crear pedido
             order = client.env['sale.order'].create(vals)
             
-            # --- RESTAURADO: Enviar Observación al Chatter ---
+            # --- RECUPERADO: Postear observación en el Chatter ---
             if obs_internas:
                 try:
                     order.message_post(
                         body=f"📝 <b>Observación desde App:</b> {obs_internas}",
                         subtype_xmlid="mail.mt_note"
                     )
-                except Exception as e_msg:
-                    log.warning(f"No se pudo postear nota interna: {e_msg}")
+                except Exception:
+                    pass # Si falla el mensaje, no rompemos el pedido
 
-            # Forzamos lectura fresca de los totales
-            datos_frescos = order.read(['amount_total', 'name', 'currency_id'])[0]
-            
-            currency_name = "USD"
-            if datos_frescos.get('currency_id'):
-                currency_name = datos_frescos['currency_id'][1]
+            # Obtener totales frescos
+            datos = order.read(['amount_total', 'name', 'currency_id'])[0]
+            curr = "USD"
+            if datos.get('currency_id'):
+                curr = datos['currency_id'][1]
 
             return jsonify({
                 "pedido_id": order.id,
-                "nro_pedido": datos_frescos.get('name'),
-                "total": datos_frescos.get('amount_total'),
-                "currency": currency_name
+                "nro_pedido": datos.get('name'),
+                "total": datos.get('amount_total'),
+                "currency": curr
             }), 200
 
         except Exception as e_odoo:
             err_msg = str(e_odoo)
-            # Manejo de error específico si el producto desapareció
             if "MissingError" in err_msg or "Record does not exist" in err_msg:
-                log.error(f"❌ Error de integridad: {err_msg}")
+                log.error(f"❌ Integridad: {err_msg}")
                 return jsonify({
-                    "error": "Uno o más productos ya no están disponibles. Por favor vacíe el carrito.",
+                    "error": "Uno o más productos ya no están disponibles. Vacíe el carrito.",
                     "code": "PRODUCT_MISSING"
                 }), 409
             raise e_odoo
 
-    # Ejecutar con manejo de conexión robusto
     try:
         return execute_odoo_operation(_logic)
     except Exception as e:
@@ -2096,21 +2086,20 @@ def crear_pedido():
         return jsonify({"error": "Error al procesar el pedido."}), 500
 
 # -------------------------------------------------------------------------
-# HELPER: RESOLVER VARIANTE (CORREGIDO)
-# -------------------------------------------------------------------------
-# -------------------------------------------------------------------------
-# HELPER OBLIGATORIO: RESOLVER VARIANTE
+# HELPER DE SEGURIDAD: RESOLVER VARIANTE
 # -------------------------------------------------------------------------
 def _get_variant_id(client, tmpl_id):
     """
-    Busca la variante correcta de forma segura.
-    Valida el tamaño del entero ANTES de buscar para evitar el error XML-RPC.
+    1. Filtra números gigantes para evitar el crash 'int exceeds XML-RPC limits'.
+    2. Convierte ID de Plantilla -> ID de Variante si es necesario.
     """
     try:
         if not tmpl_id: return None
         val_id = int(tmpl_id)
         
-        # SI EL NÚMERO ES GIGANTE (Mayor a 2.147.483.647), LO DESCARTAMOS
+        # --- FIX CRÍTICO: VALIDACIÓN DE TAMAÑO ---
+        # Si el ID es mayor al límite de 32 bits (2,147,483,647), es basura/temporal.
+        # Lo descartamos inmediatamente para que no rompa la conexión XML-RPC.
         if val_id > 2147483647:
             return None
         
@@ -4257,8 +4246,8 @@ def update_cart():
             try:
                 raw_pid = i.get('product_id') or i.get('id')
                 
-                # Al llamar a este helper corregido, si raw_pid es gigante
-                # retornará None inmediatamente sin romper Odoo.
+                # --- USO DEL HELPER SEGURO ---
+                # Si raw_pid es gigante, devuelve None y no se envía a Odoo
                 pid = _get_variant_id(client_inst, raw_pid)
                 
                 if not pid: continue
@@ -4281,6 +4270,7 @@ def update_cart():
         return jsonify({"status": "ok"}), 200
     except Exception as e:
         log.error(f"❌ Error en /cart/save: {e}")
+        # Retornamos 200 aunque falle el guardado para no bloquear al usuario en la App
         return jsonify({"status": "error", "detail": str(e)}), 200
 
 @app.route('/cart/load', methods=['GET'])
