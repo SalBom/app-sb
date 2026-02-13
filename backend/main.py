@@ -1910,59 +1910,75 @@ def calcular_descuentos():
 
 # ====== Pedidos ======
 # ---------------------------------------------------------
-# 1. ENDPOINT CLIENTES (CORREGIDO: Admin ve todo + Fix Array Error)
-# ---------------------------------------------------------
-# ---------------------------------------------------------
-# ENDPOINT CLIENTES (CORREGIDO: SIN CORREO - Usa ID de usuario)
+# ENDPOINT CLIENTES (CORREGIDO: Directo a Odoo + Fix Admin)
 # ---------------------------------------------------------
 @app.route('/clients', methods=['GET'])
 def get_clients():
     cuit_solicitante = request.args.get('cuit')
     
+    # 1. Obtener Datos del Usuario Local
     conn = get_pg_connection()
-    if not conn: return jsonify([]), 500
-    try:
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        
-        # 1. Buscamos ROL e ID interno (Nada de emails)
-        # Obtenemos el 'id' que corresponde al ID de usuario en Odoo
-        cur.execute("SELECT role, id FROM app_users WHERE cuit = %s", (cuit_solicitante,))
-        user_data = cur.fetchone()
-        
-        rol = user_data['role'] if user_data else "VENDEDOR"
-        user_odoo_id = user_data['id'] if user_data else None
-        
-        # 2. Filtrado Lógico
-        if rol == 'ADMIN':
-            # ADMIN: Ve todo
-            log.info(f"👑 ADMIN {cuit_solicitante} descargando toda la cartera.")
-            cur.execute("""
-                SELECT * FROM partners 
-                WHERE active = TRUE 
-                ORDER BY name ASC
-            """)
-        else:
-            # VENDEDOR: Ve los clientes asignados a su ID de usuario (user_id)
-            # O se ve a sí mismo (por VAT/CUIT)
-            log.info(f"👤 VENDEDOR {cuit_solicitante} (ID Odoo: {user_odoo_id})")
-            
-            cur.execute("""
-                SELECT * FROM partners 
-                WHERE active = TRUE 
-                AND (
-                    user_id = %s  -- Asignados a mi ID de usuario (Odoo standard)
-                    OR vat = %s   -- Yo mismo
-                )
-                ORDER BY name ASC
-            """, (user_odoo_id, cuit_solicitante))
+    rol = "VENDEDOR"
+    user_odoo_id = None
+    
+    if conn:
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            cur.execute("SELECT role, id FROM app_users WHERE cuit = %s", (cuit_solicitante,))
+            user_data = cur.fetchone()
+            if user_data:
+                rol = user_data['role']
+                user_odoo_id = user_data['id']
+        except Exception as e:
+            log.warning(f"Advertencia leyendo rol local: {e}")
+        finally:
+            conn.close()
 
-        rows = cur.fetchall()
-        return jsonify(rows)
+    # 2. Conectar a Odoo (Bypasseando tabla local faltante)
+    client = get_odoo_client()
+    try:
+        # Dominio Base: Solo clientes activos y que sean compañías o individuos comerciales
+        # (Ajusta customer_rank > 0 si usas Odoo 15+, o dejalo genérico)
+        domain = [('active', '=', True)]
+        
+        # --- LÓGICA DE VISIBILIDAD ---
+        # Si dice ser ADMIN o si es el SuperUser (ID 1/2), le mostramos todo
+        es_super_admin = (user_odoo_id in [1, 2]) 
+        
+        if rol == 'ADMIN' or es_super_admin:
+            log.info(f"👑 ADMIN {cuit_solicitante} (ID {user_odoo_id}) - Descargando TODA la cartera.")
+            # Sin filtros adicionales = Ve todo
+        else:
+            log.info(f"👤 VENDEDOR {cuit_solicitante} (ID {user_odoo_id}) - Descargando asignados.")
+            # Filtro: (Asignado a mí) OR (Soy yo mismo por CUIT)
+            user_filter = [('user_id', '=', user_odoo_id)]
+            if cuit_solicitante:
+                # Añadimos condición OR para verse a sí mismo
+                user_filter = ['|', ('vat', '=', cuit_solicitante)] + user_filter
+            
+            domain.extend(user_filter)
+
+        # Campos necesarios para la App
+        fields = ['id', 'name', 'vat', 'street', 'city', 'state_id', 'zip', 'email']
+        
+        # Ejecutar búsqueda en Odoo
+        partners = client.execute_kw(
+            os.getenv('ODOO_DB'), 
+            int(os.getenv('ODOO_UID')), 
+            os.getenv('ODOO_PASS'), 
+            'res.partner', 
+            'search_read', 
+            [domain], 
+            {'fields': fields, 'limit': 1500} # Límite de seguridad
+        )
+        
+        return jsonify(partners)
+
     except Exception as e:
-        log.error(f"Error en get_clients: {e}")
+        log.error(f"Error crítico obteniendo clientes de Odoo: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
-        conn.close()
+        release_odoo_client(client)
 
 # ---------------------------------------------------------
 # 2. ENDPOINT CREAR PEDIDO (CORREGIDO: Auto-generar ID si falta)
