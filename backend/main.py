@@ -1912,6 +1912,9 @@ def calcular_descuentos():
 # ---------------------------------------------------------
 # 1. ENDPOINT CLIENTES (CORREGIDO: Admin ve todo + Fix Array Error)
 # ---------------------------------------------------------
+# ---------------------------------------------------------
+# ENDPOINT CLIENTES (CORREGIDO: SIN CORREO - Usa ID de usuario)
+# ---------------------------------------------------------
 @app.route('/clients', methods=['GET'])
 def get_clients():
     cuit_solicitante = request.args.get('cuit')
@@ -1921,34 +1924,37 @@ def get_clients():
     try:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         
-        # 1. Obtener datos del usuario de forma segura (evitando el error de Array)
-        cur.execute("SELECT role, email FROM app_users WHERE cuit = %s", (cuit_solicitante,))
+        # 1. Buscamos ROL e ID interno (Nada de emails)
+        # Obtenemos el 'id' que corresponde al ID de usuario en Odoo
+        cur.execute("SELECT role, id FROM app_users WHERE cuit = %s", (cuit_solicitante,))
         user_data = cur.fetchone()
         
         rol = user_data['role'] if user_data else "VENDEDOR"
-        email_user = user_data['email'] if user_data else ""
+        user_odoo_id = user_data['id'] if user_data else None
         
-        # 2. Lógica de filtrado
+        # 2. Filtrado Lógico
         if rol == 'ADMIN':
-            # ADMIN: Ve absolutamente todos los clientes activos
-            log.info(f"👑 ADMIN {cuit_solicitante} descargando cartera completa.")
+            # ADMIN: Ve todo
+            log.info(f"👑 ADMIN {cuit_solicitante} descargando toda la cartera.")
             cur.execute("""
                 SELECT * FROM partners 
                 WHERE active = TRUE 
                 ORDER BY name ASC
             """)
         else:
-            # VENDEDOR: Ve sus asignados por email comercial O su propio usuario (por CUIT)
-            # Esto asegura que "aparezcas tú mismo" si eres el usuario logueado
+            # VENDEDOR: Ve los clientes asignados a su ID de usuario (user_id)
+            # O se ve a sí mismo (por VAT/CUIT)
+            log.info(f"👤 VENDEDOR {cuit_solicitante} (ID Odoo: {user_odoo_id})")
+            
             cur.execute("""
                 SELECT * FROM partners 
                 WHERE active = TRUE 
                 AND (
-                    email_comercial = %s  -- Clientes asignados a mi email
-                    OR vat = %s           -- Yo mismo (si estoy en la lista de partners)
+                    user_id = %s  -- Asignados a mi ID de usuario (Odoo standard)
+                    OR vat = %s   -- Yo mismo
                 )
                 ORDER BY name ASC
-            """, (email_user, cuit_solicitante))
+            """, (user_odoo_id, cuit_solicitante))
 
         rows = cur.fetchall()
         return jsonify(rows)
