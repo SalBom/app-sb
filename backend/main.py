@@ -1085,13 +1085,13 @@ def delete_admin_promocion(promo_id):
 
 @app.route('/producto/<int:product_id>/info', methods=['GET'])
 def get_product_attributes(product_id):
-    # Cache key v14 para invalidar
+    # Cache key v14 para invalidar versiones viejas
     key = f"prod_info_v14:{product_id}"
 
     def query():
-        client = get_odoo_client()
-        try:
-            # 1. Atributos (Corrección Nombres)
+        # Usamos el wrapper seguro para evitar "Request-sent" loops
+        def _op(client):
+            # 1. Atributos
             lines = client.env['product.template.attribute.line'].search_read(
                 [('product_tmpl_id', '=', product_id)], ['attribute_id', 'value_ids']
             )
@@ -1102,7 +1102,6 @@ def get_product_attributes(product_id):
                 values_str = ""
 
                 if vids:
-                    # IDs a Nombres reales
                     if isinstance(vids[0], int):
                         vals = client.env['product.attribute.value'].read(vids, ['name'])
                         names = [v['name'] for v in vals]
@@ -1118,6 +1117,7 @@ def get_product_attributes(product_id):
             desc = pdata.get('description_sale') or ""
 
             # 3. Stock State y Qty
+            # Nota: _compute_stock_states debe ser robusta también
             st_map = _compute_stock_states(client, [{'id': product_id}])
             st_data = st_map.get(product_id, {'state': 'green', 'quantity': 0})
 
@@ -1127,10 +1127,11 @@ def get_product_attributes(product_id):
                 'stock_state': st_data.get('state', 'green'),
                 'stock_qty': st_data.get('quantity', 0)
             }
-        finally:
-            release_odoo_client(client)
+        
+        # Ejecutar de forma segura con reintentos
+        return execute_odoo_operation(_op)
 
-    return jsonify(get_cache_or_execute(key, ttl=20, fallback_fn=query))
+    return jsonify(get_cache_or_execute(key, ttl=120, fallback_fn=query))
 
 # ---------------------------------------------------------------
 # ADMIN: CREAR PROMOCIÓN (TARIFA 70) - CON HORA EXACTA
@@ -1976,15 +1977,16 @@ def get_clients():
 
 @app.route('/crear-pedido', methods=['POST'])
 def crear_pedido():
+    # Usamos execute_odoo_operation para reintentar si hay error "Request-sent"
     def _logic(client):
         data = request.get_json() or {}
         
-        # Datos del Cliente
+        # Datos Principales
         cliente_cuit = data.get('cliente_cuit') or data.get('partner_vat')
         items = data.get('items', [])
         global_term_id = data.get('payment_term_id')
         
-        # --- RECUPERADO DE TU VERSIÓN ANTERIOR ---
+        # --- RECUPERADO: Notas y Referencias ---
         nota_cliente = data.get('note') or data.get('nota') or ""
         obs_internas = data.get('observaciones') or data.get('internal_note')
         ref_cliente  = data.get('client_order_ref') or data.get('ref') or f"APP-{int(time.time())}"
@@ -1997,24 +1999,25 @@ def crear_pedido():
         if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
         cliente = cliente[0]
 
-        # Preparar líneas (CON SEGURIDAD ANTI-CRASH)
+        # Preparar líneas del pedido (Con protección anti-crash)
         order_lines_cmd = []
         
         for item in items:
             try:
                 raw_id = item.get('product_id')
                 
-                # Usamos el helper para filtrar IDs gigantes
+                # Helper seguro para obtener ID real y filtrar basura
                 variant_id = _get_variant_id(client, raw_id)
                 
                 if not variant_id:
-                    # Si el ID es inválido, lo saltamos silenciosamente
+                    log.warning(f"⚠️ Producto omitido (ID inválido/temporal): {raw_id}")
                     continue
 
                 qty = float(item.get('qty', 1))
                 price = float(item.get('price_unit', 0))
-                discount = float(item.get('discount', 0)) # Recuperamos descuento si existe
-                
+                # Recuperar descuento si viene
+                discount = float(item.get('discount', 0))
+
                 order_lines_cmd.append((0, 0, {
                     'product_id': variant_id,
                     'product_uom_qty': qty,
@@ -2026,11 +2029,11 @@ def crear_pedido():
 
         if not order_lines_cmd:
             return jsonify({
-                "error": "Error procesando productos. Vacíe el carrito e intente nuevamente.",
+                "error": "Error al procesar los items. Vacíe el carrito e intente nuevamente.",
                 "code": "EMPTY_LINES"
             }), 400
 
-        # Armar el objeto pedido
+        # Armar diccionario final
         vals = {
             "partner_id": cliente.id,
             "partner_invoice_id": cliente.id,
@@ -2038,15 +2041,17 @@ def crear_pedido():
             "payment_term_id": int(global_term_id) if global_term_id else False,
             "order_line": order_lines_cmd,
             "origin": "APP SALBOM",
-            "note": nota_cliente,             # Nota visible en PDF
-            "client_order_ref": ref_cliente,  # Referencia cliente
+            
+            # --- RESTAURADO: Campos de Texto ---
+            "note": nota_cliente,             # Nota visible en PDF/Presupuesto
+            "client_order_ref": ref_cliente,  # Referencia del cliente
         }
 
         try:
-            # Crear pedido
+            # Crear Pedido
             order = client.env['sale.order'].create(vals)
             
-            # --- RECUPERADO: Postear observación en el Chatter ---
+            # --- RESTAURADO: Enviar Observación al Chatter ---
             if obs_internas:
                 try:
                     order.message_post(
@@ -2054,9 +2059,9 @@ def crear_pedido():
                         subtype_xmlid="mail.mt_note"
                     )
                 except Exception:
-                    pass # Si falla el mensaje, no rompemos el pedido
+                    pass # Si falla el mensaje, no bloqueamos el pedido
 
-            # Obtener totales frescos
+            # Leer totales frescos
             datos = order.read(['amount_total', 'name', 'currency_id'])[0]
             curr = "USD"
             if datos.get('currency_id'):
@@ -2071,6 +2076,7 @@ def crear_pedido():
 
         except Exception as e_odoo:
             err_msg = str(e_odoo)
+            # Manejo de productos eliminados
             if "MissingError" in err_msg or "Record does not exist" in err_msg:
                 log.error(f"❌ Integridad: {err_msg}")
                 return jsonify({
@@ -2083,23 +2089,23 @@ def crear_pedido():
         return execute_odoo_operation(_logic)
     except Exception as e:
         log.error(f"❌ Error fatal en crear-pedido: {e}")
-        return jsonify({"error": "Error al procesar el pedido."}), 500
+        return jsonify({"error": "Error al procesar el pedido. Intente nuevamente."}), 500
 
 # -------------------------------------------------------------------------
 # HELPER DE SEGURIDAD: RESOLVER VARIANTE
 # -------------------------------------------------------------------------
 def _get_variant_id(client, tmpl_id):
     """
-    1. Filtra números gigantes para evitar el crash 'int exceeds XML-RPC limits'.
-    2. Convierte ID de Plantilla -> ID de Variante si es necesario.
+    Filtra números gigantes para evitar el crash 'int exceeds XML-RPC limits'
+    y busca la variante correcta del producto.
     """
     try:
         if not tmpl_id: return None
         val_id = int(tmpl_id)
         
         # --- FIX CRÍTICO: VALIDACIÓN DE TAMAÑO ---
-        # Si el ID es mayor al límite de 32 bits (2,147,483,647), es basura/temporal.
-        # Lo descartamos inmediatamente para que no rompa la conexión XML-RPC.
+        # Si el ID es mayor al límite de 32 bits (2,147,483,647), es un ID temporal de la App.
+        # Lo descartamos inmediatamente para que no rompa la conexión con Odoo.
         if val_id > 2147483647:
             return None
         
@@ -4246,12 +4252,11 @@ def update_cart():
             try:
                 raw_pid = i.get('product_id') or i.get('id')
                 
-                # --- USO DEL HELPER SEGURO ---
-                # Si raw_pid es gigante, devuelve None y no se envía a Odoo
+                # --- HELPER SEGURO ---
                 pid = _get_variant_id(client_inst, raw_pid)
-                
                 if not pid: continue
                 
+                # Convertir cantidad a float para evitar problemas
                 raw_qty = i.get('quantity') or i.get('product_uom_qty') or 1
                 qty = float(raw_qty)
 
@@ -4270,7 +4275,7 @@ def update_cart():
         return jsonify({"status": "ok"}), 200
     except Exception as e:
         log.error(f"❌ Error en /cart/save: {e}")
-        # Retornamos 200 aunque falle el guardado para no bloquear al usuario en la App
+        # Retornamos 200 para no molestar al usuario si falla el guardado automático
         return jsonify({"status": "error", "detail": str(e)}), 200
 
 @app.route('/cart/load', methods=['GET'])
