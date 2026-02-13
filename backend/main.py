@@ -1986,7 +1986,6 @@ def crear_pedido():
         # Generar ID temporal si falta
         transaction_id = data.get('transaction_id')
         if not transaction_id:
-            # Usamos string formateado para evitar enviar ints gigantes a loggers/DBs
             transaction_id = f"draft_{int(time.time()*1000)}" 
 
         # Datos básicos
@@ -2008,16 +2007,23 @@ def crear_pedido():
         
         for item in items:
             try:
-                prod_id = int(item.get('product_id'))
-                if prod_id > MAX_INT_32: 
-                    log.warning(f"⚠️ Omitiendo producto con ID inválido: {prod_id}")
+                raw_id = item.get('product_id')
+                # --- FIX: Resolver ID de Variante ---
+                variant_id = _get_variant_id(client, raw_id)
+                
+                if not variant_id:
+                    log.warning(f"⚠️ Producto no encontrado (ID recibido: {raw_id})")
+                    continue
+                
+                if variant_id > MAX_INT_32: 
+                    log.warning(f"⚠️ Omitiendo producto con ID inválido: {variant_id}")
                     continue
 
                 qty = float(item.get('qty', 1))
                 price = float(item.get('price_unit', 0))
                 
                 order_lines_cmd.append((0, 0, {
-                    'product_id': prod_id,
+                    'product_id': variant_id,
                     'product_uom_qty': qty,
                     'price_unit': price,
                 }))
@@ -2025,13 +2031,16 @@ def crear_pedido():
                 continue
 
         if not order_lines_cmd:
-            return jsonify({"error": "Datos de productos inválidos"}), 400
+            return jsonify({
+                "error": "No se pudieron procesar los productos. Intente vaciar el carrito.",
+                "code": "EMPTY_LINES"
+            }), 400
 
         # Armar diccionario
         vals = {
             "partner_id": cliente.id,
             "partner_invoice_id": cliente.id,
-            "partner_shipping_id": cliente.id, # Simplificado para evitar error si falta shipping
+            "partner_shipping_id": cliente.id, 
             "payment_term_id": int(global_term_id) if global_term_id else False,
             "order_line": order_lines_cmd,
             "origin": "APP SALBOM"
@@ -2056,7 +2065,6 @@ def crear_pedido():
             # DETECCION DE PRODUCTO ELIMINADO
             if "MissingError" in err_msg or "Record does not exist" in err_msg:
                 log.error(f"❌ Error de integridad: {err_msg}")
-                # Extraer ID si es posible para dar feedback
                 return jsonify({
                     "error": "Uno o más productos seleccionados ya no están disponibles en el sistema. Por favor, vacíe el carrito e intente nuevamente.",
                     "code": "PRODUCT_MISSING"
@@ -2070,6 +2078,33 @@ def crear_pedido():
         log.error(f"❌ Error fatal en crear-pedido: {e}")
         return jsonify({"error": "Error al procesar el pedido. Intente nuevamente."}), 500
 
+# -------------------------------------------------------------------------
+# HELPER: RESOLVER VARIANTE (NUEVO)
+# -------------------------------------------------------------------------
+def _get_variant_id(client, tmpl_id):
+    """
+    Recibe un ID que puede ser Template o Variant.
+    Busca la variante correcta para evitar el error "Record does not exist".
+    """
+    try:
+        if not tmpl_id: return None
+        tmpl_id = int(tmpl_id)
+        
+        # 1. Buscar si hay una variante vinculada a este template
+        # (Esto arregla el error cuando el ID del template != ID de la variante)
+        variants = client.env['product.product'].search([('product_tmpl_id', '=', tmpl_id)], limit=1)
+        if variants:
+            return int(variants[0])
+        
+        # 2. Si no, verificar si el ID que nos pasaron YA es una variante válida
+        exists = client.env['product.product'].search_count([('id', '=', tmpl_id)])
+        if exists:
+            return tmpl_id
+            
+        return None
+    except Exception:
+        return None
+    
 @app.route('/usuario-perfil/editar', methods=['POST'])
 def editar_perfil():
     client = get_odoo_client()
@@ -4196,7 +4231,7 @@ def update_cart():
         if not user: 
             return False
         
-        # 2. Sanitización estricta para evitar "int exceeds XML-RPC limits"
+        # 2. Sanitización estricta
         lines_clean = []
         MAX_INT_32 = 2147483647
         
@@ -4204,23 +4239,24 @@ def update_cart():
             try:
                 # Obtener ID
                 raw_pid = i.get('product_id') or i.get('id')
-                pid = int(raw_pid)
+                
+                # --- FIX: Resolver ID de Variante ---
+                pid = _get_variant_id(client_inst, raw_pid)
+                
+                # Validar seguridad
+                if not pid or pid > MAX_INT_32:
+                    continue
                 
                 # Obtener Cantidad (Usar float para evitar limite de enteros en XMLRPC)
                 raw_qty = i.get('quantity') or i.get('product_uom_qty') or 1
                 qty = float(raw_qty)
 
-                # Validar seguridad
-                if pid > MAX_INT_32:
-                    log.warning(f"⚠️ ID de producto excedido omitido: {pid}")
-                    continue
-                
                 lines_clean.append({'product_id': pid, 'qty': qty})
             except (ValueError, TypeError):
-                continue # Saltar items con datos basura
+                continue 
 
         if not lines_clean:
-            return True # Nada que guardar
+            return True 
 
         # 3. Llamada segura a Odoo
         if hasattr(client_inst.env, 'app.user.cart'):
@@ -4233,7 +4269,6 @@ def update_cart():
         return jsonify({"status": "ok"}), 200
     except Exception as e:
         log.error(f"❌ Error en /cart/save: {e}")
-        # Retornamos 200 para no bloquear la app si falla el guardado en segundo plano
         return jsonify({"status": "error", "detail": str(e)}), 200
 
 @app.route('/cart/load', methods=['GET'])
