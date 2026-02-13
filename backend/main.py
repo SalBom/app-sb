@@ -1976,17 +1976,20 @@ def get_clients():
 
 @app.route('/crear-pedido', methods=['POST'])
 def crear_pedido():
+    # Función interna para la lógica
     def _logic(client):
         data = request.get_json() or {}
         
-        transaction_id = data.get('transaction_id')
-        if not transaction_id:
-            transaction_id = f"draft_{int(time.time()*1000)}" 
-
+        # --- 1. Datos Generales ---
         cliente_cuit = data.get('cliente_cuit') or data.get('partner_vat')
         items = data.get('items', [])
         global_term_id = data.get('payment_term_id')
         
+        # --- RECUPERADO: Notas y Referencias ---
+        nota_cliente = data.get('note') or data.get('nota') or ""
+        obs_internas = data.get('observaciones') or data.get('internal_note')
+        ref_cliente  = data.get('client_order_ref') or data.get('ref') or f"APP-{int(time.time())}"
+
         if not cliente_cuit: return jsonify({"error": "Falta cliente_cuit"}), 400
         if not items: return jsonify({"error": "El pedido no tiene items"}), 400
 
@@ -1995,25 +1998,34 @@ def crear_pedido():
         if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
         cliente = cliente[0]
 
+        # --- 2. Preparar líneas (CON PROTECCIÓN ANTI-CRASH) ---
         order_lines_cmd = []
         
         for item in items:
             try:
                 raw_id = item.get('product_id')
-                # Usamos el helper corregido que ya filtra números gigantes
+                
+                # Usamos el helper seguro para evitar el error XML-RPC
                 variant_id = _get_variant_id(client, raw_id)
                 
                 if not variant_id:
+                    log.warning(f"⚠️ Producto omitido (ID inválido): {raw_id}")
                     continue
 
                 qty = float(item.get('qty', 1))
                 price = float(item.get('price_unit', 0))
                 
-                order_lines_cmd.append((0, 0, {
+                # Recuperar descuento si viene del front
+                discount = float(item.get('discount', 0))
+
+                line_val = {
                     'product_id': variant_id,
                     'product_uom_qty': qty,
                     'price_unit': price,
-                }))
+                    'discount': discount
+                }
+                
+                order_lines_cmd.append((0, 0, line_val))
             except (ValueError, TypeError):
                 continue
 
@@ -2023,29 +2035,39 @@ def crear_pedido():
                 "code": "EMPTY_LINES"
             }), 400
 
+        # --- 3. Armar el Diccionario del Pedido ---
         vals = {
             "partner_id": cliente.id,
             "partner_invoice_id": cliente.id,
             "partner_shipping_id": cliente.id,
             "payment_term_id": int(global_term_id) if global_term_id else False,
             "order_line": order_lines_cmd,
-            "origin": "APP SALBOM"
+            "origin": "APP SALBOM",
+            
+            # --- RESTAURADO: Campos de texto ---
+            "note": nota_cliente,             # Nota que ve el cliente
+            "client_order_ref": ref_cliente,  # Referencia
         }
 
+        # --- 4. Crear el Pedido en Odoo ---
         try:
             order = client.env['sale.order'].create(vals)
             
-            # --- CORRECCIÓN ---
-            # Eliminado: order._amount_all() (Esto causaba el error 'has no attribute')
-            # Odoo calcula los totales automáticamente al crear.
-            
-            # Forzamos lectura fresca de los totales por seguridad
+            # --- RESTAURADO: Enviar Observación al Chatter ---
+            if obs_internas:
+                try:
+                    order.message_post(
+                        body=f"📝 <b>Observación desde App:</b> {obs_internas}",
+                        subtype_xmlid="mail.mt_note"
+                    )
+                except Exception as e_msg:
+                    log.warning(f"No se pudo postear nota interna: {e_msg}")
+
+            # Forzamos lectura fresca de los totales
             datos_frescos = order.read(['amount_total', 'name', 'currency_id'])[0]
             
-            # Obtener nombre de moneda de forma segura
             currency_name = "USD"
             if datos_frescos.get('currency_id'):
-                # currency_id viene como (id, nombre) en read()
                 currency_name = datos_frescos['currency_id'][1]
 
             return jsonify({
@@ -2057,35 +2079,38 @@ def crear_pedido():
 
         except Exception as e_odoo:
             err_msg = str(e_odoo)
+            # Manejo de error específico si el producto desapareció
             if "MissingError" in err_msg or "Record does not exist" in err_msg:
                 log.error(f"❌ Error de integridad: {err_msg}")
                 return jsonify({
-                    "error": "Uno o más productos seleccionados ya no están disponibles. Vacíe el carrito e intente nuevamente.",
+                    "error": "Uno o más productos ya no están disponibles. Por favor vacíe el carrito.",
                     "code": "PRODUCT_MISSING"
                 }), 409
             raise e_odoo
 
+    # Ejecutar con manejo de conexión robusto
     try:
         return execute_odoo_operation(_logic)
     except Exception as e:
         log.error(f"❌ Error fatal en crear-pedido: {e}")
-        return jsonify({"error": "Error al procesar el pedido. Intente nuevamente."}), 500
+        return jsonify({"error": "Error al procesar el pedido."}), 500
 
 # -------------------------------------------------------------------------
 # HELPER: RESOLVER VARIANTE (CORREGIDO)
 # -------------------------------------------------------------------------
+# -------------------------------------------------------------------------
+# HELPER OBLIGATORIO: RESOLVER VARIANTE
+# -------------------------------------------------------------------------
 def _get_variant_id(client, tmpl_id):
     """
     Busca la variante correcta de forma segura.
-    CORRECCIÓN: Valida el tamaño del entero ANTES de buscar para evitar error XML-RPC.
+    Valida el tamaño del entero ANTES de buscar para evitar el error XML-RPC.
     """
     try:
         if not tmpl_id: return None
         val_id = int(tmpl_id)
         
-        # --- NUEVO: Validación de seguridad previa ---
-        # Si el número es mayor al límite de 32 bits (2,147,483,647), 
-        # Odoo crashea solo con intentar buscarlo. Retornamos None inmediatamente.
+        # SI EL NÚMERO ES GIGANTE (Mayor a 2.147.483.647), LO DESCARTAMOS
         if val_id > 2147483647:
             return None
         
