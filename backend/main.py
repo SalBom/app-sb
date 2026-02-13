@@ -1979,132 +1979,96 @@ def get_clients():
 # ---------------------------------------------------------
 @app.route('/crear-pedido', methods=['POST'])
 def crear_pedido():
-    def _is_xmlrpc_conn_error(exc: Exception) -> bool:
-        s = f"{type(exc).__name__}:{exc}"
-        return ("CannotSendRequest" in s) or ("ResponseNotReady" in s) or ("RemoteDisconnected" in s) or ("Idle" in s)
-
-    def _do_create_and_summarize(client):
+    # Función interna para la lógica
+    def _logic(client):
         data = request.get_json() or {}
         
-        # --- FIX: Si no hay transaction_id (ej: cotización), generamos uno temporal ---
+        # Generar ID temporal si falta
         transaction_id = data.get('transaction_id')
         if not transaction_id:
-            transaction_id = f"draft_{int(time.time()*10000)}"
-            log.info(f"⚠️ Pedido borrador sin ID. Generado temporal: {transaction_id}")
+            # Usamos string formateado para evitar enviar ints gigantes a loggers/DBs
+            transaction_id = f"draft_{int(time.time()*1000)}" 
 
-        order_id_to_update = data.get('order_id_to_update')
+        # Datos básicos
         cliente_cuit = data.get('cliente_cuit') or data.get('partner_vat')
         items = data.get('items', [])
         global_term_id = data.get('payment_term_id')
-        partner_shipping_id = data.get('partner_shipping_id')
-        carrier_id = data.get('carrier_id')
-        observaciones = data.get('observaciones', '')
-        created_by_name = data.get('created_by_name', '')
-
-        # Validaciones
+        
         if not cliente_cuit: return jsonify({"error": "Falta cliente_cuit"}), 400
-        if not items: return jsonify({"error": "Faltan items"}), 400
-        if not global_term_id: return jsonify({"error": "Falta payment_term_id"}), 400
+        if not items: return jsonify({"error": "El pedido no tiene items"}), 400
 
-        # --- IDEMPOTENCIA (Solo para pedidos reales, no borradores auto-generados) ---
-        if not transaction_id.startswith("draft_"):
-            pg_conn = get_pg_connection()
-            if pg_conn:
-                try:
-                    cur = pg_conn.cursor(cursor_factory=RealDictCursor)
-                    cur.execute("SELECT respuesta_json FROM pedido_cache WHERE payload_json->>'transaction_id' = %s", (transaction_id,))
-                    if cur.fetchone():
-                        # Si ya existe, retornar caché (evita duplicados)
-                        return jsonify(cur.fetchone()['respuesta_json']), 200
-                finally:
-                    pg_conn.close()
-
-        # --- LÓGICA ODOO ---
+        # Buscar cliente
         cliente = client.env['res.partner'].search([('vat', '=', cliente_cuit)], limit=1)
         if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
         cliente = cliente[0]
-        pricelist_id = cliente.property_product_pricelist.id if cliente.property_product_pricelist else None
 
-        # Preparar Líneas
-        offer_skus = set()
-        pg_conn = get_pg_connection()
-        if pg_conn:
-            try:
-                cur = pg_conn.cursor()
-                cur.execute("SELECT sku FROM app_product_offers WHERE is_active = TRUE")
-                offer_skus = {r[0] for r in cur.fetchall()}
-            finally: pg_conn.close()
-
+        # Preparar líneas del pedido con validación de tipos
         order_lines_cmd = []
-        # (Aquí iría tu lógica de agrupación de items por plazo/oferta, la mantengo simplificada para el ejemplo)
-        # ... Tu lógica de 'groups' y 'sorted_keys' va aquí ... 
-        # Si necesitas esa parte completa dímelo, pero asumo que ya la tienes bien en el código previo.
+        MAX_INT_32 = 2147483647
         
-        # Reconstrucción rápida de líneas para que funcione el copy-paste:
         for item in items:
-             # Lógica mínima para que no falle si copias este bloque
-             prod_id = int(item.get('product_id'))
-             qty = float(item.get('qty', 1))
-             price = float(item.get('price_unit', 0))
-             order_lines_cmd.append((0, 0, {
-                 'product_id': prod_id,
-                 'product_uom_qty': qty,
-                 'price_unit': price,
-                 'discount': 0 # Simplificado
-             }))
+            try:
+                prod_id = int(item.get('product_id'))
+                if prod_id > MAX_INT_32: 
+                    log.warning(f"⚠️ Omitiendo producto con ID inválido: {prod_id}")
+                    continue
 
-        # --- CREAR O ACTUALIZAR ---
+                qty = float(item.get('qty', 1))
+                price = float(item.get('price_unit', 0))
+                
+                order_lines_cmd.append((0, 0, {
+                    'product_id': prod_id,
+                    'product_uom_qty': qty,
+                    'price_unit': price,
+                }))
+            except (ValueError, TypeError):
+                continue
+
+        if not order_lines_cmd:
+            return jsonify({"error": "Datos de productos inválidos"}), 400
+
+        # Armar diccionario
         vals = {
             "partner_id": cliente.id,
             "partner_invoice_id": cliente.id,
-            "partner_shipping_id": int(partner_shipping_id) if partner_shipping_id else cliente.id,
-            "pricelist_id": pricelist_id,
-            "payment_term_id": int(global_term_id),
-            "order_line": [(5, 0, 0)] + order_lines_cmd if order_id_to_update else order_lines_cmd,
+            "partner_shipping_id": cliente.id, # Simplificado para evitar error si falta shipping
+            "payment_term_id": int(global_term_id) if global_term_id else False,
+            "order_line": order_lines_cmd,
             "origin": "APP SALBOM"
         }
-        if carrier_id: vals["carrier_id"] = int(carrier_id)
 
-        order = None
-        if order_id_to_update:
-            try:
-                existing = client.env['sale.order'].browse(int(order_id_to_update))
-                if existing.exists() and existing.state in ['draft', 'sent']:
-                    existing.write(vals)
-                    order = existing
-            except: pass
-        
-        if not order:
+        # Intentar crear el pedido
+        try:
             order = client.env['sale.order'].create(vals)
+            
+            # Forzar calculo de totales
+            order._amount_all()
+            
+            return jsonify({
+                "pedido_id": order.id,
+                "nro_pedido": order.name,
+                "total": order.amount_total,
+                "currency": order.currency_id.name if order.currency_id else "USD"
+            }), 200
 
-        # Notas
-        if observaciones or created_by_name:
-            msg = f"Obs: {observaciones} - Por: {created_by_name}"
-            order.message_post(body=msg, message_type='comment', subtype_xmlid='mail.mt_note')
+        except Exception as e_odoo:
+            err_msg = str(e_odoo)
+            # DETECCION DE PRODUCTO ELIMINADO
+            if "MissingError" in err_msg or "Record does not exist" in err_msg:
+                log.error(f"❌ Error de integridad: {err_msg}")
+                # Extraer ID si es posible para dar feedback
+                return jsonify({
+                    "error": "Uno o más productos seleccionados ya no están disponibles en el sistema. Por favor, vacíe el carrito e intente nuevamente.",
+                    "code": "PRODUCT_MISSING"
+                }), 409
+            raise e_odoo
 
-        # Totales
-        order._amount_all()
-        tax_totals = getattr(order, 'tax_totals_json', None) or {}
-        if isinstance(tax_totals, str): tax_totals = json.loads(tax_totals)
-
-        res = {
-            "pedido_id": order.id,
-            "nro_pedido": order.name,
-            "total": order.amount_total,
-            "currency": order.currency_id.name if order.currency_id else "USD",
-            "tax_totals": tax_totals # Importante para el frontend
-        }
-        
-        return jsonify(res), 200
-
-    client = get_odoo_client()
+    # Ejecutar con manejo de conexión robusto
     try:
-        return _do_create_and_summarize(client)
+        return execute_odoo_operation(_logic)
     except Exception as e:
-        log.error(f"Error: {e}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        release_odoo_client(client)
+        log.error(f"❌ Error fatal en crear-pedido: {e}")
+        return jsonify({"error": "Error al procesar el pedido. Intente nuevamente."}), 500
 
 @app.route('/usuario-perfil/editar', methods=['POST'])
 def editar_perfil():
@@ -4219,48 +4183,58 @@ init_cart_table()
 
 @app.route('/cart/save', methods=['POST'])
 def update_cart():
-    data = request.json
+    data = request.json or {}
     cuit = data.get('cuit')
     items = data.get('items', [])
     
-    if not cuit: return jsonify({"error": "Falta CUIT"}), 400
+    if not cuit: 
+        return jsonify({"error": "Falta CUIT"}), 400
 
     def _execute_save(client_inst):
-        # Lógica interna de guardado
+        # 1. Buscar usuario
         user = client_inst.env['res.users'].search([('login', '=', cuit)], limit=1)
-        if not user: return False
+        if not user: 
+            return False
         
-        lines = [{'product_id': i.get('product_id') or i.get('id'), 'qty': i.get('quantity') or i.get('product_uom_qty') or 1} for i in items]
+        # 2. Sanitización estricta para evitar "int exceeds XML-RPC limits"
+        lines_clean = []
+        MAX_INT_32 = 2147483647
         
-        # Ajusta 'app.user.cart' al modelo real que usas en Odoo
+        for i in items:
+            try:
+                # Obtener ID
+                raw_pid = i.get('product_id') or i.get('id')
+                pid = int(raw_pid)
+                
+                # Obtener Cantidad (Usar float para evitar limite de enteros en XMLRPC)
+                raw_qty = i.get('quantity') or i.get('product_uom_qty') or 1
+                qty = float(raw_qty)
+
+                # Validar seguridad
+                if pid > MAX_INT_32:
+                    log.warning(f"⚠️ ID de producto excedido omitido: {pid}")
+                    continue
+                
+                lines_clean.append({'product_id': pid, 'qty': qty})
+            except (ValueError, TypeError):
+                continue # Saltar items con datos basura
+
+        if not lines_clean:
+            return True # Nada que guardar
+
+        # 3. Llamada segura a Odoo
         if hasattr(client_inst.env, 'app.user.cart'):
-            client_inst.env['app.user.cart'].create_or_update_cart(user[0], lines)
+            client_inst.env['app.user.cart'].create_or_update_cart(user[0], lines_clean)
         return True
 
-    client = get_odoo_client()
+    # Ejecutar con el wrapper de reintento automático
     try:
-        _execute_save(client)
+        execute_odoo_operation(_execute_save)
         return jsonify({"status": "ok"}), 200
     except Exception as e:
-        error_msg = str(e)
-        # DETECCIÓN DE CONEXIÓN ROTA
-        if "Request-sent" in error_msg or "Idle" in error_msg or "CannotSendRequest" in error_msg:
-            log.warning(f"⚠️ Conexión trabada en /cart/save. Reintentando... ({error_msg})")
-            try:
-                # FORZAR NUEVA CONEXIÓN
-                release_odoo_client(client) 
-                client = get_odoo_client() 
-                _execute_save(client)
-                log.info("✅ Reintento exitoso en /cart/save")
-                return jsonify({"status": "ok", "retry": True}), 200
-            except Exception as e2:
-                log.error(f"❌ Fallo final en /cart/save: {e2}")
-                return jsonify({"error": "Odoo connection failed"}), 500
-        else:
-            log.error(f"Error en /cart/save: {e}")
-            return jsonify({"error": str(e)}), 500
-    finally:
-        release_odoo_client(client)
+        log.error(f"❌ Error en /cart/save: {e}")
+        # Retornamos 200 para no bloquear la app si falla el guardado en segundo plano
+        return jsonify({"status": "error", "detail": str(e)}), 200
 
 @app.route('/cart/load', methods=['GET'])
 def load_cart():

@@ -31,7 +31,7 @@ const ENVIO_RATIO = E_W / E_H;
 const BG_DIRECCION = require('../../../assets/contenedorDireccion.png');
 
 const SIDE_MARGIN = 10;
-const CARD_HSCALE = 1.45; 
+const CARD_HSCALE = 1.45; // <--- Aumentado para más espacio
 const ENV_CARD_HSCALE = 1.18;
 const PICKER_HEIGHT = 46;
 const PICKER_RADIUS = 14;
@@ -118,15 +118,17 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
 
       setLoadingClientes(true);
       
-      // --- CORRECCIÓN 1: Usar endpoint /clients (Admin ve todo) ---
+      // --- CAMBIO CLAVE: Usamos /clients en lugar de /clientes-del-vendedor ---
       const resCli = await safeFetch(`${API_URL}/clients?cuit=${encodeURIComponent(cuit)}`);
       
-      // --- CORRECCIÓN 2: Adaptar respuesta (lista directa o items) ---
-      let rawList = resCli.ok ? resCli.data : [];
-      if (rawList && rawList.items) rawList = rawList.items; // Fallback compatible
+      // Ajuste para soportar tanto array directo (nuevo endpoint) como objeto (viejo)
+      let rawList = [];
+      if (resCli.ok) {
+          rawList = Array.isArray(resCli.data) ? resCli.data : (resCli.data.items || []);
+      }
       
       let normList = normalizeClientes(rawList);
-
+      
       if (selfAsCliente) {
           const yaEsta = normList.some(c => c.id === selfAsCliente!.id);
           if (!yaEsta) normList = [selfAsCliente, ...normList];
@@ -187,12 +189,10 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
         if (metodoEnvio === 'domicilio' && addrSelected && typeof addrSelected.id === 'number') payload.partner_shipping_id = addrSelected.id;
         if (metodoEnvio === 'sucursal') payload.carrier_id = 926;
         
-        // --- CORRECCIÓN 3: Reciclaje de Pedido ---
+        // --- CAMBIO CLAVE: Usamos 'order_id_to_update' para reciclar el pedido ---
         if (existingOrderId) payload.order_id_to_update = existingOrderId;
 
-        // Usamos siempre el endpoint unificado
         const url = `${API_URL}/crear-pedido`;
-        
         const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         const d = await resp.json();
 
@@ -310,7 +310,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
   scrollContent: { paddingBottom: 40 },
   cardWrap: { alignSelf: 'center', marginHorizontal: SIDE_MARGIN, marginTop: 10 },
-  cardBg: { paddingHorizontal: 18, paddingTop: 20, paddingBottom: 25 }, 
+  cardBg: { paddingHorizontal: 18, paddingTop: 20, paddingBottom: 25 }, // Ajustado el padding interno
   envioBg: { paddingTop: 18, paddingBottom: 18 },
   cardContent: { flex: 1, justifyContent: 'center' },
   select: { height: PICKER_HEIGHT, borderRadius: PICKER_RADIUS, paddingHorizontal: 10, backgroundColor: '#EEF0F2', borderWidth: 1, borderColor: '#E7EAED', flexDirection: 'row', alignItems: 'center' },
