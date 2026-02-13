@@ -1910,13 +1910,13 @@ def calcular_descuentos():
 
 # ====== Pedidos ======
 # ---------------------------------------------------------
-# ENDPOINT CLIENTES (CORREGIDO: Sintaxis Odooly compatible)
+# ENDPOINT CLIENTES (CORREGIDO: Sintaxis compatible con Odooly)
 # ---------------------------------------------------------
 @app.route('/clients', methods=['GET'])
 def get_clients():
     cuit_solicitante = request.args.get('cuit')
     
-    # 1. Obtener Datos del Usuario Local (Rol e ID)
+    # 1. Obtener Datos del Usuario Local
     conn = get_pg_connection()
     rol = "VENDEDOR"
     user_odoo_id = None
@@ -1934,33 +1934,26 @@ def get_clients():
         finally:
             conn.close()
 
-    # 2. Conectar a Odoo usando Odooly correctamente
+    # 2. Conectar a Odoo
     client = get_odoo_client()
     try:
         # Dominio Base: Clientes activos
         domain = [('active', '=', True)]
         
-        # Lógica de Permisos
-        # ID 1 y 2 suelen ser OdooBot / Admin principal
+        # Lógica de Permisos (ID 1 y 2 suelen ser Admins/OdooBot)
         es_super_admin = (user_odoo_id in [1, 2]) 
         
         if rol == 'ADMIN' or es_super_admin:
             log.info(f"👑 ADMIN {cuit_solicitante} (ID {user_odoo_id}) - Descargando TODA la cartera.")
-            # No agregamos filtros extra -> Ve todo
+            # Sin filtros adicionales = Ve todo
         else:
             log.info(f"👤 VENDEDOR {cuit_solicitante} (ID {user_odoo_id}) - Descargando asignados.")
             # Filtro: (user_id = Mi ID) OR (vat = Mi Cuit)
-            # Nota: En Odoo 'user_id' es el comercial asignado
             user_filter = ['|', ('user_id', '=', user_odoo_id)]
             if cuit_solicitante:
                 user_filter.append(('vat', '=', cuit_solicitante))
             
-            # Combinamos con el dominio base. 
-            # Sintaxis polaca inversa de Odoo: ['|', A, B] es (A OR B)
-            # Al agregar a la lista existente, hacemos AND implícito con lo anterior.
             if len(user_filter) > 1:
-                # Si tenemos condición OR, la insertamos en el dominio
-                # Ejemplo final: [('active', '=', True), '|', ('user_id','=',1), ('vat','=','20...')]
                 domain.extend(user_filter)
             else:
                 domain.append(('user_id', '=', user_odoo_id))
@@ -1968,12 +1961,11 @@ def get_clients():
         # Campos a traer
         fields = ['id', 'name', 'vat', 'street', 'city', 'state_id', 'zip', 'email']
         
-        # --- CORRECCIÓN CLAVE: Usar sintaxis de Odooly ---
-        # En lugar de execute_kw, usamos el ORM wrapper de la librería
+        # USAMOS LA SINTAXIS CORRECTA DE ODOOLY
         partners = client.env['res.partner'].search_read(
             domain=domain,
             fields=fields,
-            limit=2000 # Límite de seguridad ampliado
+            limit=7000 
         )
         
         return jsonify(partners)
