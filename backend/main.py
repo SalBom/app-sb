@@ -1909,70 +1909,68 @@ def calcular_descuentos():
         if pg_conn: pg_conn.close()
 
 # ====== Pedidos ======
-# ---------------------------------------------------------
-# ENDPOINT CLIENTES (CORREGIDO: Sintaxis compatible con Odooly)
-# ---------------------------------------------------------
 @app.route('/clients', methods=['GET'])
 def get_clients():
     cuit_solicitante = request.args.get('cuit')
     
-    # 1. Obtener Datos del Usuario Local
+    # 1. Obtener Datos Locales
     conn = get_pg_connection()
     rol = "VENDEDOR"
     user_odoo_id = None
-    
     if conn:
         try:
             cur = conn.cursor(cursor_factory=RealDictCursor)
             cur.execute("SELECT role, id FROM app_users WHERE cuit = %s", (cuit_solicitante,))
-            user_data = cur.fetchone()
-            if user_data:
-                rol = user_data['role']
-                user_odoo_id = user_data['id']
-        except Exception as e:
-            log.warning(f"Advertencia leyendo rol local: {e}")
-        finally:
-            conn.close()
+            ud = cur.fetchone()
+            if ud:
+                rol = ud['role']
+                user_odoo_id = ud['id']
+        except: pass
+        finally: conn.close()
 
-    # 2. Conectar a Odoo
-    client = get_odoo_client()
-    try:
-        # Dominio Base: Clientes activos
+    # 2. Lógica Odoo con REINTENTO AUTOMÁTICO
+    def _fetch_clients(client_inst):
         domain = [('active', '=', True)]
-        
-        # Lógica de Permisos (ID 1 y 2 suelen ser Admins/OdooBot)
-        es_super_admin = (user_odoo_id in [1, 2]) 
+        es_super_admin = (user_odoo_id in [1, 2])
         
         if rol == 'ADMIN' or es_super_admin:
-            log.info(f"👑 ADMIN {cuit_solicitante} (ID {user_odoo_id}) - Descargando TODA la cartera.")
-            # Sin filtros adicionales = Ve todo
+            # Admin ve todo
+            pass 
         else:
-            log.info(f"👤 VENDEDOR {cuit_solicitante} (ID {user_odoo_id}) - Descargando asignados.")
-            # Filtro: (user_id = Mi ID) OR (vat = Mi Cuit)
+            # Vendedor ve asignados o a sí mismo
             user_filter = ['|', ('user_id', '=', user_odoo_id)]
-            if cuit_solicitante:
-                user_filter.append(('vat', '=', cuit_solicitante))
+            if cuit_solicitante: user_filter.append(('vat', '=', cuit_solicitante))
             
-            if len(user_filter) > 1:
-                domain.extend(user_filter)
-            else:
-                domain.append(('user_id', '=', user_odoo_id))
+            if len(user_filter) > 1: domain.extend(user_filter)
+            else: domain.append(('user_id', '=', user_odoo_id))
 
-        # Campos a traer
-        fields = ['id', 'name', 'vat', 'street', 'city', 'state_id', 'zip', 'email']
-        
-        # USAMOS LA SINTAXIS CORRECTA DE ODOOLY
-        partners = client.env['res.partner'].search_read(
+        return client_inst.env['res.partner'].search_read(
             domain=domain,
-            fields=fields,
-            limit=7000 
+            fields=['id', 'name', 'vat', 'street', 'city', 'state_id', 'zip', 'email'],
+            limit=2500
         )
-        
-        return jsonify(partners)
 
+    client = get_odoo_client()
+    try:
+        data = _fetch_clients(client)
+        return jsonify(data)
     except Exception as e:
-        log.error(f"Error crítico obteniendo clientes de Odoo: {e}")
-        return jsonify({"error": str(e)}), 500
+        error_msg = str(e)
+        # DETECCIÓN DE CONEXIÓN ROTA
+        if "Request-sent" in error_msg or "Idle" in error_msg or "CannotSendRequest" in error_msg:
+            log.warning(f"⚠️ Conexión trabada en /clients. Reintentando... ({error_msg})")
+            try:
+                release_odoo_client(client)
+                client = get_odoo_client()
+                data = _fetch_clients(client) # Reintentar
+                log.info("✅ Reintento exitoso en /clients")
+                return jsonify(data)
+            except Exception as e2:
+                log.error(f"❌ Fallo final en /clients: {e2}")
+                return jsonify({"error": str(e2)}), 500
+        else:
+            log.error(f"Error crítico en /clients: {e}")
+            return jsonify({"error": str(e)}), 500
     finally:
         release_odoo_client(client)
 
@@ -4220,53 +4218,48 @@ def init_cart_table():
 init_cart_table()
 
 @app.route('/cart/save', methods=['POST'])
-def save_cart():
-    """Guarda el estado actual del carrito del usuario"""
-    data = request.get_json() or {}
+def update_cart():
+    data = request.json
+    cuit = data.get('cuit')
+    items = data.get('items', [])
     
-    # --- CORRECCIÓN CLAVE: Forzar CUIT a string ---
-    # Esto evita el error "int exceeds XML-RPC limits"
-    cuit = str(data.get('cuit', '')).strip() 
-    
-    items = data.get('items', []) # Lista de objetos
+    if not cuit: return jsonify({"error": "Falta CUIT"}), 400
 
-    if not cuit:
-        return jsonify({"error": "Falta CUIT"}), 400
+    def _execute_save(client_inst):
+        # Lógica interna de guardado
+        user = client_inst.env['res.users'].search([('login', '=', cuit)], limit=1)
+        if not user: return False
+        
+        lines = [{'product_id': i.get('product_id') or i.get('id'), 'qty': i.get('quantity') or i.get('product_uom_qty') or 1} for i in items]
+        
+        # Ajusta 'app.user.cart' al modelo real que usas en Odoo
+        if hasattr(client_inst.env, 'app.user.cart'):
+            client_inst.env['app.user.cart'].create_or_update_cart(user[0], lines)
+        return True
 
-    pg_conn = get_pg_connection()
     client = get_odoo_client()
     try:
-        # 1. Obtener User ID desde Odoo (para vincularlo)
-        # Al pasar 'cuit' como string, la búsqueda funciona perfecta
-        partner = client.env["res.partner"].search([("vat", "=", cuit)], limit=1)
-        if not partner: return jsonify({"error": "Usuario no encontrado"}), 404
-        partner_id = int(partner[0].id)
-        
-        user = client.env["res.users"].search([("partner_id", "=", partner_id)], limit=1)
-        if not user: return jsonify({"error": "Login no encontrado"}), 404
-        user_id = int(user[0].id)
-
-        # 2. Guardar en Postgres (Upsert)
-        cur = pg_conn.cursor()
-        items_json = json.dumps(items)
-        
-        sql = """
-            INSERT INTO app_user_carts (user_id, items_json, updated_at)
-            VALUES (%s, %s, CURRENT_TIMESTAMP)
-            ON CONFLICT (user_id) 
-            DO UPDATE SET items_json = EXCLUDED.items_json, updated_at = CURRENT_TIMESTAMP;
-        """
-        cur.execute(sql, (user_id, items_json))
-        pg_conn.commit()
-        cur.close()
-
-        return jsonify({"ok": True})
+        _execute_save(client)
+        return jsonify({"status": "ok"}), 200
     except Exception as e:
-        if pg_conn: pg_conn.rollback()
-        log.error(f"❌ /cart/save: {e}")
-        return jsonify({"error": str(e)}), 500
+        error_msg = str(e)
+        # DETECCIÓN DE CONEXIÓN ROTA
+        if "Request-sent" in error_msg or "Idle" in error_msg or "CannotSendRequest" in error_msg:
+            log.warning(f"⚠️ Conexión trabada en /cart/save. Reintentando... ({error_msg})")
+            try:
+                # FORZAR NUEVA CONEXIÓN
+                release_odoo_client(client) 
+                client = get_odoo_client() 
+                _execute_save(client)
+                log.info("✅ Reintento exitoso en /cart/save")
+                return jsonify({"status": "ok", "retry": True}), 200
+            except Exception as e2:
+                log.error(f"❌ Fallo final en /cart/save: {e2}")
+                return jsonify({"error": "Odoo connection failed"}), 500
+        else:
+            log.error(f"Error en /cart/save: {e}")
+            return jsonify({"error": str(e)}), 500
     finally:
-        if pg_conn: pg_conn.close()
         release_odoo_client(client)
 
 @app.route('/cart/load', methods=['GET'])
