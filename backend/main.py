@@ -1974,21 +1974,15 @@ def get_clients():
     finally:
         release_odoo_client(client)
 
-# ---------------------------------------------------------
-# 2. ENDPOINT CREAR PEDIDO (CORREGIDO: Auto-generar ID si falta)
-# ---------------------------------------------------------
 @app.route('/crear-pedido', methods=['POST'])
 def crear_pedido():
-    # Función interna para la lógica
     def _logic(client):
         data = request.get_json() or {}
         
-        # Generar ID temporal si falta
         transaction_id = data.get('transaction_id')
         if not transaction_id:
             transaction_id = f"draft_{int(time.time()*1000)}" 
 
-        # Datos básicos
         cliente_cuit = data.get('cliente_cuit') or data.get('partner_vat')
         items = data.get('items', [])
         global_term_id = data.get('payment_term_id')
@@ -2001,22 +1995,15 @@ def crear_pedido():
         if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
         cliente = cliente[0]
 
-        # Preparar líneas del pedido con validación de tipos
         order_lines_cmd = []
-        MAX_INT_32 = 2147483647
         
         for item in items:
             try:
                 raw_id = item.get('product_id')
-                # --- FIX: Resolver ID de Variante ---
+                # Usamos el helper corregido que ya filtra números gigantes
                 variant_id = _get_variant_id(client, raw_id)
                 
                 if not variant_id:
-                    log.warning(f"⚠️ Producto no encontrado (ID recibido: {raw_id})")
-                    continue
-                
-                if variant_id > MAX_INT_32: 
-                    log.warning(f"⚠️ Omitiendo producto con ID inválido: {variant_id}")
                     continue
 
                 qty = float(item.get('qty', 1))
@@ -2036,42 +2023,48 @@ def crear_pedido():
                 "code": "EMPTY_LINES"
             }), 400
 
-        # Armar diccionario
         vals = {
             "partner_id": cliente.id,
             "partner_invoice_id": cliente.id,
-            "partner_shipping_id": cliente.id, 
+            "partner_shipping_id": cliente.id,
             "payment_term_id": int(global_term_id) if global_term_id else False,
             "order_line": order_lines_cmd,
             "origin": "APP SALBOM"
         }
 
-        # Intentar crear el pedido
         try:
             order = client.env['sale.order'].create(vals)
             
-            # Forzar calculo de totales
-            order._amount_all()
+            # --- CORRECCIÓN ---
+            # Eliminado: order._amount_all() (Esto causaba el error 'has no attribute')
+            # Odoo calcula los totales automáticamente al crear.
             
+            # Forzamos lectura fresca de los totales por seguridad
+            datos_frescos = order.read(['amount_total', 'name', 'currency_id'])[0]
+            
+            # Obtener nombre de moneda de forma segura
+            currency_name = "USD"
+            if datos_frescos.get('currency_id'):
+                # currency_id viene como (id, nombre) en read()
+                currency_name = datos_frescos['currency_id'][1]
+
             return jsonify({
                 "pedido_id": order.id,
-                "nro_pedido": order.name,
-                "total": order.amount_total,
-                "currency": order.currency_id.name if order.currency_id else "USD"
+                "nro_pedido": datos_frescos.get('name'),
+                "total": datos_frescos.get('amount_total'),
+                "currency": currency_name
             }), 200
 
         except Exception as e_odoo:
             err_msg = str(e_odoo)
-            # DETECCION DE PRODUCTO ELIMINADO
             if "MissingError" in err_msg or "Record does not exist" in err_msg:
                 log.error(f"❌ Error de integridad: {err_msg}")
                 return jsonify({
-                    "error": "Uno o más productos seleccionados ya no están disponibles en el sistema. Por favor, vacíe el carrito e intente nuevamente.",
+                    "error": "Uno o más productos seleccionados ya no están disponibles. Vacíe el carrito e intente nuevamente.",
                     "code": "PRODUCT_MISSING"
                 }), 409
             raise e_odoo
 
-    # Ejecutar con manejo de conexión robusto
     try:
         return execute_odoo_operation(_logic)
     except Exception as e:
@@ -2079,27 +2072,32 @@ def crear_pedido():
         return jsonify({"error": "Error al procesar el pedido. Intente nuevamente."}), 500
 
 # -------------------------------------------------------------------------
-# HELPER: RESOLVER VARIANTE (NUEVO)
+# HELPER: RESOLVER VARIANTE (CORREGIDO)
 # -------------------------------------------------------------------------
 def _get_variant_id(client, tmpl_id):
     """
-    Recibe un ID que puede ser Template o Variant.
-    Busca la variante correcta para evitar el error "Record does not exist".
+    Busca la variante correcta de forma segura.
+    CORRECCIÓN: Valida el tamaño del entero ANTES de buscar para evitar error XML-RPC.
     """
     try:
         if not tmpl_id: return None
-        tmpl_id = int(tmpl_id)
+        val_id = int(tmpl_id)
+        
+        # --- NUEVO: Validación de seguridad previa ---
+        # Si el número es mayor al límite de 32 bits (2,147,483,647), 
+        # Odoo crashea solo con intentar buscarlo. Retornamos None inmediatamente.
+        if val_id > 2147483647:
+            return None
         
         # 1. Buscar si hay una variante vinculada a este template
-        # (Esto arregla el error cuando el ID del template != ID de la variante)
-        variants = client.env['product.product'].search([('product_tmpl_id', '=', tmpl_id)], limit=1)
+        variants = client.env['product.product'].search([('product_tmpl_id', '=', val_id)], limit=1)
         if variants:
             return int(variants[0])
         
-        # 2. Si no, verificar si el ID que nos pasaron YA es una variante válida
-        exists = client.env['product.product'].search_count([('id', '=', tmpl_id)])
+        # 2. Si no, verificar si el ID ya es una variante válida
+        exists = client.env['product.product'].search_count([('id', '=', val_id)])
         if exists:
-            return tmpl_id
+            return val_id
             
         return None
     except Exception:
@@ -4222,48 +4220,37 @@ def update_cart():
     cuit = data.get('cuit')
     items = data.get('items', [])
     
-    if not cuit: 
-        return jsonify({"error": "Falta CUIT"}), 400
+    if not cuit: return jsonify({"error": "Falta CUIT"}), 400
 
     def _execute_save(client_inst):
-        # 1. Buscar usuario
         user = client_inst.env['res.users'].search([('login', '=', cuit)], limit=1)
-        if not user: 
-            return False
+        if not user: return False
         
-        # 2. Sanitización estricta
         lines_clean = []
-        MAX_INT_32 = 2147483647
         
         for i in items:
             try:
-                # Obtener ID
                 raw_pid = i.get('product_id') or i.get('id')
                 
-                # --- FIX: Resolver ID de Variante ---
+                # Al llamar a este helper corregido, si raw_pid es gigante
+                # retornará None inmediatamente sin romper Odoo.
                 pid = _get_variant_id(client_inst, raw_pid)
                 
-                # Validar seguridad
-                if not pid or pid > MAX_INT_32:
-                    continue
+                if not pid: continue
                 
-                # Obtener Cantidad (Usar float para evitar limite de enteros en XMLRPC)
                 raw_qty = i.get('quantity') or i.get('product_uom_qty') or 1
                 qty = float(raw_qty)
 
                 lines_clean.append({'product_id': pid, 'qty': qty})
-            except (ValueError, TypeError):
-                continue 
+            except Exception:
+                continue
 
-        if not lines_clean:
-            return True 
+        if not lines_clean: return True
 
-        # 3. Llamada segura a Odoo
         if hasattr(client_inst.env, 'app.user.cart'):
             client_inst.env['app.user.cart'].create_or_update_cart(user[0], lines_clean)
         return True
 
-    # Ejecutar con el wrapper de reintento automático
     try:
         execute_odoo_operation(_execute_save)
         return jsonify({"status": "ok"}), 200
