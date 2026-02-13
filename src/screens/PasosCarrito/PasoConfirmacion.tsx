@@ -132,13 +132,27 @@ const PasoConfirmacion = ({ route, navigation }: any) => {
 
     const transactionId = `txn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
+    // --- FIX: FILTRADO DE SEGURIDAD PARA EVITAR ERROR XML-RPC ---
+    // Eliminamos items que tengan un ID mayor al límite de 32-bit (generados temporalmente por la app)
+    const itemsValidos = items.filter((item: ProductoCarrito) => {
+        const pid = Number(item.product_id);
+        return !isNaN(pid) && pid < 2147483647;
+    });
+
+    if (itemsValidos.length === 0) {
+        Alert.alert("Error", "No hay productos válidos para procesar.");
+        isSubmittingRef.current = false;
+        setIsSubmitting(false);
+        return;
+    }
+
     const pedidoPayload = {
       // 2. Enviamos el ID del pedido borrador para que el backend lo actualice
       // en vez de crear uno nuevo (evita el 2do pedido duplicado)
       order_id_to_update: preCreatedOrderId || null,
 
       cliente_cuit: clienteSeleccionado.vat,
-      items: items.map((item: ProductoCarrito) => ({
+      items: itemsValidos.map((item: ProductoCarrito) => ({
         product_id: item.product_id,
         qty: item.product_uom_qty,
         price_unit: item.price_unit,
@@ -146,12 +160,15 @@ const PasoConfirmacion = ({ route, navigation }: any) => {
         discount1: item.discount1 || 0,
         discount2: item.discount2 || 0,
         discount3: item.discount3 || 0,
-        name: item.name
+        name: item.name,
+        discount: item.discount1 // Enviamos el descuento principal si el backend lo espera así
       })),
       partner_shipping_id: datosEnvio.id,
       payment_term_id: route.params.global_term_id,
       carrier_id: transporte?.id,
       observaciones: notas,
+      // Mapeamos también al campo 'note' o 'nota' por si el backend usa alguno de los dos
+      note: notas, 
       created_by_name: created_by_name,
       transaction_id: transactionId
     };
@@ -160,21 +177,32 @@ const PasoConfirmacion = ({ route, navigation }: any) => {
       const response = await axios.post(`${API_URL}/crear-pedido`, pedidoPayload);
 
       if (response.status === 200 || response.status === 201) {
-        setOrderIdRef(response.data.nro_pedido || String(response.data.pedido_id));
+        // Obtenemos el numero de pedido, o el ID si no vino el nombre
+        const numeroPedido = response.data.nro_pedido || String(response.data.pedido_id || "Exitoso");
+        setOrderIdRef(numeroPedido);
         clearCart();
         setShowExito(true);
         // NO desbloqueamos aquí porque ya navegamos al éxito
       } else {
-        Alert.alert("Error", "No se pudo procesar el pedido.");
+        Alert.alert("Atención", "El pedido se envió pero hubo una respuesta inesperada. Verifique en 'Mis Pedidos'.");
         isSubmittingRef.current = false;
         setIsSubmitting(false);
       }
     } catch (error: any) {
       console.error('Error al confirmar pedido:', error);
-      const msg = error.response?.data?.error || "Error de conexión con el servidor.";
-      Alert.alert("Error", msg);
       
-      // Liberar bloqueo solo si hubo error
+      // Si el error es 409 (Producto faltante), mostramos mensaje especifico
+      if (error.response?.status === 409) {
+         Alert.alert("Stock insuficiente", error.response.data.error || "Revise el carrito.");
+      } else {
+         // Si falla con error 500 u otro, es posible que Odoo SÍ lo haya creado pero falló al responder.
+         // Avisamos al usuario amablemente.
+         Alert.alert(
+           "Estado del Pedido", 
+           "Hubo un problema de conexión al recibir la confirmación, pero es probable que su pedido se haya creado. Por favor, verifique en 'Mis Pedidos' antes de intentar nuevamente."
+         );
+      }
+      
       isSubmittingRef.current = false;
       setIsSubmitting(false);
     }

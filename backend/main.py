@@ -1977,16 +1977,19 @@ def get_clients():
 
 @app.route('/crear-pedido', methods=['POST'])
 def crear_pedido():
+    # Usamos execute_odoo_operation para reintentar si hay error "Request-sent"
     def _logic(client):
         data = request.get_json() or {}
         
-        # Datos principales
+        # Datos Principales
         cliente_cuit = data.get('cliente_cuit') or data.get('partner_vat')
         items = data.get('items', [])
         global_term_id = data.get('payment_term_id')
         
         # --- RECUPERADO: Notas y Referencias ---
-        nota_cliente = data.get('note') or data.get('nota') or ""
+        # Aceptamos 'note', 'nota' o 'observaciones' para el campo nota impresa
+        nota_cliente = data.get('note') or data.get('nota') or data.get('observaciones') or ""
+        # Observaciones internas para el chatter
         obs_internas = data.get('observaciones') or data.get('internal_note')
         ref_cliente  = data.get('client_order_ref') or data.get('ref') or f"APP-{int(time.time())}"
 
@@ -1998,23 +2001,33 @@ def crear_pedido():
         if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
         cliente = cliente[0]
 
-        # Preparar líneas (CON PROTECCIÓN ANTI-CRASH)
+        # Preparar líneas del pedido (Con protección anti-crash)
         order_lines_cmd = []
+        MAX_INT_32 = 2147483647
         
         for item in items:
             try:
                 raw_id = item.get('product_id')
                 
-                # Helper seguro: Si el ID es basura o gigante, lo salta sin romper nada
+                # --- HELPER SEGURO: Filtrar IDs basura ---
                 variant_id = _get_variant_id(client, raw_id)
                 
                 if not variant_id:
-                    continue
+                    # Si falla el helper, verificamos manualmente el limite por si acaso
+                    try:
+                        if int(raw_id) > MAX_INT_32: continue
+                    except: pass
+                    # Si aun así no tenemos ID válido, saltamos
+                    if not variant_id: continue
 
                 qty = float(item.get('qty', 1))
                 price = float(item.get('price_unit', 0))
-                discount = float(item.get('discount', 0)) # Recuperamos descuento
                 
+                # Recuperar descuentos (soportamos varios formatos por compatibilidad)
+                discount = float(item.get('discount', 0))
+                if not discount:
+                    discount = float(item.get('discount1', 0))
+
                 order_lines_cmd.append((0, 0, {
                     'product_id': variant_id,
                     'product_uom_qty': qty,
@@ -2026,11 +2039,11 @@ def crear_pedido():
 
         if not order_lines_cmd:
             return jsonify({
-                "error": "Error procesando productos. Vacíe el carrito e intente nuevamente.",
+                "error": "Error al procesar los items. Vacíe el carrito e intente nuevamente.",
                 "code": "EMPTY_LINES"
             }), 400
 
-        # Armar el objeto pedido
+        # Armar diccionario final con TODA la data recuperada
         vals = {
             "partner_id": cliente.id,
             "partner_invoice_id": cliente.id,
@@ -2040,49 +2053,64 @@ def crear_pedido():
             "origin": "APP SALBOM",
             
             # --- RESTAURADO: Campos de Texto ---
-            "note": nota_cliente,             # Nota visible en PDF
-            "client_order_ref": ref_cliente,  # Referencia cliente
+            "note": nota_cliente,             # Nota visible en PDF/Presupuesto
+            "client_order_ref": ref_cliente,  # Referencia del cliente
         }
 
         try:
-            # Crear pedido
+            # 1. Crear Pedido
             order = client.env['sale.order'].create(vals)
             
-            # --- RESTAURADO: Postear observación en el Chatter ---
+            # --- RESTAURADO: Enviar Observación al Chatter ---
             if obs_internas:
                 try:
+                    # Usamos un try interno para que si falla el mensaje NO rompa el pedido
                     order.message_post(
                         body=f"📝 <b>Observación desde App:</b> {obs_internas}",
                         subtype_xmlid="mail.mt_note"
                     )
-                except Exception:
-                    pass # Si falla el mensaje, no cancelamos el pedido
+                except Exception as e_msg:
+                    log.warning(f"No se pudo postear nota interna: {e_msg}")
 
-            # Obtener totales frescos
-            datos = order.read(['amount_total', 'name', 'currency_id'])[0]
-            curr = "USD"
-            if datos.get('currency_id'):
-                curr = datos['currency_id'][1]
-
+            # 2. Leer datos de respuesta DE FORMA SEGURA
+            # El error "0" suele ocurrir aquí si la conexión se corta justo después del create
+            nro_pedido = "Borrador (Verifique en Web)"
+            total = 0.0
+            currency = "USD"
+            
+            try:
+                # Intentamos leer datos frescos
+                datos = order.read(['amount_total', 'name', 'currency_id'])[0]
+                nro_pedido = datos.get('name')
+                total = datos.get('amount_total')
+                if datos.get('currency_id'):
+                    currency = datos['currency_id'][1]
+            except Exception as e_read:
+                # Si falla la lectura, NO devolvemos error 500 porque el pedido YA EXISTE
+                log.warning(f"Pedido creado {order.id} pero falló lectura de respuesta: {e_read}")
+                # Devolvemos el ID para que la app sepa que se creó
+            
             return jsonify({
                 "pedido_id": order.id,
-                "nro_pedido": datos.get('name'),
-                "total": datos.get('amount_total'),
-                "currency": curr
+                "nro_pedido": nro_pedido,
+                "total": total,
+                "currency": currency,
+                "status": "success"
             }), 200
 
         except Exception as e_odoo:
             err_msg = str(e_odoo)
-            # Manejo amable si un producto fue borrado mientras estaba en el carrito
+            # Manejo de productos eliminados (Error 409)
             if "MissingError" in err_msg or "Record does not exist" in err_msg:
                 log.error(f"❌ Integridad: {err_msg}")
                 return jsonify({
                     "error": "Uno o más productos ya no están disponibles. Vacíe el carrito.",
                     "code": "PRODUCT_MISSING"
                 }), 409
+            
+            # Cualquier otro error REAL de Odoo al crear (no al leer)
             raise e_odoo
 
-    # Ejecutar con manejo de conexión robusto
     try:
         return execute_odoo_operation(_logic)
     except Exception as e:
