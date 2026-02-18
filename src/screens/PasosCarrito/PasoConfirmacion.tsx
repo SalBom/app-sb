@@ -12,7 +12,8 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
-  ScrollView
+  ScrollView,
+  ActivityIndicator
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CarritoHeader from '../../components/CarritoHeader';
@@ -82,11 +83,22 @@ const toNumber = (v: any): number => {
   return 0;
 };
 
+// --- RESTAURAMOS LA ESTRUCTURA ORIGINAL (SIN ROUTE) ---
 interface Props { onBack: () => void; }
 
 const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const insets = useSafeAreaInsets();
-  const { items, clienteSeleccionado, plazoSeleccionado, envioSeleccionado, clearCart, consultaResumen, direccionEntrega } = useCartStore() as any;
+  
+  // Extraemos todos los datos desde el Store (como lo tenías en tu diseño)
+  const { 
+    items, 
+    clienteSeleccionado, 
+    plazoSeleccionado, 
+    envioSeleccionado, 
+    clearCart, 
+    consultaResumen, 
+    direccionEntrega 
+  } = useCartStore() as any;
 
   const [userRole, setUserRole] = useState<string>('');
   const [loggedUserName, setLoggedUserName] = useState<string>(''); 
@@ -100,11 +112,15 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   
   const [finalTotal, setFinalTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const isSubmittingRef = useRef(false);
+  const isSubmittingRef = useRef(false); 
   const [observationText, setObservationText] = useState('');
   const [showObservationModal, setShowObservationModal] = useState(false);
 
-  const nroPedido = consultaResumen?.nro_pedido || consultaResumen?.name || '---';
+  // Manejo visual de número de pedido (Borrador)
+  const rawNroPedido = consultaResumen?.nro_pedido || consultaResumen?.name || '---';
+  const isBorrador = ['/', 'New', 'Nuevo', '* Nuevo *', 'Borrador'].includes(rawNroPedido);
+  const nroPedidoFormateado = isBorrador ? (consultaResumen?.pedido_id ? `Pedido #${consultaResumen.pedido_id}` : 'Pendiente asignar') : rawNroPedido;
+
   const confirmAnim = useRef(new Animated.Value(0)).current; 
   const backAnim = useRef(new Animated.Value(0)).current; 
 
@@ -178,27 +194,37 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       setEditingItem(null);
   };
 
-  const totalUSD_local = Array.isArray(items)
-    ? items.reduce((acc: number, it: any) => {
-        const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? 1);
-        const price = toNumber(it?.price_unit);
-        const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
-        const isTransport = String(it.product_id) === '4011';
-        const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
-        return acc + (isTransport ? (price * qty) : (price * qty * factor));
-      }, 0)
-    : 0;
+  // --- 1. CÁLCULO DE TOTAL CORREGIDO (Incluye Descuentos e IVA) ---
+  const calculateTotalLocal = () => {
+    let baseImponible = 0;
+    if (Array.isArray(items)) {
+        items.forEach((it: any) => {
+            const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
+            const price = toNumber(it?.price_unit);
+            const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
+            const isTransport = String(it.product_id) === '4011';
+            const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
+            baseImponible += isTransport ? (price * qty) : (price * qty * factor);
+        });
+    }
+    return baseImponible;
+  };
 
   const baseBackend = consultaResumen?.base_imponible ? toNumber(consultaResumen.base_imponible) : 0;
   const totalBackend = consultaResumen?.total ? toNumber(consultaResumen.total) : 0;
   const hasBackendData = totalBackend > 0;
 
-  const mostrarBase  = hasBackendData ? baseBackend : totalUSD_local;
-  const mostrarTotal = hasBackendData ? totalBackend : (totalUSD_local * 1.21);
+  const mostrarBase  = hasBackendData ? baseBackend : calculateTotalLocal();
+  // Si tenemos backend usamos su total, sino, le agregamos el 21% de IVA a la base
+  const mostrarTotal = hasBackendData ? totalBackend : (mostrarBase * 1.21);
   const mostrarImpuestos = mostrarTotal - mostrarBase;
 
+  // --- 2. SEPARACIÓN DE PRODUCTOS (LISTA VS OFERTA) ---
+  const globalTermId = plazoSeleccionado?.id;
+  const itemsOferta = Array.isArray(items) ? items.filter((it: any) => it.payment_term_id && it.payment_term_id !== globalTermId) : [];
+  const itemsLista = Array.isArray(items) ? items.filter((it: any) => !it.payment_term_id || it.payment_term_id === globalTermId) : [];
+
   const confirmarPedido = async () => {
-    // 1. Bloqueo inmediato para evitar doble click
     if (loading || isSubmittingRef.current) return;
     
     isSubmittingRef.current = true;
@@ -219,19 +245,17 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         return;
       }
       
-      // --- FIX 1: NOTA INTERNA CON NOMBRE DEL VENDEDOR ---
       const v_name = loggedUserName || 'Vendedor App';
-      const notaEnriquecida = observationText 
-          ? `Cargado por: ${v_name}\n\nObservaciones del cliente/entrega: ${observationText}` 
-          : `Cargado por: ${v_name}`;
 
       const payload = {
+          // PARA EVITAR DUPLICADOS (Sobreescribe el pedido creado en PasoDatos)
+          order_id_to_update: consultaResumen?.pedido_id || null, 
+          
           cliente_cuit: clienteSeleccionado?.vat || cuitUser, 
           payment_term_id: plazoSeleccionado?.id,
           partner_shipping_id: direccionEntrega?.id || null, 
           created_by_name: v_name, 
 
-          // --- FIX 2: CANTIDAD EXACTA Y DESCUENTOS POR APARTADOS ---
           items: itemsValidos.map((it: any) => ({
               product_id: it.product_id,
               qty: it.product_uom_qty || it.qty || it.quantity || 1, 
@@ -245,15 +269,23 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           })),
           
           carrier_id: null, 
-          observaciones: notaEnriquecida,
-          note: notaEnriquecida 
+          
+          // --- 3. SEPARACIÓN DE NOTAS ---
+          note: observationText, // Va al PDF (Términos e instrucciones)
+          observaciones: observationText 
+                ? `Cargado por: ${v_name}\n\nObservaciones: ${observationText}` 
+                : `Cargado por: ${v_name}` // Va a la Nota Interna (Chatter)
       };
 
       const resp = await axios.post(`${API_URL}/crear-pedido`, payload);
       const j = resp.data;
       
       if (j && j.pedido_id) {
-        setFinalOrderName(j.nro_pedido || j.name || '---');
+        let finalNro = j.nro_pedido || j.name || '---';
+        if (['/', 'New', 'Nuevo', '* Nuevo *', 'Borrador'].includes(finalNro)) {
+            finalNro = `Pedido #${j.pedido_id}`;
+        }
+        setFinalOrderName(finalNro);
         setFinalTotal(j.total || mostrarTotal);
         setShowSuccess(true);
         clearCart(); 
@@ -266,7 +298,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
            Alert.alert("Revisar carrito", e.response.data.error || "Uno de los productos ya no está disponible.");
         } else {
            const err = e.response?.data?.error || e.message || 'Error de conexión';
-           Alert.alert('Estado del Pedido', `Pudo haber un problema de conexión al recibir respuesta. Verifique "Mis Pedidos" antes de volver a intentar.\n\nDetalle: ${err}`); 
+           Alert.alert('Estado del Pedido', `Pudo haber un problema de conexión al recibir respuesta. Verifique "Mis Pedidos".\n\nDetalle: ${err}`); 
         }
         isSubmittingRef.current = false;
     } finally {
@@ -277,25 +309,26 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const getScale = (anim: Animated.Value) => anim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.96] });
   const getTranslate = (anim: Animated.Value) => anim.interpolate({ inputRange: [0, 1], outputRange: [0, 2] });
 
+  // Manejo seguro por si falla el store
+  if (!clienteSeleccionado) {
+     return (
+        <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}>
+           <ActivityIndicator size="large" color="#1C9BD8" />
+           <Text style={{ marginTop: 20, color: '#666' }}>Cargando resumen...</Text>
+        </View>
+     );
+  }
+
   if (showSuccess) {
       return <PantallaExitoPedido nroPedido={finalOrderName} montoTotal={finalTotal} onVolver={() => onBack()} />;
   }
 
-  return (
-    <View style={{ flex: 1, backgroundColor: '#fff' }}>
-      <LayoutRefresh onRecargar={cargarDatos} contentContainerStyle={{ paddingBottom: 5 + insets.bottom }}>
-        <CarritoHeader step={3} onBack={onBack} />
-        
-        <ShapedCard style={{ marginHorizontal: SIDE_MARGIN, marginTop: 6, marginBottom: 24 }}>
-            <Text style={styles.titleDetalle}>DETALLES DE PEDIDO</Text>
-            <View style={styles.row}><Text style={styles.label}>Cliente:</Text><Text style={styles.value}>{getClienteTexto(clienteSeleccionado)}</Text></View>
-            <View style={styles.row}><Text style={styles.label}>Pago:</Text><Text style={styles.value}>{getPlazoTexto(plazoSeleccionado)}</Text></View>
-            <View style={styles.row}><Text style={styles.label}>Envío:</Text><Text style={styles.value}>{getEnvioTexto(envioSeleccionado)}</Text></View>
-            <View style={[styles.row, { marginBottom: 0 }]}><Text style={styles.label}>Fecha:</Text><Text style={styles.value}>{formatFecha()}</Text></View>
-        </ShapedCard>
-
-        {Array.isArray(items) && items.length > 0 && (
-          <View style={styles.prodWrap}>
+  // Helper de Renderizado de Tablas 
+  const renderTablaProductos = (data: any[], titulo: string, isOferta: boolean) => {
+      if (data.length === 0) return null;
+      return (
+        <View style={styles.prodWrap}>
+            <Text style={[styles.titleDetalle, { fontSize: 15, marginTop: 10 }, isOferta && { color: '#E53935' }]}>{titulo}</Text>
             <View style={styles.tableHeader}>
                 <Text style={[styles.headerText, { flex: 1.1, textAlign: 'left' }]}>REF.</Text>
                 <Text style={[styles.headerText, { flex: 0.5, textAlign: 'center' }]}>CANT</Text>
@@ -304,44 +337,61 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                 <Text style={[styles.headerText, { flex: 1, textAlign: 'right' }]}>SUBTOTAL</Text>
             </View>
             <View style={styles.headerLine} />
-            {items.map((it: any) => {
-              const isTransport = String(it.product_id) === '4011';
-              const referral = it.default_code || it.name || 'SIN REF';
-              const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? 1);
-              const priceUnit = toNumber(it?.price_unit);
-              const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
-              const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
-              const subTotalLine = isTransport ? (priceUnit * qty) : (priceUnit * qty * factor);
-              
-              return (
-                <View key={it.product_id ?? Math.random()} style={styles.prodRow}>
-                  <View style={styles.colRef}><Text allowFontScaling={false} style={styles.codeText}>{referral}</Text></View>
-                  <View style={styles.vSep} />
-                  <View style={styles.colQty}><Text allowFontScaling={false} style={styles.qtyText}>x{qty}</Text></View>
-                  <View style={styles.vSep} />
-                  <TouchableOpacity style={styles.colPrice} disabled={!canEdit} onPress={() => openEditModal(it)}>
-                    <Text allowFontScaling={false} style={[styles.priceText, canEdit && { color: '#1C9BD8', textDecorationLine: 'underline' }]} numberOfLines={1}>{formatUsd(priceUnit)}</Text>
-                  </TouchableOpacity>
-                  <View style={styles.vSep} />
-                  <TouchableOpacity style={styles.colDisc} disabled={!canEdit || isTransport} onPress={() => openEditModal(it)}>
-                    {isTransport ? <Text style={styles.dash}>-</Text> : ((d1 > 0 || d2 > 0 || d3 > 0) ? (<View style={[styles.discountBadge, canEdit && { backgroundColor: '#E3F2FD' }]}><Text allowFontScaling={false} style={styles.discountText}>{[d1, d2, d3].filter(d => d > 0).join('+')}%</Text></View>) : (<Text style={[styles.dash, canEdit && { color: '#1C9BD8' }]}>{canEdit ? 'Add' : '-'}</Text>))}
-                  </TouchableOpacity>
-                  <View style={styles.vSep} />
-                  <View style={styles.colSub}><Text allowFontScaling={false} style={styles.subText} numberOfLines={1}>{formatUsd(subTotalLine)}</Text></View>
-                </View>
-              );
+            {data.map((it: any) => {
+                const isTransport = String(it.product_id) === '4011';
+                const referral = it.default_code || it.name || 'SIN REF';
+                const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
+                const priceUnit = toNumber(it?.price_unit);
+                const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
+                const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
+                const subTotalLine = isTransport ? (priceUnit * qty) : (priceUnit * qty * factor);
+                
+                return (
+                    <View key={it.product_id ?? Math.random()} style={styles.prodRow}>
+                        <View style={styles.colRef}><Text allowFontScaling={false} style={styles.codeText}>{referral}</Text></View>
+                        <View style={styles.vSep} />
+                        <View style={styles.colQty}><Text allowFontScaling={false} style={styles.qtyText}>x{qty}</Text></View>
+                        <View style={styles.vSep} />
+                        <TouchableOpacity style={styles.colPrice} disabled={!canEdit} onPress={() => openEditModal(it)}>
+                            <Text allowFontScaling={false} style={[styles.priceText, canEdit && { color: '#1C9BD8', textDecorationLine: 'underline' }]} numberOfLines={1}>{formatUsd(priceUnit)}</Text>
+                        </TouchableOpacity>
+                        <View style={styles.vSep} />
+                        <TouchableOpacity style={styles.colDisc} disabled={!canEdit || isTransport} onPress={() => openEditModal(it)}>
+                            {isTransport ? <Text style={styles.dash}>-</Text> : ((d1 > 0 || d2 > 0 || d3 > 0) ? (<View style={[styles.discountBadge, canEdit && { backgroundColor: '#E3F2FD' }, isOferta && { backgroundColor: '#FFEBEE' }]}><Text allowFontScaling={false} style={[styles.discountText, isOferta && { color: '#E53935' }]}>{[d1, d2, d3].filter(d => d > 0).join('+')}%</Text></View>) : (<Text style={[styles.dash, canEdit && { color: '#1C9BD8' }]}>{canEdit ? 'Add' : '-'}</Text>))}
+                        </TouchableOpacity>
+                        <View style={styles.vSep} />
+                        <View style={styles.colSub}><Text allowFontScaling={false} style={styles.subText} numberOfLines={1}>{formatUsd(subTotalLine)}</Text></View>
+                    </View>
+                );
             })}
-          </View>
-        )}
+        </View>
+      );
+  };
+
+  return (
+    <View style={{ flex: 1, backgroundColor: '#fff' }}>
+      <LayoutRefresh onRecargar={cargarDatos} contentContainerStyle={{ paddingBottom: 5 + insets.bottom }}>
+        <CarritoHeader step={3} onBack={onBack} />
+        
+        <ShapedCard style={{ marginHorizontal: SIDE_MARGIN, marginTop: 6, marginBottom: 12 }}>
+            <Text style={styles.titleDetalle}>DETALLES DE PEDIDO</Text>
+            <View style={styles.row}><Text style={styles.label}>Cliente:</Text><Text style={styles.value}>{getClienteTexto(clienteSeleccionado)}</Text></View>
+            <View style={styles.row}><Text style={styles.label}>Pago:</Text><Text style={styles.value}>{getPlazoTexto(plazoSeleccionado)}</Text></View>
+            <View style={styles.row}><Text style={styles.label}>Envío:</Text><Text style={styles.value}>{direccionEntrega ? `${direccionEntrega.street || ''}, ${direccionEntrega.city || ''}` : getEnvioTexto(envioSeleccionado)}</Text></View>
+            <View style={[styles.row, { marginBottom: 0 }]}><Text style={styles.label}>Fecha:</Text><Text style={styles.value}>{formatFecha()}</Text></View>
+        </ShapedCard>
+
+        {renderTablaProductos(itemsLista, `PRODUCTOS (${getPlazoTexto(plazoSeleccionado)})`, false)}
+        {renderTablaProductos(itemsOferta, "PRODUCTOS EN OFERTA", true)}
 
         <View style={styles.taxWrap}>
           <View style={styles.taxRow}>
-            <View style={styles.taxLeft}><Text style={styles.taxLeftText}>Base imponible</Text><Text style={styles.taxLeftText}>Impuestos</Text></View>
+            <View style={styles.taxLeft}><Text style={styles.taxLeftText}>Base imponible</Text><Text style={styles.taxLeftText}>Impuestos (21%)</Text></View>
             <View style={styles.taxSeparator} /><View style={styles.taxRight}><Text style={styles.taxRightText}>{formatUsd(mostrarBase)}</Text><Text style={styles.taxRightText}>{formatUsd(mostrarImpuestos)}</Text></View>
           </View>
           <View style={styles.taxDivider} />
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 }}> 
-              <View><Text style={styles.fxLabel}>Nro. Pedido</Text><Text style={styles.fxValue}>{nroPedido}</Text></View>
+              <View><Text style={styles.fxLabel}>Nro. Pedido</Text><Text style={styles.fxValue}>{nroPedidoFormateado}</Text></View>
               <View style={{ alignItems: 'flex-end' }}><Text style={styles.fxLabel}>Tipo de cambio</Text><Text style={styles.fxValue}>{tipoCambio ? formatPriceAR(tipoCambio) : '—'}</Text></View>
           </View>
           <View style={{ alignItems: 'flex-end', borderTopWidth: 1, borderTopColor: '#F0F0F0', paddingTop: 12 }}>
@@ -355,7 +405,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         <View style={{ marginTop: 24, marginBottom: 16 }}>
             <TouchableOpacity style={styles.obsLink} onPress={() => setShowObservationModal(true)}>
                 <Text style={styles.obsLinkText}>
-                    {observationText ? 'Editar Observaciones' : '+ Agregar Observaciones'}
+                    {observationText ? 'Editar Observaciones al Cliente' : '+ Agregar Instrucciones al Cliente'}
                 </Text>
             </TouchableOpacity>
         </View>
@@ -369,6 +419,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         </View>
       </View>
 
+      {/* Modal de Precios */}
       <Modal visible={modalVisible} transparent animationType="slide" onRequestClose={() => setModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
             <View style={styles.modalContent}>
@@ -388,11 +439,12 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* Modal de Notas */}
       <Modal visible={showObservationModal} transparent animationType="slide">
             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
                 <View style={styles.modalContent}>
-                    <Text style={styles.modalTitle}>Observaciones</Text>
-                    <Text style={styles.modalSubtitle}>Agrega notas para el vendedor o transporte</Text>
+                    <Text style={styles.modalTitle}>Instrucciones del Pedido</Text>
+                    <Text style={styles.modalSubtitle}>Esta nota se imprimirá en el PDF para el cliente.</Text>
                     
                     <View style={styles.inputGroup}>
                         <Text style={styles.inputLabel}>Mensaje:</Text>
