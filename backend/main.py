@@ -1985,6 +1985,9 @@ def crear_pedido():
         items = data.get('items', [])
         global_term_id = data.get('payment_term_id')
         
+        # --- FIX 1: RECIBIMOS EL ID DEL PEDIDO PREVIO ---
+        order_id_to_update = data.get('order_id_to_update') 
+        
         # Notas
         nota_cliente = data.get('note') or data.get('nota') or data.get('observaciones') or ""
         obs_internas = data.get('observaciones') or data.get('internal_note')
@@ -1996,6 +1999,8 @@ def crear_pedido():
         cliente = client.env['res.partner'].search([('vat', '=', cliente_cuit)], limit=1)
         if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
         cliente = cliente[0]
+        
+        shipping_id = data.get('partner_shipping_id') or cliente.id
 
         order_lines_cmd = []
         MAX_INT_32 = 2147483647
@@ -2004,32 +2009,24 @@ def crear_pedido():
             try:
                 raw_id = item.get('product_id')
                 variant_id = _get_variant_id(client, raw_id)
-                
-                if not variant_id:
-                    try:
-                        if int(raw_id) > MAX_INT_32: continue
-                    except: pass
-                    if not variant_id: continue
+                if not variant_id: continue
 
-                # --- FIX 1: CANTIDAD EXACTA ---
-                raw_qty = item.get('qty') or item.get('product_uom_qty') or item.get('quantity') or 1
-                qty = float(raw_qty)
+                # Cantidad y Precio
+                qty = float(item.get('qty') or item.get('product_uom_qty') or item.get('quantity') or 1)
                 price = float(item.get('price_unit', 0))
                 
-                # --- FIX 2: APARTADOS DE OFERTA Y PLAZO ---
+                # Descuentos
                 d1 = float(item.get('discount1', 0) or 0.0)
                 d2 = float(item.get('discount2', 0) or 0.0)
                 d3 = float(item.get('discount3', 0) or 0.0)
-                
-                # Combinación matemática para el descuento total de Odoo
                 discount_eq = 100.0 * (1.0 - (1.0 - d1/100.0) * (1.0 - d2/100.0) * (1.0 - d3/100.0))
 
                 order_lines_cmd.append((0, 0, {
                     'product_id': variant_id,
                     'product_uom_qty': qty,
                     'price_unit': price,
-                    'discount': round(discount_eq, 4), # Descuento unificado nativo
-                    'discount1': d1,                   # Columnas extra (si existen)
+                    'discount': round(discount_eq, 4),
+                    'discount1': d1,
                     'discount2': d2,
                     'discount3': d3
                 }))
@@ -2042,41 +2039,64 @@ def crear_pedido():
         vals = {
             "partner_id": cliente.id,
             "partner_invoice_id": cliente.id,
-            "partner_shipping_id": cliente.id,
+            "partner_shipping_id": int(shipping_id),
             "payment_term_id": int(global_term_id) if global_term_id else False,
-            "order_line": order_lines_cmd,
             "origin": "APP SALBOM",
             "note": nota_cliente,             
             "client_order_ref": ref_cliente,  
         }
 
         try:
-            order = client.env['sale.order'].create(vals)
+            order_obj = None
             
-            # Postear observación interna (con el nombre del vendedor)
+            # --- FIX 2: ACTUALIZAR EL PEDIDO EXISTENTE (EVITAR DUPLICADO) ---
+            if order_id_to_update:
+                try:
+                    existing = client.env['sale.order'].search([('id', '=', int(order_id_to_update))])
+                    if existing:
+                        # (5,0,0) le dice a Odoo que borre las líneas viejas y ponga las nuevas actualizadas
+                        vals['order_line'] = [(5, 0, 0)] + order_lines_cmd
+                        existing.write(vals)
+                        order_obj = existing[0]
+                except Exception as e_upd:
+                    log.warning(f"Falló actualización de pedido previo {order_id_to_update}, creando nuevo. Error: {e_upd}")
+            
+            # Si no venía ID previo o falló la actualización, creamos uno nuevo
+            if not order_obj:
+                vals['order_line'] = order_lines_cmd
+                order_obj = client.env['sale.order'].create(vals)
+                
+            # Notas internas
             if obs_internas:
                 try:
-                    order.message_post(
+                    order_obj.message_post(
                         body=f"📝 <b>Observación desde App:</b><br/>{obs_internas}",
                         subtype_xmlid="mail.mt_note"
                     )
-                except Exception as e_msg:
-                    log.warning(f"No se pudo postear nota interna: {e_msg}")
+                except Exception:
+                    pass
 
-            nro_pedido = "Borrador (Verifique en Web)"
+            # --- FIX 3: EVITAR QUE EL NOMBRE SEA "BORRADOR" O "NEW" ---
+            nro_pedido = f"Pedido #{order_obj.id}"
             total = 0.0
             currency = "USD"
             try:
-                datos = order.read(['amount_total', 'name', 'currency_id'])[0]
-                nro_pedido = datos.get('name')
-                total = datos.get('amount_total')
+                datos = order_obj.read(['amount_total', 'name', 'currency_id'])[0]
+                read_name = datos.get('name')
+                
+                # Si Odoo ya le asignó un código real (ej SO0045) lo usamos.
+                # Si es un borrador (/, New, Nuevo), usamos el texto lindo "Pedido #ID".
+                if read_name and read_name not in ['/', 'New', 'Nuevo', '* Nuevo *', 'Borrador']:
+                    nro_pedido = read_name
+                    
+                total = datos.get('amount_total', 0.0)
                 if datos.get('currency_id'):
                     currency = datos['currency_id'][1]
             except Exception:
                 pass
             
             return jsonify({
-                "pedido_id": order.id,
+                "pedido_id": order_obj.id,
                 "nro_pedido": nro_pedido,
                 "total": total,
                 "currency": currency,

@@ -100,7 +100,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   
   const [finalTotal, setFinalTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const isSubmittingRef = useRef(false); // Ref para evitar multi-clicks
+  const isSubmittingRef = useRef(false);
   const [observationText, setObservationText] = useState('');
   const [showObservationModal, setShowObservationModal] = useState(false);
 
@@ -207,8 +207,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     try {
       const cuitUser = await getCuitFromStorage();
       
-      // --- FIX: Filtro de seguridad ---
-      // Descartamos IDs que rompen Odoo por exceder límites de 32bits
       const itemsValidos = items.filter((it: any) => {
         const pid = Number(it.product_id);
         return !isNaN(pid) && pid < 2147483647;
@@ -221,16 +219,23 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         return;
       }
       
+      // --- FIX 1: NOTA INTERNA CON NOMBRE DEL VENDEDOR ---
+      const v_name = loggedUserName || 'Vendedor App';
+      const notaEnriquecida = observationText 
+          ? `Cargado por: ${v_name}\n\nObservaciones del cliente/entrega: ${observationText}` 
+          : `Cargado por: ${v_name}`;
+
       const payload = {
           cliente_cuit: clienteSeleccionado?.vat || cuitUser, 
           payment_term_id: plazoSeleccionado?.id,
           partner_shipping_id: direccionEntrega?.id || null, 
-          created_by_name: loggedUserName, 
+          created_by_name: v_name, 
 
-          // Usamos la lista filtrada
+          // --- FIX 2: CANTIDAD EXACTA Y DESCUENTOS POR APARTADOS ---
           items: itemsValidos.map((it: any) => ({
               product_id: it.product_id,
-              product_uom_qty: it.product_uom_qty,
+              qty: it.product_uom_qty || it.qty || it.quantity || 1, 
+              product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
               price_unit: it.price_unit,
               payment_term_id: it.payment_term_id, 
               name: it.name, 
@@ -240,8 +245,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           })),
           
           carrier_id: null, 
-          observaciones: observationText,
-          note: observationText // Mandamos también 'note' para asegurar la compatibilidad con tu backend
+          observaciones: notaEnriquecida,
+          note: notaEnriquecida 
       };
 
       const resp = await axios.post(`${API_URL}/crear-pedido`, payload);
@@ -252,13 +257,11 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         setFinalTotal(j.total || mostrarTotal);
         setShowSuccess(true);
         clearCart(); 
-        // No desbloqueamos aquí porque ya navegamos al éxito
       } else {
         Alert.alert('Error', j?.error ? String(j.error) : 'Error al confirmar.');
         isSubmittingRef.current = false;
       }
     } catch (e: any) {
-        // Manejo de error claro (Si fue error 409 es porque un producto se borró de Odoo)
         if (e.response?.status === 409) {
            Alert.alert("Revisar carrito", e.response.data.error || "Uno de los productos ya no está disponible.");
         } else {
@@ -349,7 +352,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           </View>
         </View>
 
-        {/* --- BOTÓN DE OBSERVACIONES (Movido abajo) --- */}
         <View style={{ marginTop: 24, marginBottom: 16 }}>
             <TouchableOpacity style={styles.obsLink} onPress={() => setShowObservationModal(true)}>
                 <Text style={styles.obsLinkText}>
