@@ -12,7 +12,6 @@ import {
   TextInput,
   KeyboardAvoidingView,
   Platform,
-  ScrollView,
   ActivityIndicator
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -116,7 +115,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const [observationText, setObservationText] = useState(notasIniciales || '');
   const [showObservationModal, setShowObservationModal] = useState(false);
 
-  // --- SINCRONIZACIÓN EN TIEMPO REAL CON ODOO (Para Impuestos/Percepciones exactas) ---
   const [liveTotals, setLiveTotals] = useState({ base: 0, tax: 0, total: 0 });
   const [isSyncingTotals, setIsSyncingTotals] = useState(false);
 
@@ -166,48 +164,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     } catch { setTipoCambio(TIPO_CAMBIO_FALLBACK); }
   }, []);
 
-  // --- EFECTO: OBTENER TOTAL EXACTO DE ODOO ---
-  useEffect(() => {
-    const fetchExactTotals = async () => {
-        if (!draftOrderId) return;
-        setIsSyncingTotals(true);
-        try {
-            const cuitUser = await getCuitFromStorage();
-            const payload = {
-                order_id: draftOrderId,
-                cliente_cuit: clienteSeleccionado?.vat || cuitUser,
-                payment_term_id: plazoSeleccionado?.id,
-                partner_shipping_id: direccionEntrega?.id || null,
-                items: items.map((it: any) => ({
-                    product_id: it.product_id,
-                    qty: it.product_uom_qty || it.qty || it.quantity || 1,
-                    product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
-                    price_unit: it.price_unit,
-                    payment_term_id: it.payment_term_id,
-                    name: it.name,
-                    discount1: it.discount1 || 0,
-                    discount2: it.discount2 || 0,
-                    discount3: it.discount3 || 0
-                }))
-            };
-            const resp = await axios.post(`${API_URL}/actualizar-pedido`, payload);
-            if (resp.data && resp.data.total) {
-                setLiveTotals({
-                    base: toNumber(resp.data.base_imponible),
-                    tax: toNumber(resp.data.impuestos),
-                    total: toNumber(resp.data.total)
-                });
-            }
-        } catch (error) {
-            console.log("Error sincronizando totales:", error);
-        } finally {
-            setIsSyncingTotals(false);
-        }
-    };
-
-    fetchExactTotals();
-  }, [items, draftOrderId]); // Se vuelve a ejecutar si editas un precio o cambias items
-
   const canEdit = userRole === 'Admin' || userRole === 'Vendedor Black';
 
   const openEditModal = (item: any) => {
@@ -240,27 +196,110 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       setEditingItem(null);
   };
 
-  // --- RESPALDO MATEMÁTICO (Evita que se vea en cero mientras Odoo responde) ---
-  const calculateTotalLocal = () => {
-    let baseImponible = 0;
-    if (Array.isArray(items)) {
-        items.forEach((it: any) => {
-            const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
-            const price = toNumber(it?.price_unit);
-            const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
-            const isTransport = String(it.product_id) === '4011';
-            const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
-            baseImponible += isTransport ? (price * qty) : (price * qty * factor);
-        });
-    }
-    return baseImponible;
-  };
+  // =====================================================================
+  // REGLA MATEMÁTICA: TABLA DE COSTOS DE FLETE
+  // =====================================================================
+  const tcSeguro = tipoCambio && tipoCambio > 0 ? tipoCambio : TIPO_CAMBIO_FALLBACK;
+  const esEnvioADomicilio = envioSeleccionado === 'domicilio' || (transporte?.name || '').toLowerCase().includes('domicilio');
 
-  const localBase = calculateTotalLocal();
+  // 1. Calculamos la Base Imponible en USD (solo sumando los productos reales, ignorando el flete viejo)
+  const localBaseSinTransporte = Array.isArray(items) 
+    ? items.filter((it: any) => String(it.product_id) !== '4011').reduce((acc: number, it: any) => {
+        const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
+        const price = toNumber(it?.price_unit);
+        const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
+        const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
+        return acc + (price * qty * factor);
+    }, 0) 
+    : 0;
+
+  // 2. Pasamos la base a Pesos Argentinos para aplicar la escala
+  const baseARS = localBaseSinTransporte * tcSeguro;
+  let costoEnvioUSD = 0;
+
+  if (esEnvioADomicilio) {
+      if (baseARS < 250000) {
+          costoEnvioUSD = 9000 / tcSeguro;
+      } else if (baseARS < 500000) {
+          costoEnvioUSD = 6000 / tcSeguro;
+      } else {
+          costoEnvioUSD = 0; // Flete Gratis
+      }
+  }
+
+  // 3. Re-mapeamos los items en pantalla para que el producto 4011 muestre el costo de envío perfecto
+  let hasTransportItem = false;
+  const itemsProcesados = Array.isArray(items) ? items.map((it: any) => {
+      if (String(it.product_id) === '4011') {
+          hasTransportItem = true;
+          return { ...it, price_unit: costoEnvioUSD, discount1: 0, discount2: 0, discount3: 0 };
+      }
+      return it;
+  }) : [];
+
+  // Si por alguna razón el usuario eligió a domicilio y no estaba el 4011, se lo agregamos visualmente
+  if (esEnvioADomicilio && !hasTransportItem && items.length > 0) {
+      itemsProcesados.push({
+          product_id: 4011,
+          name: 'Envío a Domicilio',
+          default_code: 'FLETE',
+          qty: 1,
+          product_uom_qty: 1,
+          price_unit: costoEnvioUSD,
+          discount1: 0, discount2: 0, discount3: 0
+      });
+  }
+  // =====================================================================
+
+  // EFECTO: Sincronizar totales exactos en segundo plano usando el nuevo flete calculado
+  useEffect(() => {
+    const fetchExactTotals = async () => {
+        if (!draftOrderId || itemsProcesados.length === 0) return;
+        setIsSyncingTotals(true);
+        try {
+            const cuitUser = await getCuitFromStorage();
+            const payload = {
+                order_id_to_update: draftOrderId,
+                cliente_cuit: clienteSeleccionado?.vat || cuitUser,
+                payment_term_id: plazoSeleccionado?.id,
+                partner_shipping_id: direccionEntrega?.id || null,
+                carrier_id: transporte?.id || null,
+                precio_envio_personalizado: costoEnvioUSD, // <--- Aquí pasamos el valor de la tabla!
+                items: itemsProcesados.map((it: any) => ({
+                    product_id: it.product_id,
+                    qty: it.product_uom_qty || it.qty || it.quantity || 1,
+                    product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
+                    price_unit: it.price_unit,
+                    payment_term_id: it.payment_term_id,
+                    name: it.name,
+                    discount1: it.discount1 || 0,
+                    discount2: it.discount2 || 0,
+                    discount3: it.discount3 || 0
+                }))
+            };
+            const resp = await axios.post(`${API_URL}/actualizar-pedido`, payload);
+            if (resp.data && resp.data.total) {
+                setLiveTotals({
+                    base: toNumber(resp.data.base_imponible),
+                    tax: toNumber(resp.data.impuestos),
+                    total: toNumber(resp.data.total)
+                });
+            }
+        } catch (error) {
+            console.log("Error sincronizando totales:", error);
+        } finally {
+            setIsSyncingTotals(false);
+        }
+    };
+
+    fetchExactTotals();
+  }, [items, draftOrderId, costoEnvioUSD]); // Se vuelve a llamar si cambia el costo o los items
+
+  // Respaldo Matemático provisorio (Para no ver en 0 mientras carga)
+  const localBase = localBaseSinTransporte + costoEnvioUSD;
   const localTax = localBase * 0.21;
   const localTotal = localBase + localTax;
 
-  // Si Odoo ya respondió (liveTotals.total > 0), mostramos la info EXACTA del sistema. Si no, el provisorio.
   const mostrarBase  = liveTotals.total > 0 ? liveTotals.base : localBase;
   const mostrarImpuestos = liveTotals.total > 0 ? liveTotals.tax : localTax;
   const mostrarTotal = liveTotals.total > 0 ? liveTotals.total : localTotal;
@@ -274,7 +313,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     try {
       const cuitUser = await getCuitFromStorage();
       
-      const itemsValidos = items.filter((it: any) => {
+      const itemsValidos = itemsProcesados.filter((it: any) => {
         const pid = Number(it.product_id);
         return !isNaN(pid) && pid < 2147483647;
       });
@@ -294,7 +333,9 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           payment_term_id: plazoSeleccionado?.id,
           partner_shipping_id: direccionEntrega?.id || null, 
           created_by_name: v_name, 
-
+          carrier_id: transporte?.id || null, 
+          precio_envio_personalizado: costoEnvioUSD, // <--- También lo mandamos al confirmar
+          
           items: itemsValidos.map((it: any) => ({
               product_id: it.product_id,
               qty: it.product_uom_qty || it.qty || it.quantity || 1, 
@@ -307,7 +348,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
               discount3: it.discount3 || 0
           })),
           
-          carrier_id: transporte?.id || null, 
           note: observationText, 
           observaciones: observationText 
                 ? `Cargado por: ${v_name}\n\nObservaciones del cliente: ${observationText}` 
@@ -378,8 +418,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             <View style={[styles.row, { marginBottom: 0 }]}><Text style={styles.label}>Fecha:</Text><Text style={styles.value}>{formatFecha()}</Text></View>
         </ShapedCard>
 
-        {/* LISTA UNIFICADA ORIGINAL */}
-        {Array.isArray(items) && items.length > 0 && (
+        {itemsProcesados.length > 0 && (
           <View style={styles.prodWrap}>
             <View style={styles.tableHeader}>
                 <Text style={[styles.headerText, { flex: 1.1, textAlign: 'left' }]}>REF.</Text>
@@ -389,15 +428,14 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                 <Text style={[styles.headerText, { flex: 1, textAlign: 'right' }]}>SUBTOTAL</Text>
             </View>
             <View style={styles.headerLine} />
-            {items.map((it: any, index: number) => {
+            {itemsProcesados.map((it: any, index: number) => {
               const isTransport = String(it.product_id) === '4011';
               const referral = it.default_code || it.name || 'SIN REF';
               const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
               const priceUnit = toNumber(it?.price_unit);
               const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
               const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
-              
-              const subTotalLine = isTransport ? (priceUnit * qty) : (priceUnit * qty * factor);
+              const subTotalLine = priceUnit * qty * factor; // Como el transporte se mapeó con Dto=0, sirve la misma fórmula
               
               return (
                 <View key={it.product_id ?? index} style={styles.prodRow}>
@@ -405,8 +443,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                   <View style={styles.vSep} />
                   <View style={styles.colQty}><Text allowFontScaling={false} style={styles.qtyText}>x{qty}</Text></View>
                   <View style={styles.vSep} />
-                  <TouchableOpacity style={styles.colPrice} disabled={!canEdit} onPress={() => openEditModal(it)}>
-                    <Text allowFontScaling={false} style={[styles.priceText, canEdit && { color: '#1C9BD8', textDecorationLine: 'underline' }]} numberOfLines={1}>{formatUsd(priceUnit)}</Text>
+                  <TouchableOpacity style={styles.colPrice} disabled={!canEdit || isTransport} onPress={() => openEditModal(it)}>
+                    <Text allowFontScaling={false} style={[styles.priceText, canEdit && !isTransport && { color: '#1C9BD8', textDecorationLine: 'underline' }]} numberOfLines={1}>{formatUsd(priceUnit)}</Text>
                   </TouchableOpacity>
                   <View style={styles.vSep} />
                   <TouchableOpacity style={styles.colDisc} disabled={!canEdit || isTransport} onPress={() => openEditModal(it)}>
@@ -427,8 +465,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             <View style={styles.taxRight}>
                 {isSyncingTotals ? (
                     <>
-                        <Text style={styles.taxRightText}>Calculando...</Text>
-                        <Text style={styles.taxRightText}>Calculando...</Text>
+                        <Text style={[styles.taxRightText, { color: '#AAA' }]}>Calculando...</Text>
+                        <Text style={[styles.taxRightText, { color: '#AAA' }]}>Calculando...</Text>
                     </>
                 ) : (
                     <>
@@ -458,7 +496,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         <View style={{ marginTop: 24, marginBottom: 16 }}>
             <TouchableOpacity style={styles.obsLink} onPress={() => setShowObservationModal(true)}>
                 <Text style={styles.obsLinkText}>
-                    {observationText ? 'Editar Observaciones' : '+ Agregar Observaciones'}
+                    {observationText ? 'Editar Observaciones al Cliente' : '+ Agregar Instrucciones al Cliente'}
                 </Text>
             </TouchableOpacity>
         </View>
@@ -480,7 +518,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         </View>
       </View>
 
-      {/* Modal de Precios */}
       <Modal visible={modalVisible} transparent animationType="slide" onRequestClose={() => setModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
             <View style={styles.modalContent}>
@@ -500,7 +537,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Modal de Notas */}
       <Modal visible={showObservationModal} transparent animationType="slide">
             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
                 <View style={styles.modalContent}>
@@ -570,7 +606,7 @@ const styles = StyleSheet.create({
   fxLabel: { color: '#6A6E73', fontSize: 11, marginBottom: 2, fontWeight: '600' },
   fxValue: { color: '#2B2B2B', fontWeight: '800', fontSize: 13 },
   totalLabel: { fontSize: 14, fontWeight: '800', color: '#2B2B2B' },
-  totalValue: { fontSize: 24, fontWeight: '900', color: '#1C9BD8' }, // FUENTE ACHICADA A 24
+  totalValue: { fontSize: 24, fontWeight: '900', color: '#1C9BD8' },
 
   footerContainer: { backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#f0f0f0', paddingTop: 15, paddingHorizontal: 10, shadowColor: '#000', shadowOffset: { width: 0, height: -3 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 5 },
   buttons: { flexDirection: 'row', justifyContent: 'space-between', gap: 10, paddingHorizontal: 8 },

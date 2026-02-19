@@ -2071,7 +2071,6 @@ def _upsert_order_logic(client, data):
     global_term_id      = data.get('payment_term_id')
     partner_shipping_id = data.get('partner_shipping_id')
     carrier_id          = data.get('carrier_id')
-    precio_envio_personalizado = data.get('precio_envio_personalizado') # NUEVO: Trae la tabla lógica de la App
 
     # Notas
     nota_cliente    = data.get('note') or data.get('nota') or ""
@@ -2115,10 +2114,9 @@ def _upsert_order_logic(client, data):
         except Exception: pass
         finally: pg_conn.close()
 
-    # 5. Agrupar Items 
+    # 5. Agrupar Items (El 4011 pasa como un producto normal con su nombre personalizado)
     groups = {}
     vistos = set()
-    has_carrier = bool(carrier_id and str(carrier_id).isdigit())
 
     for it in items:
         try:
@@ -2126,11 +2124,7 @@ def _upsert_order_logic(client, data):
             variant_id = _get_variant_id(client, raw_id)
             if not variant_id: continue
             
-            # --- FIX: EVITAR DUPLICAR TRANSPORTE ---
-            # Si hay un transporte oficial, ignoramos el 4011 porque Odoo lo inyectará con impuestos luego.
-            if has_carrier and (str(variant_id) == '4011' or str(raw_id) == '4011'):
-                continue
-
+            # NOTA: Ya no salteamos el 4011, lo tratamos como línea estándar.
             if variant_id in vistos: continue 
             vistos.add(variant_id)
 
@@ -2198,7 +2192,12 @@ def _upsert_order_logic(client, data):
         "client_order_ref": ref_cliente,
     }
     if pricelist_id: vals["pricelist_id"] = pricelist_id
-    if has_carrier: vals["carrier_id"] = int(carrier_id)
+    
+    # Mantenemos el carrier_id a nivel orden para que quede registrado en el sistema
+    try:
+        if carrier_id and str(carrier_id).isdigit():
+            vals["carrier_id"] = int(carrier_id)
+    except: pass
 
     # 8. Guardar en Odoo
     try:
@@ -2208,7 +2207,8 @@ def _upsert_order_logic(client, data):
             try:
                 existing = client.env['sale.order'].search([('id', '=', int(order_id_to_update))])
                 if existing:
-                    existing.write({'order_line': [(5, 0, 0)], 'carrier_id': False})
+                    # Limpiamos las líneas viejas antes de insertar las nuevas
+                    existing.write({'order_line': [(5, 0, 0)]})
                     vals['order_line'] = order_lines_cmd
                     existing.write(vals)
                     order_obj = existing[0]
@@ -2219,30 +2219,7 @@ def _upsert_order_logic(client, data):
             order_obj = client.env['sale.order'].create(vals)
 
         # =================================================================
-        # 🚚 FIX TRANSPORTE: REGLA DE LA APP ($9000, $6000 o Gratis)
-        # =================================================================
-        if order_obj.carrier_id:
-            try:
-                carr = order_obj.carrier_id
-                precio_envio = 0.0
-                
-                # Si la App nos mandó el precio de su tabla, lo respetamos a rajatabla.
-                if precio_envio_personalizado is not None:
-                    precio_envio = float(precio_envio_personalizado)
-                else:
-                    # Sino, que cotice Odoo (por las dudas)
-                    res = carr.rate_shipment(order_obj)
-                    if res and res.get('success'):
-                        precio_envio = res.get('price', 0.0)
-                
-                # Inyectamos la línea oficial de flete
-                if precio_envio >= 0:
-                    order_obj.set_delivery_line(carr, precio_envio)
-            except Exception as e_carr:
-                log.warning(f"Error regenerando transporte: {e_carr}")
-
-        # =================================================================
-        # 🚀 FIX IMPUESTOS Y PERCEPCIONES (Asegura IIBB CABA/ARBA)
+        # 🚀 FIX IMPUESTOS Y PERCEPCIONES (Para líneas y Transporte 4011)
         # =================================================================
         try:
             for line in order_obj.order_line:
@@ -2254,6 +2231,7 @@ def _upsert_order_logic(client, data):
                         taxes = product_taxes
                     line.write({'tax_id': [(6, 0, taxes.ids)]})
             
+            # Forzamos el recalculo matemático final de todo
             order_obj._amount_all()
         except Exception: pass
 
