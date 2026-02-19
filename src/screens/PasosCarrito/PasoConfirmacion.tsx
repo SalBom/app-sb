@@ -116,10 +116,14 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const [observationText, setObservationText] = useState(notasIniciales || '');
   const [showObservationModal, setShowObservationModal] = useState(false);
 
-  // MANEJO VISUAL DEL NUMERO DE PEDIDO PARA NO MOSTRAR "BORRADOR"
+  // --- SINCRONIZACIÓN EN TIEMPO REAL CON ODOO (Para Impuestos/Percepciones exactas) ---
+  const [liveTotals, setLiveTotals] = useState({ base: 0, tax: 0, total: 0 });
+  const [isSyncingTotals, setIsSyncingTotals] = useState(false);
+
+  const draftOrderId = consultaResumen?.pedido_id;
   const rawNroPedido = consultaResumen?.nro_pedido || consultaResumen?.name || '---';
   const isBorrador = ['/', 'New', 'Nuevo', '* Nuevo *', 'Borrador'].includes(rawNroPedido);
-  const nroPedidoFormateado = isBorrador ? (consultaResumen?.pedido_id ? `Pedido #${consultaResumen.pedido_id}` : 'Pendiente asignar') : rawNroPedido;
+  const nroPedidoFormateado = isBorrador ? (draftOrderId ? `Pedido #${draftOrderId}` : 'Pendiente asignar') : rawNroPedido;
 
   const confirmAnim = useRef(new Animated.Value(0)).current; 
   const backAnim = useRef(new Animated.Value(0)).current; 
@@ -162,6 +166,48 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     } catch { setTipoCambio(TIPO_CAMBIO_FALLBACK); }
   }, []);
 
+  // --- EFECTO: OBTENER TOTAL EXACTO DE ODOO ---
+  useEffect(() => {
+    const fetchExactTotals = async () => {
+        if (!draftOrderId) return;
+        setIsSyncingTotals(true);
+        try {
+            const cuitUser = await getCuitFromStorage();
+            const payload = {
+                order_id: draftOrderId,
+                cliente_cuit: clienteSeleccionado?.vat || cuitUser,
+                payment_term_id: plazoSeleccionado?.id,
+                partner_shipping_id: direccionEntrega?.id || null,
+                items: items.map((it: any) => ({
+                    product_id: it.product_id,
+                    qty: it.product_uom_qty || it.qty || it.quantity || 1,
+                    product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
+                    price_unit: it.price_unit,
+                    payment_term_id: it.payment_term_id,
+                    name: it.name,
+                    discount1: it.discount1 || 0,
+                    discount2: it.discount2 || 0,
+                    discount3: it.discount3 || 0
+                }))
+            };
+            const resp = await axios.post(`${API_URL}/actualizar-pedido`, payload);
+            if (resp.data && resp.data.total) {
+                setLiveTotals({
+                    base: toNumber(resp.data.base_imponible),
+                    tax: toNumber(resp.data.impuestos),
+                    total: toNumber(resp.data.total)
+                });
+            }
+        } catch (error) {
+            console.log("Error sincronizando totales:", error);
+        } finally {
+            setIsSyncingTotals(false);
+        }
+    };
+
+    fetchExactTotals();
+  }, [items, draftOrderId]); // Se vuelve a ejecutar si editas un precio o cambias items
+
   const canEdit = userRole === 'Admin' || userRole === 'Vendedor Black';
 
   const openEditModal = (item: any) => {
@@ -194,7 +240,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       setEditingItem(null);
   };
 
-  // --- RESPALDO MATEMÁTICO (Evita los ceros si la data tarda en llegar) ---
+  // --- RESPALDO MATEMÁTICO (Evita que se vea en cero mientras Odoo responde) ---
   const calculateTotalLocal = () => {
     let baseImponible = 0;
     if (Array.isArray(items)) {
@@ -210,15 +256,14 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     return baseImponible;
   };
 
-  // Lectura directa desde el backend (Prioridad #1)
-  const baseBackend = toNumber(consultaResumen?.base_imponible);
-  const impBackend = toNumber(consultaResumen?.impuestos);
-  const totalBackend = toNumber(consultaResumen?.total);
-  const hasBackendData = totalBackend > 0;
+  const localBase = calculateTotalLocal();
+  const localTax = localBase * 0.21;
+  const localTotal = localBase + localTax;
 
-  const mostrarBase  = hasBackendData ? baseBackend : calculateTotalLocal();
-  const mostrarImpuestos = hasBackendData ? impBackend : (mostrarBase * 0.21);
-  const mostrarTotal = hasBackendData ? totalBackend : (mostrarBase + mostrarImpuestos);
+  // Si Odoo ya respondió (liveTotals.total > 0), mostramos la info EXACTA del sistema. Si no, el provisorio.
+  const mostrarBase  = liveTotals.total > 0 ? liveTotals.base : localBase;
+  const mostrarImpuestos = liveTotals.total > 0 ? liveTotals.tax : localTax;
+  const mostrarTotal = liveTotals.total > 0 ? liveTotals.total : localTotal;
 
   const confirmarPedido = async () => {
     if (loading || isSubmittingRef.current) return;
@@ -244,7 +289,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       const v_name = loggedUserName || 'Vendedor App';
 
       const payload = {
-          order_id_to_update: consultaResumen?.pedido_id || null, 
+          order_id_to_update: draftOrderId || null, 
           cliente_cuit: clienteSeleccionado?.vat || cuitUser, 
           payment_term_id: plazoSeleccionado?.id,
           partner_shipping_id: direccionEntrega?.id || null, 
@@ -317,56 +362,12 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
      );
   }
 
-  const renderTablaProductos = (data: any[], titulo: string, isOferta: boolean) => {
-      if (data.length === 0) return null;
-      return (
-        <View style={styles.prodWrap}>
-            <Text style={[styles.titleDetalle, { fontSize: 15, marginTop: 10, marginLeft: 5 }, isOferta && { color: '#E53935' }]}>{titulo}</Text>
-            <View style={styles.tableHeader}>
-                <Text style={[styles.headerText, { flex: 1.1, textAlign: 'left' }]}>REF.</Text>
-                <Text style={[styles.headerText, { flex: 0.5, textAlign: 'center' }]}>CANT</Text>
-                <Text style={[styles.headerText, { flex: 0.9, textAlign: 'right' }]}>PRECIO</Text>
-                <Text style={[styles.headerText, { flex: 0.6, textAlign: 'center' }]}>DTO</Text>
-                <Text style={[styles.headerText, { flex: 1, textAlign: 'right' }]}>SUBTOTAL</Text>
-            </View>
-            <View style={styles.headerLine} />
-            {data.map((it: any) => {
-                const isTransport = String(it.product_id) === '4011';
-                const referral = it.default_code || it.name || 'SIN REF';
-                const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
-                const priceUnit = toNumber(it?.price_unit);
-                const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
-                const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
-                const subTotalLine = isTransport ? (priceUnit * qty) : (priceUnit * qty * factor);
-                
-                return (
-                    <View key={it.product_id ?? Math.random()} style={styles.prodRow}>
-                        <View style={styles.colRef}><Text allowFontScaling={false} style={styles.codeText}>{referral}</Text></View>
-                        <View style={styles.vSep} />
-                        <View style={styles.colQty}><Text allowFontScaling={false} style={styles.qtyText}>x{qty}</Text></View>
-                        <View style={styles.vSep} />
-                        <TouchableOpacity style={styles.colPrice} disabled={!canEdit} onPress={() => openEditModal(it)}>
-                            <Text allowFontScaling={false} style={[styles.priceText, canEdit && { color: '#1C9BD8', textDecorationLine: 'underline' }]} numberOfLines={1}>{formatUsd(priceUnit)}</Text>
-                        </TouchableOpacity>
-                        <View style={styles.vSep} />
-                        <TouchableOpacity style={styles.colDisc} disabled={!canEdit || isTransport} onPress={() => openEditModal(it)}>
-                            {isTransport ? <Text style={styles.dash}>-</Text> : ((d1 > 0 || d2 > 0 || d3 > 0) ? (<View style={[styles.discountBadge, canEdit && { backgroundColor: '#E3F2FD' }, isOferta && { backgroundColor: '#FFEBEE' }]}><Text allowFontScaling={false} style={[styles.discountText, isOferta && { color: '#E53935' }]}>{[d1, d2, d3].filter(d => d > 0).join('+')}%</Text></View>) : (<Text style={[styles.dash, canEdit && { color: '#1C9BD8' }]}>{canEdit ? 'Add' : '-'}</Text>))}
-                        </TouchableOpacity>
-                        <View style={styles.vSep} />
-                        <View style={styles.colSub}><Text allowFontScaling={false} style={styles.subText} numberOfLines={1}>{formatUsd(subTotalLine)}</Text></View>
-                    </View>
-                );
-            })}
-        </View>
-      );
-  };
-
   return (
     <View style={{ flex: 1, backgroundColor: '#fff' }}>
       <LayoutRefresh onRecargar={cargarDatos} contentContainerStyle={{ paddingBottom: 5 + insets.bottom }}>
         <CarritoHeader step={3} onBack={onBack} />
         
-        <ShapedCard style={{ marginHorizontal: SIDE_MARGIN, marginTop: 6, marginBottom: 12 }}>
+        <ShapedCard style={{ marginHorizontal: SIDE_MARGIN, marginTop: 6, marginBottom: 24 }}>
             <Text style={styles.titleDetalle}>DETALLES DE PEDIDO</Text>
             <View style={styles.row}><Text style={styles.label}>Cliente:</Text><Text style={styles.value}>{getClienteTexto(clienteSeleccionado)}</Text></View>
             <View style={styles.row}><Text style={styles.label}>Pago:</Text><Text style={styles.value}>{getPlazoTexto(plazoSeleccionado)}</Text></View>
@@ -377,7 +378,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             <View style={[styles.row, { marginBottom: 0 }]}><Text style={styles.label}>Fecha:</Text><Text style={styles.value}>{formatFecha()}</Text></View>
         </ShapedCard>
 
-        {/* LISTA UNIFICADA ORIGINAL SIN DIVISIONES */}
+        {/* LISTA UNIFICADA ORIGINAL */}
         {Array.isArray(items) && items.length > 0 && (
           <View style={styles.prodWrap}>
             <View style={styles.tableHeader}>
@@ -396,7 +397,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
               const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
               const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
               
-              // Subtotal visual en la app
               const subTotalLine = isTransport ? (priceUnit * qty) : (priceUnit * qty * factor);
               
               return (
@@ -423,7 +423,20 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         <View style={styles.taxWrap}>
           <View style={styles.taxRow}>
             <View style={styles.taxLeft}><Text style={styles.taxLeftText}>Base imponible</Text><Text style={styles.taxLeftText}>Impuestos</Text></View>
-            <View style={styles.taxSeparator} /><View style={styles.taxRight}><Text style={styles.taxRightText}>{formatUsd(mostrarBase)}</Text><Text style={styles.taxRightText}>{formatUsd(mostrarImpuestos)}</Text></View>
+            <View style={styles.taxSeparator} />
+            <View style={styles.taxRight}>
+                {isSyncingTotals ? (
+                    <>
+                        <Text style={styles.taxRightText}>Calculando...</Text>
+                        <Text style={styles.taxRightText}>Calculando...</Text>
+                    </>
+                ) : (
+                    <>
+                        <Text style={styles.taxRightText}>{formatUsd(mostrarBase)}</Text>
+                        <Text style={styles.taxRightText}>{formatUsd(mostrarImpuestos)}</Text>
+                    </>
+                )}
+            </View>
           </View>
           <View style={styles.taxDivider} />
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 }}> 
@@ -433,7 +446,11 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           <View style={{ alignItems: 'flex-end', borderTopWidth: 1, borderTopColor: '#F0F0F0', paddingTop: 12 }}>
               <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
                 <Text style={styles.totalLabel}>TOTAL</Text>
-                <Text style={styles.totalValue}>{formatUsd(mostrarTotal)}</Text>
+                {isSyncingTotals ? (
+                    <ActivityIndicator size="small" color="#1C9BD8" style={{ marginLeft: 10 }} />
+                ) : (
+                    <Text style={styles.totalValue}>{formatUsd(mostrarTotal)}</Text>
+                )}
               </View>
           </View>
         </View>
@@ -441,7 +458,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         <View style={{ marginTop: 24, marginBottom: 16 }}>
             <TouchableOpacity style={styles.obsLink} onPress={() => setShowObservationModal(true)}>
                 <Text style={styles.obsLinkText}>
-                    {observationText ? 'Editar Observaciones al Cliente' : '+ Agregar Instrucciones al Cliente'}
+                    {observationText ? 'Editar Observaciones' : '+ Agregar Observaciones'}
                 </Text>
             </TouchableOpacity>
         </View>
@@ -553,7 +570,7 @@ const styles = StyleSheet.create({
   fxLabel: { color: '#6A6E73', fontSize: 11, marginBottom: 2, fontWeight: '600' },
   fxValue: { color: '#2B2B2B', fontWeight: '800', fontSize: 13 },
   totalLabel: { fontSize: 14, fontWeight: '800', color: '#2B2B2B' },
-  totalValue: { fontSize: 24, fontWeight: '900', color: '#1C9BD8' }, // FUENTE ACHICADA AQUÍ
+  totalValue: { fontSize: 24, fontWeight: '900', color: '#1C9BD8' }, // FUENTE ACHICADA A 24
 
   footerContainer: { backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#f0f0f0', paddingTop: 15, paddingHorizontal: 10, shadowColor: '#000', shadowOffset: { width: 0, height: -3 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 5 },
   buttons: { flexDirection: 'row', justifyContent: 'space-between', gap: 10, paddingHorizontal: 8 },

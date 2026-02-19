@@ -1975,257 +1975,6 @@ def get_clients():
     finally:
         release_odoo_client(client)
 
-@app.route('/crear-pedido', methods=['POST'])
-def crear_pedido():
-    def _logic(client):
-        data = request.get_json() or {}
-        
-        # 1. Datos Principales
-        cliente_cuit        = data.get('cliente_cuit') or data.get('partner_vat')
-        items               = data.get('items', [])
-        global_term_id      = data.get('payment_term_id')
-        partner_shipping_id = data.get('partner_shipping_id')
-        carrier_id          = data.get('carrier_id')
-        order_id_to_update  = data.get('order_id_to_update') # FIX: Evita duplicados
-
-        # Notas
-        nota_cliente    = data.get('note') or data.get('nota') or ""
-        obs_internas    = data.get('observaciones') or data.get('internal_note')
-        ref_cliente     = data.get('client_order_ref') or data.get('ref') or f"APP-{int(time.time())}"
-        created_by_name = data.get('created_by_name', '')
-
-        if not cliente_cuit: return jsonify({"error": "Falta cliente_cuit"}), 400
-        if not items: return jsonify({"error": "El pedido no tiene items"}), 400
-
-        # 2. Buscar cliente
-        cliente = client.env['res.partner'].search([('vat', '=', cliente_cuit)], limit=1)
-        if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
-        cliente = cliente[0]
-
-        pricelist_id = cliente.property_product_pricelist.id if cliente.property_product_pricelist else None
-
-        # 3. Nombres de Plazos de Pago (Para los Títulos de Secciones)
-        term_ids_to_fetch = set()
-        if global_term_id:
-            term_ids_to_fetch.add(int(global_term_id))
-        for it in items:
-            if it.get('payment_term_id'):
-                term_ids_to_fetch.add(int(it.get('payment_term_id')))
-
-        terms_map = {}
-        try:
-            if term_ids_to_fetch:
-                term_recs = client.env['account.payment.term'].browse(list(term_ids_to_fetch))
-                for t in term_recs:
-                    t_name = t.name
-                    if t_name and "inmediato" in t_name.lower():
-                        terms_map[t.id] = "CONTADO"
-                    else:
-                        terms_map[t.id] = t_name
-        except Exception as e:
-            log.warning(f"Error fetching terms: {e}")
-
-        # 4. SKUs de Oferta (Para saber qué va a la sección de oferta)
-        offer_skus = set()
-        pg_conn = get_pg_connection()
-        if pg_conn:
-            try:
-                cur = pg_conn.cursor()
-                cur.execute("SELECT sku FROM app_product_offers WHERE is_active = TRUE")
-                offer_skus = {r[0] for r in cur.fetchall()}
-                cur.close()
-            except Exception as e:
-                log.error(f"Error cargando ofertas: {e}")
-            finally:
-                pg_conn.close()
-
-        # 5. Agrupar Items (CON SEGURIDAD XML-RPC)
-        groups = {}
-        vistos = set()
-
-        for it in items:
-            try:
-                raw_id = it.get('product_id')
-
-                # --- FIX: Helper seguro contra crash de límite de enteros ---
-                variant_id = _get_variant_id(client, raw_id)
-                if not variant_id: continue
-
-                if variant_id in vistos:
-                    pass 
-                vistos.add(variant_id)
-
-                # Cantidades y precios
-                qty = float(it.get('qty') or it.get('product_uom_qty') or it.get('quantity') or 1)
-                price = float(it.get('price_unit', 0))
-                name = it.get('name')
-                item_term_id = int(it.get('payment_term_id') or global_term_id or 0)
-
-                # Descuentos anidados
-                d1 = float(it.get('discount1', 0) or 0.0)
-                d2 = float(it.get('discount2', 0) or 0.0)
-                d3 = float(it.get('discount3', 0) or 0.0)
-                discount_eq = 100.0 * (1.0 - (1.0 - d1/100.0)*(1.0 - d2/100.0)*(1.0 - d3/100.0))
-
-                # Buscar SKU real de la variante para verificar si es oferta
-                try:
-                    var_data = client.env['product.product'].read([variant_id], ['default_code'])[0]
-                    sku = str(var_data.get('default_code') or "").strip()
-                except:
-                    sku = ""
-
-                line_vals = {
-                    "product_id": variant_id,
-                    "product_uom_qty": qty,
-                    "price_unit": price,
-                    "discount": round(discount_eq, 4),
-                    "discount1": d1,
-                    "discount2": d2,
-                    "discount3": d3
-                }
-                if name:
-                    line_vals["name"] = str(name)
-
-                # Clasificar en su grupo correspondiente
-                is_offer = sku in offer_skus
-                group_key = (is_offer, item_term_id)
-
-                if group_key not in groups:
-                    groups[group_key] = []
-                groups[group_key].append(line_vals)
-
-            except (ValueError, TypeError) as e:
-                log.warning(f"Error procesando item: {e}")
-                continue
-
-        if not groups:
-            return jsonify({"error": "No hay productos válidos. Vacíe el carrito.", "code": "EMPTY_LINES"}), 400
-
-        # --- 6. CONSTRUIR ORDEN INYECTANDO SECCIONES (display_type: line_section) ---
-        sorted_keys = sorted(groups.keys(), key=lambda x: (1 if x[0] else 0, x[1]), reverse=True)
-        order_lines_cmd = []
-
-        for (is_offer, term_id) in sorted_keys:
-            lines = groups[(is_offer, term_id)]
-            term_name = terms_map.get(term_id, "Estándar")
-
-            if is_offer:
-                title = f"[OFERTA] {term_name}"
-            else:
-                title = f"[LISTA DE PRECIOS] {term_name}"
-
-            # Añadir título separador gris en Odoo
-            order_lines_cmd.append((0, 0, {
-                'display_type': 'line_section',
-                'name': title
-            }))
-
-            # Añadir productos debajo del título
-            for l in lines:
-                order_lines_cmd.append((0, 0, l))
-
-        # 7. Crear o Actualizar el Pedido
-        ship_id = None
-        try:
-            if partner_shipping_id and str(partner_shipping_id).isdigit():
-                ship_id = int(partner_shipping_id)
-        except: pass
-
-        vals = {
-            "partner_id": cliente.id,
-            "partner_invoice_id": cliente.id,
-            "partner_shipping_id": ship_id if ship_id else cliente.id,
-            "payment_term_id": int(global_term_id) if global_term_id else False,
-            "origin": "APP SALBOM",
-            "note": nota_cliente, # Va impreso
-            "client_order_ref": ref_cliente,
-        }
-        if pricelist_id: vals["pricelist_id"] = pricelist_id
-        try:
-            if carrier_id and str(carrier_id).isdigit():
-                vals["carrier_id"] = int(carrier_id)
-        except: pass
-
-        try:
-            order_obj = None
-
-            # --- ACTUALIZAR PEDIDO PREVIO (Para que no quede doble en sistema) ---
-            if order_id_to_update:
-                try:
-                    existing = client.env['sale.order'].search([('id', '=', int(order_id_to_update))])
-                    if existing:
-                        # (5, 0, 0) borra las líneas viejas (incluyendo secciones viejas) y graba las nuevas
-                        vals['order_line'] = [(5, 0, 0)] + order_lines_cmd
-                        existing.write(vals)
-                        order_obj = existing[0]
-                except Exception as e_upd:
-                    log.warning(f"Fallo actualización {order_id_to_update}: {e_upd}")
-
-            # Si no venía ID previo o falló la actualización, se crea uno nuevo
-            if not order_obj:
-                vals['order_line'] = order_lines_cmd
-                order_obj = client.env['sale.order'].create(vals)
-
-            # --- 8. NOTA INTERNA (Chatter / Muro de Odoo) ---
-            if obs_internas:
-                try:
-                    order_obj.message_post(
-                        body=f"📝 <b>Observación interna (App):</b><br/>{obs_internas}", 
-                        message_type='comment', 
-                        subtype_xmlid='mail.mt_note'
-                    )
-                except Exception: pass
-
-            # --- 9. Formatear y Leer Respuesta (CON TOTALES EXACTOS) ---
-            nro_pedido = f"Pedido #{order_obj.id}"
-            total = 0.0
-            base = 0.0
-            impuestos = 0.0
-            currency = "USD"
-            try:
-                # Forzamos a Odoo a calcular todos los impuestos antes de leer
-                try:
-                    order_obj._amount_all()
-                except: pass
-
-                datos = order_obj.read(['amount_total', 'amount_untaxed', 'name', 'currency_id'])[0]
-                read_name = datos.get('name')
-                
-                # Si Odoo responde con nombre basura de borrador, mantenemos "Pedido #1234"
-                if read_name and read_name not in ['/', 'New', 'Nuevo', '* Nuevo *', 'Borrador']:
-                    nro_pedido = read_name
-                    
-                total = float(datos.get('amount_total', 0.0))
-                base = float(datos.get('amount_untaxed', 0.0))
-                impuestos = total - base
-                
-                if datos.get('currency_id'):
-                    currency = datos['currency_id'][1]
-            except Exception: pass
-
-            return jsonify({
-                "pedido_id": order_obj.id,
-                "nro_pedido": nro_pedido,
-                "base_imponible": round(base, 2),
-                "impuestos": round(impuestos, 2),
-                "total": round(total, 2),
-                "currency": currency,
-                "status": "success"
-            }), 200
-
-        except Exception as e_odoo:
-            err_msg = str(e_odoo)
-            if "MissingError" in err_msg or "Record does not exist" in err_msg:
-                return jsonify({"error": "Un producto ya no está disponible.", "code": "PRODUCT_MISSING"}), 409
-            raise e_odoo
-
-    # Usamos el wrapper de seguridad para que no se cuelgue si la conexión falla
-    try:
-        return execute_odoo_operation(_logic)
-    except Exception as e:
-        log.error(f"❌ Error fatal en crear-pedido: {e}")
-        return jsonify({"error": "Error al procesar el pedido. Intente nuevamente."}), 500
-
 # -------------------------------------------------------------------------
 # HELPER DE SEGURIDAD: RESOLVER VARIANTE
 # -------------------------------------------------------------------------
@@ -2311,163 +2060,260 @@ def editar_perfil():
     finally:
         release_odoo_client(client)
 
-@app.route('/actualizar-pedido', methods=['POST'])
-def actualizar_pedido():
-    def _is_xmlrpc_conn_error(exc: Exception) -> bool:
-        s = f"{type(exc).__name__}:{exc}"
-        return ("CannotSendRequest" in s) or ("ResponseNotReady" in s) or ("RemoteDisconnected" in s) or ("Idle" in s)
+# =================================================================
+# LÓGICA MAESTRA PARA CREAR / ACTUALIZAR PEDIDOS
+# =================================================================
+def _upsert_order_logic(client, data):
+    # 1. Datos Principales
+    order_id_to_update  = data.get('order_id_to_update') or data.get('order_id') or data.get('pedido_id')
+    cliente_cuit        = data.get('cliente_cuit') or data.get('partner_vat')
+    items               = data.get('items', [])
+    global_term_id      = data.get('payment_term_id')
+    partner_shipping_id = data.get('partner_shipping_id')
+    carrier_id          = data.get('carrier_id')
+    precio_envio_personalizado = data.get('precio_envio_personalizado') # NUEVO: Trae la tabla lógica de la App
 
-    def _do_update_and_summarize(client):
-        data = request.get_json() or {}
-        order_id            = data.get('order_id') or data.get('pedido_id')
-        cliente_cuit        = data.get('cliente_cuit') or data.get('partner_vat')
-        items               = data.get('items', [])
-        payment_term_id     = data.get('payment_term_id')
-        partner_shipping_id = data.get('partner_shipping_id')
-        carrier_id          = data.get('carrier_id')
+    # Notas
+    nota_cliente    = data.get('note') or data.get('nota') or ""
+    obs_internas    = data.get('observaciones') or data.get('internal_note')
+    ref_cliente     = data.get('client_order_ref') or data.get('ref') or f"APP-{int(time.time())}"
+    created_by_name = data.get('created_by_name', '')
 
-        if not order_id:
-            return jsonify({"error": "Falta order_id"}), 400
-        if not cliente_cuit:
-            return jsonify({"error": "Falta cliente_cuit"}), 400
-        if not items or not isinstance(items, list):
-            return jsonify({"error": "Faltan items"}), 400
+    if not cliente_cuit: return jsonify({"error": "Falta cliente_cuit"}), 400
+    if not items: return jsonify({"error": "El pedido no tiene items"}), 400
 
-        order = client.env['sale.order'].browse(int(order_id))
-        if not order.exists():
-            return jsonify({"error": f"Pedido {order_id} no encontrado"}), 404
-        if str(order.state) not in ('draft', 'sent', 'cancel'):
-            return jsonify({"error": f"El pedido {order_id} no es borrador (state={order.state})"}), 400
+    # 2. Buscar cliente
+    cliente = client.env['res.partner'].search([('vat', '=', cliente_cuit)], limit=1)
+    if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
+    cliente = cliente[0]
 
-        cliente = client.env['res.partner'].search([('vat', '=', cliente_cuit)], limit=1)
-        if not cliente:
-            return jsonify({"error": "Cliente no encontrado"}), 404
-        cliente = cliente[0]
+    pricelist_id = cliente.property_product_pricelist.id if cliente.property_product_pricelist else None
 
-        pricelist_id = cliente.property_product_pricelist.id if cliente.property_product_pricelist else None
-        if not pricelist_id:
-            return jsonify({"error": "Cliente sin lista de precios"}), 400
+    # 3. Nombres de Plazos de Pago
+    term_ids_to_fetch = set()
+    if global_term_id: term_ids_to_fetch.add(int(global_term_id))
+    for it in items:
+        if it.get('payment_term_id'): term_ids_to_fetch.add(int(it.get('payment_term_id')))
 
-        order_lines_cmd, vistos = [(5, 0, 0)], set()
-        for it in items:
-            tmpl_id = it.get('product_id')
-            qty     = it.get('product_uom_qty') or it.get('qty') or 1
-            price   = it.get('price_unit')
-            name    = it.get('name')
+    terms_map = {}
+    try:
+        if term_ids_to_fetch:
+            term_recs = client.env['account.payment.term'].browse(list(term_ids_to_fetch))
+            for t in term_recs:
+                terms_map[t.id] = "CONTADO" if t.name and "inmediato" in t.name.lower() else t.name
+    except Exception: pass
+
+    # 4. SKUs de Oferta
+    offer_skus = set()
+    pg_conn = get_pg_connection()
+    if pg_conn:
+        try:
+            cur = pg_conn.cursor()
+            cur.execute("SELECT sku FROM app_product_offers WHERE is_active = TRUE")
+            offer_skus = {r[0] for r in cur.fetchall()}
+            cur.close()
+        except Exception: pass
+        finally: pg_conn.close()
+
+    # 5. Agrupar Items 
+    groups = {}
+    vistos = set()
+    has_carrier = bool(carrier_id and str(carrier_id).isdigit())
+
+    for it in items:
+        try:
+            raw_id = it.get('product_id')
+            variant_id = _get_variant_id(client, raw_id)
+            if not variant_id: continue
+            
+            # --- FIX: EVITAR DUPLICAR TRANSPORTE ---
+            # Si hay un transporte oficial, ignoramos el 4011 porque Odoo lo inyectará con impuestos luego.
+            if has_carrier and (str(variant_id) == '4011' or str(raw_id) == '4011'):
+                continue
+
+            if variant_id in vistos: continue 
+            vistos.add(variant_id)
+
+            qty = float(it.get('qty') or it.get('product_uom_qty') or it.get('quantity') or 1)
+            price = float(it.get('price_unit', 0))
+            name = it.get('name')
+            item_term_id = int(it.get('payment_term_id') or global_term_id or 0)
 
             d1 = float(it.get('discount1', 0) or 0.0)
             d2 = float(it.get('discount2', 0) or 0.0)
             d3 = float(it.get('discount3', 0) or 0.0)
             discount_eq = 100.0 * (1.0 - (1.0 - d1/100.0)*(1.0 - d2/100.0)*(1.0 - d3/100.0))
 
-            if not tmpl_id or price is None:
-                return jsonify({"error": f"Producto {tmpl_id} inválido (falta price_unit)"}), 400
             try:
-                q = float(qty)
-                if q <= 0: raise ValueError()
-            except Exception:
-                return jsonify({"error": f"Cantidad inválida para producto {tmpl_id}"}), 400
-            if tmpl_id in vistos:
-                return jsonify({"error": f"Producto duplicado: {tmpl_id}"}), 400
-            vistos.add(tmpl_id)
+                var_data = client.env['product.product'].read([variant_id], ['default_code'])[0]
+                sku = str(var_data.get('default_code') or "").strip()
+            except: sku = ""
 
-            variant = client.env['product.product'].search([('product_tmpl_id', '=', tmpl_id)], limit=1)
-            if not variant:
-                return jsonify({"error": f"Variante no encontrada para template {tmpl_id}"}), 404
-
-            lv = {
-                "product_id": variant[0].id,
-                "product_uom_qty": q,
-                "price_unit": float(price),
+            line_vals = {
+                "product_id": variant_id,
+                "product_uom_qty": qty,
+                "price_unit": price,
                 "discount": round(discount_eq, 4),
-                "discount1": d1,
-                "discount2": d2,
-                "discount3": d3
+                "discount1": d1, "discount2": d2, "discount3": d3
             }
-            if name:
-                lv["name"] = str(name)
-            order_lines_cmd.append((0, 0, lv))
+            if name: line_vals["name"] = str(name)
 
-        ship_id = None
+            is_offer = sku in offer_skus
+            group_key = (is_offer, item_term_id)
+
+            if group_key not in groups: groups[group_key] = []
+            groups[group_key].append(line_vals)
+
+        except Exception: continue
+
+    if not groups:
+        return jsonify({"error": "No hay productos válidos. Vacíe el carrito.", "code": "EMPTY_LINES"}), 400
+
+    # 6. Construir orden con SECCIONES
+    sorted_keys = sorted(groups.keys(), key=lambda x: (1 if x[0] else 0, x[1]), reverse=True)
+    order_lines_cmd = []
+
+    for (is_offer, term_id) in sorted_keys:
+        lines = groups[(is_offer, term_id)]
+        term_name = terms_map.get(term_id, "Estándar")
+        title = f"[OFERTA] {term_name}" if is_offer else f"[LISTA DE PRECIOS] {term_name}"
+
+        order_lines_cmd.append((0, 0, {'display_type': 'line_section', 'name': title}))
+        for l in lines: order_lines_cmd.append((0, 0, l))
+
+    # 7. Valores base del pedido
+    ship_id = None
+    try:
+        if partner_shipping_id and str(partner_shipping_id).isdigit():
+            ship_id = int(partner_shipping_id)
+    except: pass
+
+    vals = {
+        "partner_id": cliente.id,
+        "partner_invoice_id": cliente.id,
+        "partner_shipping_id": ship_id if ship_id else cliente.id,
+        "payment_term_id": int(global_term_id) if global_term_id else False,
+        "origin": "APP SALBOM",
+        "note": nota_cliente,
+        "client_order_ref": ref_cliente,
+    }
+    if pricelist_id: vals["pricelist_id"] = pricelist_id
+    if has_carrier: vals["carrier_id"] = int(carrier_id)
+
+    # 8. Guardar en Odoo
+    try:
+        order_obj = None
+
+        if order_id_to_update:
+            try:
+                existing = client.env['sale.order'].search([('id', '=', int(order_id_to_update))])
+                if existing:
+                    existing.write({'order_line': [(5, 0, 0)], 'carrier_id': False})
+                    vals['order_line'] = order_lines_cmd
+                    existing.write(vals)
+                    order_obj = existing[0]
+            except Exception: pass
+
+        if not order_obj:
+            vals['order_line'] = order_lines_cmd
+            order_obj = client.env['sale.order'].create(vals)
+
+        # =================================================================
+        # 🚚 FIX TRANSPORTE: REGLA DE LA APP ($9000, $6000 o Gratis)
+        # =================================================================
+        if order_obj.carrier_id:
+            try:
+                carr = order_obj.carrier_id
+                precio_envio = 0.0
+                
+                # Si la App nos mandó el precio de su tabla, lo respetamos a rajatabla.
+                if precio_envio_personalizado is not None:
+                    precio_envio = float(precio_envio_personalizado)
+                else:
+                    # Sino, que cotice Odoo (por las dudas)
+                    res = carr.rate_shipment(order_obj)
+                    if res and res.get('success'):
+                        precio_envio = res.get('price', 0.0)
+                
+                # Inyectamos la línea oficial de flete
+                if precio_envio >= 0:
+                    order_obj.set_delivery_line(carr, precio_envio)
+            except Exception as e_carr:
+                log.warning(f"Error regenerando transporte: {e_carr}")
+
+        # =================================================================
+        # 🚀 FIX IMPUESTOS Y PERCEPCIONES (Asegura IIBB CABA/ARBA)
+        # =================================================================
         try:
-            if partner_shipping_id and str(partner_shipping_id).isdigit():
-                ship_id = int(partner_shipping_id)
-        except:
-            ship_id = None
+            for line in order_obj.order_line:
+                if line.product_id and not line.display_type:
+                    product_taxes = line.product_id.taxes_id
+                    if order_obj.fiscal_position_id:
+                        taxes = order_obj.fiscal_position_id.map_tax(product_taxes)
+                    else:
+                        taxes = product_taxes
+                    line.write({'tax_id': [(6, 0, taxes.ids)]})
+            
+            order_obj._amount_all()
+        except Exception: pass
 
-        vals = {
-            "partner_id": cliente.id,
-            "partner_invoice_id": cliente.id,
-            "partner_shipping_id": ship_id if ship_id else (order.partner_shipping_id.id or cliente.id),
-            "pricelist_id": pricelist_id,
-            "payment_term_id": int(payment_term_id) if payment_term_id else order.payment_term_id.id,
-            "order_line": order_lines_cmd,
-        }
+        # Nota Interna
+        if obs_internas:
+            try:
+                order_obj.message_post(body=f"📝 <b>Observación interna (App):</b><br/>{obs_internas}", message_type='comment', subtype_xmlid='mail.mt_note')
+            except Exception: pass
+
+        # 9. Formatear Respuesta Exacta
+        nro_pedido = f"Pedido #{order_obj.id}"
+        total, base, impuestos = 0.0, 0.0, 0.0
+        currency = "USD"
+        
         try:
-            if carrier_id and str(carrier_id).isdigit():
-                vals["carrier_id"] = int(carrier_id)
-        except:
-            pass
-
-        order.write(vals)
-        try:
-            order._amount_all()
-        except Exception:
-            pass
-
-        currency        = order.currency_id.name if order.currency_id else "USD"
-        amount_untaxed  = float(order.amount_untaxed or 0.0)
-        amount_total    = float(order.amount_total or 0.0)
-
-        groups, tax_totals_raw = [], None
-        try:
-            tt = getattr(order, 'tax_totals_json', None) or getattr(order, 'tax_totals', None)
-            if isinstance(tt, str):
-                try: tt = json.loads(tt)
-                except: tt = None
-            if isinstance(tt, dict):
-                tax_totals_raw = tt
-                gbs = tt.get('groups_by_subtotal') or {}
-                tmp = []
-                for _k, arr in (gbs.items() if isinstance(gbs, dict) else []):
-                    if isinstance(arr, list):
-                        for g in arr:
-                            name = g.get('tax_group_name') or g.get('name') or g.get('group_name')
-                            amount = float(g.get('tax_group_amount') or g.get('amount') or 0.0)
-                            base = float(g.get('base') or 0.0)
-                            if name:
-                                tmp.append({"name": name, "amount": amount, "base": base})
-                groups = tmp
-        except Exception as e:
-            log.warning(f"tax_totals parse: {e}")
+            datos = order_obj.read(['amount_total', 'amount_untaxed', 'name', 'currency_id'])[0]
+            read_name = datos.get('name')
+            if read_name and read_name not in ['/', 'New', 'Nuevo', '* Nuevo *', 'Borrador']:
+                nro_pedido = read_name
+                
+            total = float(datos.get('amount_total', 0.0))
+            base = float(datos.get('amount_untaxed', 0.0))
+            impuestos = total - base
+            if datos.get('currency_id'): currency = datos['currency_id'][1]
+        except Exception: pass
 
         return jsonify({
-            "pedido_id": order.id,
-            "nro_pedido": order.name,
+            "pedido_id": order_obj.id,
+            "nro_pedido": nro_pedido,
+            "base_imponible": round(base, 2),
+            "impuestos": round(impuestos, 2),
+            "total": round(total, 2),
             "currency": currency,
-            "base_imponible": round(amount_untaxed, 2),
-            "impuestos": round(amount_total - amount_untaxed, 2),
-            "total": round(amount_total, 2),
-            "groups": groups,
-            "tax_totals": tax_totals_raw
-        })
+            "status": "success"
+        }), 200
 
-    client = get_odoo_client()
+    except Exception as e_odoo:
+        err_msg = str(e_odoo)
+        if "MissingError" in err_msg or "Record does not exist" in err_msg:
+            return jsonify({"error": "Un producto ya no está disponible.", "code": "PRODUCT_MISSING"}), 409
+        raise e_odoo
+
+# =================================================================
+# ENDPOINTS (Ambos consumen la lógica maestra para que funcionen igual)
+# =================================================================
+@app.route('/crear-pedido', methods=['POST'])
+def endpoint_crear_pedido():
     try:
-        try:
-            return _do_update_and_summarize(client)
-        except Exception as e:
-            if _is_xmlrpc_conn_error(e):
-                release_odoo_client(client)
-                client = get_odoo_client()
-                return _do_update_and_summarize(client)
-            raise
+        return execute_odoo_operation(lambda cli: _upsert_order_logic(cli, request.get_json() or {}))
     except Exception as e:
-        handle_connection_error(e)
-        log.error(f"❌ actualizar_pedido:\n{traceback.format_exc()}")
-        return jsonify({"error": str(e)}), 500
-    finally:
-        release_odoo_client(client)
+        log.error(f"❌ Error fatal en crear-pedido: {e}")
+        return jsonify({"error": "Error al procesar el pedido. Intente nuevamente."}), 500
+
+@app.route('/actualizar-pedido', methods=['POST'])
+def endpoint_actualizar_pedido():
+    try:
+        return execute_odoo_operation(lambda cli: _upsert_order_logic(cli, request.get_json() or {}))
+    except Exception as e:
+        log.error(f"❌ Error fatal en actualizar-pedido: {e}")
+        return jsonify({"error": "Error al sincronizar el pedido."}), 500
 
 @app.route('/confirmar-pedido', methods=['POST'])
 def confirmar_pedido():
