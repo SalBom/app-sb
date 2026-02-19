@@ -2088,7 +2088,7 @@ def _upsert_order_logic(client, data):
 
     pricelist_id = cliente.property_product_pricelist.id if cliente.property_product_pricelist else None
 
-    # 3. Nombres de Plazos de Pago (Para las secciones visuales)
+    # 3. Nombres de Plazos de Pago
     term_ids_to_fetch = set()
     if global_term_id: term_ids_to_fetch.add(int(global_term_id))
     for it in items:
@@ -2114,15 +2114,25 @@ def _upsert_order_logic(client, data):
         except Exception: pass
         finally: pg_conn.close()
 
-    # 5. Agrupar Items (El transporte 4011 pasa directo con el nombre personalizado de la App)
+    # 5. Agrupar Items 
     groups = {}
     vistos = set()
 
     for it in items:
         try:
-            raw_id = it.get('product_id')
-            variant_id = _get_variant_id(client, raw_id)
-            if not variant_id: continue
+            raw_id = int(it.get('product_id'))
+            
+            # --- FIX: EL MISTERIO DEL TRANSPORTE (4011) ---
+            # Si el ID es una plantilla (como pasa con el flete), buscamos su Variante real para que Odoo lo acepte.
+            pp = client.env['product.product'].search([('id', '=', raw_id)], limit=1)
+            if not pp:
+                pp = client.env['product.product'].search([('product_tmpl_id', '=', raw_id)], limit=1)
+                
+            if not pp:
+                log.warning(f"Item ignorado, no existe en Odoo: {raw_id}")
+                continue
+                
+            variant_id = pp[0].id
             
             if variant_id in vistos: continue 
             vistos.add(variant_id)
@@ -2149,7 +2159,7 @@ def _upsert_order_logic(client, data):
                 "discount": round(discount_eq, 4),
                 "discount1": d1, "discount2": d2, "discount3": d3
             }
-            # ESTO ES CLAVE: Odoo respetará el nombre ("Envío a Domicilio - Andreani") en el PDF.
+            # ACÁ ODOO RECIBE EL NOMBRE DEL TRANSPORTE
             if name: line_vals["name"] = str(name)
 
             is_offer = sku in offer_skus
@@ -2163,7 +2173,7 @@ def _upsert_order_logic(client, data):
     if not groups:
         return jsonify({"error": "No hay productos válidos.", "code": "EMPTY_LINES"}), 400
 
-    # 6. Construir orden con SECCIONES (Líneas grises en Odoo)
+    # 6. Construir orden con SECCIONES
     sorted_keys = sorted(groups.keys(), key=lambda x: (1 if x[0] else 0, x[1]), reverse=True)
     order_lines_cmd = []
 
@@ -2197,7 +2207,7 @@ def _upsert_order_logic(client, data):
             vals["carrier_id"] = int(carrier_id)
     except: pass
 
-    # 8. Guardar en Odoo (Dejamos que Odoo aplique los impuestos nativamente al insertar)
+    # 8. Guardar en Odoo
     try:
         order_obj = None
 
@@ -2205,7 +2215,6 @@ def _upsert_order_logic(client, data):
             try:
                 existing = client.env['sale.order'].search([('id', '=', int(order_id_to_update))])
                 if existing:
-                    # Limpiamos las líneas viejas antes de insertar las nuevas
                     existing.write({'order_line': [(5, 0, 0)]})
                     vals['order_line'] = order_lines_cmd
                     existing.write(vals)
@@ -2216,18 +2225,26 @@ def _upsert_order_logic(client, data):
             vals['order_line'] = order_lines_cmd
             order_obj = client.env['sale.order'].create(vals)
 
-        # Forzamos recálculo matemático final (Asegurando IIBB e IVA)
+        # 🚀 FIX IMPUESTOS Y PERCEPCIONES (Odoo los suma automáticamente ahora)
         try:
+            for line in order_obj.order_line:
+                if line.product_id and not line.display_type:
+                    product_taxes = line.product_id.taxes_id
+                    if order_obj.fiscal_position_id:
+                        taxes = order_obj.fiscal_position_id.map_tax(product_taxes)
+                    else:
+                        taxes = product_taxes
+                    line.write({'tax_id': [(6, 0, taxes.ids)]})
             order_obj._amount_all()
         except Exception: pass
 
-        # Nota Interna (Muro de Odoo)
+        # Nota Interna
         if obs_internas:
             try:
                 order_obj.message_post(body=f"📝 <b>Observación interna (App):</b><br/>{obs_internas}", message_type='comment', subtype_xmlid='mail.mt_note')
             except Exception: pass
 
-        # 9. Formatear Respuesta Exacta (Esto viaja a la App para coincidir al 100%)
+        # 9. Formatear Respuesta Exacta (Viaja a la App para coincidir al 100%)
         nro_pedido = f"Pedido #{order_obj.id}"
         total, base, impuestos = 0.0, 0.0, 0.0
         currency = "USD"

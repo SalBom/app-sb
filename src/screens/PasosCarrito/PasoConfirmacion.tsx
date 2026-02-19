@@ -197,13 +197,12 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   };
 
   // =====================================================================
-  // REGLA MATEMÁTICA Y NOMBRES DEL TRANSPORTE
+  // REGLA MATEMÁTICA Y NOMBRE DEL TRANSPORTE
   // =====================================================================
   const tcSeguro = tipoCambio && tipoCambio > 0 ? tipoCambio : TIPO_CAMBIO_FALLBACK;
-  const transporteNombre = transporte?.name || transporte?.transporte || 'Desconocido';
+  const transporteNombre = transporte?.name || transporte?.transporte || '';
   const esEnvioADomicilio = envioSeleccionado === 'domicilio' || transporteNombre.toLowerCase().includes('domicilio');
 
-  // 1. Calculamos la Base Imponible pura de los productos
   const localBaseSinTransporte = Array.isArray(items) 
     ? items.filter((it: any) => String(it.product_id) !== '4011').reduce((acc: number, it: any) => {
         const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
@@ -214,26 +213,24 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     }, 0) 
     : 0;
 
-  // 2. Aplicamos la tabla de costos de flete (En Pesos convertidos a USD)
   const baseARS = localBaseSinTransporte * tcSeguro;
   let costoEnvioUSD = 0;
 
   if (esEnvioADomicilio) {
-      if (baseARS < 250000) {
+      if (baseARS <= 250000) {
           costoEnvioUSD = 9000 / tcSeguro;
-      } else if (baseARS < 500000) {
+      } else if (baseARS <= 500000) {
           costoEnvioUSD = 6000 / tcSeguro;
       } else {
           costoEnvioUSD = 0; // Flete Gratis
       }
   }
 
-  // 3. Nombre exacto para la descripción en Odoo
+  // --- FIX: ARMAMOS EL NOMBRE CON EL TRANSPORTE DEL CLIENTE ---
   const nombreEnvioCompleto = esEnvioADomicilio 
-        ? `Envío a Domicilio - ${transporteNombre}` 
-        : `Transporte - ${transporteNombre}`;
+        ? (transporteNombre ? `Envío a Domicilio - ${transporteNombre}` : 'Envío a Domicilio')
+        : 'Retiro en Sucursal';
 
-  // 4. Inyectamos la línea 4011 para que el backend la procese como un producto normal
   let hasTransportItem = false;
   const itemsProcesados = Array.isArray(items) ? items.map((it: any) => {
       if (String(it.product_id) === '4011') {
@@ -269,15 +266,13 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                 payment_term_id: plazoSeleccionado?.id,
                 partner_shipping_id: direccionEntrega?.id || null,
                 carrier_id: transporte?.id || null,
-                
-                // Enviamos los items ya procesados (Con la línea 4011 inyectada y valuada)
                 items: itemsProcesados.map((it: any) => ({
                     product_id: it.product_id,
                     qty: it.product_uom_qty || it.qty || it.quantity || 1,
                     product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
                     price_unit: it.price_unit,
                     payment_term_id: it.payment_term_id,
-                    name: it.name,
+                    name: it.name, // ENVIAMOS EL NOMBRE COMPLETO A ODOO
                     discount1: it.discount1 || 0,
                     discount2: it.discount2 || 0,
                     discount3: it.discount3 || 0
@@ -299,9 +294,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     };
 
     fetchExactTotals();
-  }, [items, draftOrderId, costoEnvioUSD]); 
+  }, [items, draftOrderId, costoEnvioUSD, transporteNombre]); 
 
-  // Matemática provisoria
   const localBase = localBaseSinTransporte + costoEnvioUSD;
   const localTax = localBase * 0.21;
   const localTotal = localBase + localTax;
@@ -347,7 +341,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
               product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
               price_unit: it.price_unit,
               payment_term_id: it.payment_term_id, 
-              name: it.name, 
+              name: it.name, // ENVIAMOS EL NOMBRE COMPLETO A ODOO
               discount1: it.discount1 || 0,
               discount2: it.discount2 || 0,
               discount3: it.discount3 || 0
@@ -418,7 +412,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             <View style={styles.row}><Text style={styles.label}>Pago:</Text><Text style={styles.value}>{getPlazoTexto(plazoSeleccionado)}</Text></View>
             <View style={styles.row}><Text style={styles.label}>Envío:</Text><Text style={styles.value}>{direccionEntrega ? `${direccionEntrega.street || ''}, ${direccionEntrega.city || ''}` : getEnvioTexto(envioSeleccionado)}</Text></View>
             {transporte && (
-                <View style={styles.row}><Text style={styles.label}>Transporte:</Text><Text style={styles.value}>{transporte.name || transporte.transporte}</Text></View>
+                <View style={styles.row}><Text style={styles.label}>Transporte:</Text><Text style={styles.value}>{transporteNombre}</Text></View>
             )}
             <View style={[styles.row, { marginBottom: 0 }]}><Text style={styles.label}>Fecha:</Text><Text style={styles.value}>{formatFecha()}</Text></View>
         </ShapedCard>
@@ -435,7 +429,10 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             <View style={styles.headerLine} />
             {itemsProcesados.map((it: any, index: number) => {
               const isTransport = String(it.product_id) === '4011';
-              const referral = it.default_code || it.name || 'SIN REF';
+              
+              // --- FIX: MOSTRAMOS EL NOMBRE DEL TRANSPORTE, NO "FLETE" ---
+              const referral = isTransport ? it.name : (it.default_code || it.name || 'SIN REF');
+              
               const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
               const priceUnit = toNumber(it?.price_unit);
               const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
@@ -524,7 +521,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         </View>
       </View>
 
-      {/* Modal de Precios */}
       <Modal visible={modalVisible} transparent animationType="slide" onRequestClose={() => setModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
             <View style={styles.modalContent}>
@@ -544,7 +540,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Modal de Notas */}
       <Modal visible={showObservationModal} transparent animationType="slide">
             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
                 <View style={styles.modalContent}>
