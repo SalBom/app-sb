@@ -2088,7 +2088,7 @@ def _upsert_order_logic(client, data):
 
     pricelist_id = cliente.property_product_pricelist.id if cliente.property_product_pricelist else None
 
-    # 3. Nombres de Plazos de Pago
+    # 3. Nombres de Plazos de Pago (Para las secciones visuales)
     term_ids_to_fetch = set()
     if global_term_id: term_ids_to_fetch.add(int(global_term_id))
     for it in items:
@@ -2114,7 +2114,7 @@ def _upsert_order_logic(client, data):
         except Exception: pass
         finally: pg_conn.close()
 
-    # 5. Agrupar Items (El 4011 pasa como un producto normal con su nombre personalizado)
+    # 5. Agrupar Items (El transporte 4011 pasa directo con el nombre personalizado de la App)
     groups = {}
     vistos = set()
 
@@ -2124,7 +2124,6 @@ def _upsert_order_logic(client, data):
             variant_id = _get_variant_id(client, raw_id)
             if not variant_id: continue
             
-            # NOTA: Ya no salteamos el 4011, lo tratamos como línea estándar.
             if variant_id in vistos: continue 
             vistos.add(variant_id)
 
@@ -2150,6 +2149,7 @@ def _upsert_order_logic(client, data):
                 "discount": round(discount_eq, 4),
                 "discount1": d1, "discount2": d2, "discount3": d3
             }
+            # ESTO ES CLAVE: Odoo respetará el nombre ("Envío a Domicilio - Andreani") en el PDF.
             if name: line_vals["name"] = str(name)
 
             is_offer = sku in offer_skus
@@ -2161,9 +2161,9 @@ def _upsert_order_logic(client, data):
         except Exception: continue
 
     if not groups:
-        return jsonify({"error": "No hay productos válidos. Vacíe el carrito.", "code": "EMPTY_LINES"}), 400
+        return jsonify({"error": "No hay productos válidos.", "code": "EMPTY_LINES"}), 400
 
-    # 6. Construir orden con SECCIONES
+    # 6. Construir orden con SECCIONES (Líneas grises en Odoo)
     sorted_keys = sorted(groups.keys(), key=lambda x: (1 if x[0] else 0, x[1]), reverse=True)
     order_lines_cmd = []
 
@@ -2192,14 +2192,12 @@ def _upsert_order_logic(client, data):
         "client_order_ref": ref_cliente,
     }
     if pricelist_id: vals["pricelist_id"] = pricelist_id
-    
-    # Mantenemos el carrier_id a nivel orden para que quede registrado en el sistema
     try:
         if carrier_id and str(carrier_id).isdigit():
             vals["carrier_id"] = int(carrier_id)
     except: pass
 
-    # 8. Guardar en Odoo
+    # 8. Guardar en Odoo (Dejamos que Odoo aplique los impuestos nativamente al insertar)
     try:
         order_obj = None
 
@@ -2218,30 +2216,18 @@ def _upsert_order_logic(client, data):
             vals['order_line'] = order_lines_cmd
             order_obj = client.env['sale.order'].create(vals)
 
-        # =================================================================
-        # 🚀 FIX IMPUESTOS Y PERCEPCIONES (Para líneas y Transporte 4011)
-        # =================================================================
+        # Forzamos recálculo matemático final (Asegurando IIBB e IVA)
         try:
-            for line in order_obj.order_line:
-                if line.product_id and not line.display_type:
-                    product_taxes = line.product_id.taxes_id
-                    if order_obj.fiscal_position_id:
-                        taxes = order_obj.fiscal_position_id.map_tax(product_taxes)
-                    else:
-                        taxes = product_taxes
-                    line.write({'tax_id': [(6, 0, taxes.ids)]})
-            
-            # Forzamos el recalculo matemático final de todo
             order_obj._amount_all()
         except Exception: pass
 
-        # Nota Interna
+        # Nota Interna (Muro de Odoo)
         if obs_internas:
             try:
                 order_obj.message_post(body=f"📝 <b>Observación interna (App):</b><br/>{obs_internas}", message_type='comment', subtype_xmlid='mail.mt_note')
             except Exception: pass
 
-        # 9. Formatear Respuesta Exacta
+        # 9. Formatear Respuesta Exacta (Esto viaja a la App para coincidir al 100%)
         nro_pedido = f"Pedido #{order_obj.id}"
         total, base, impuestos = 0.0, 0.0, 0.0
         currency = "USD"
@@ -2275,7 +2261,7 @@ def _upsert_order_logic(client, data):
         raise e_odoo
 
 # =================================================================
-# ENDPOINTS (Ambos consumen la lógica maestra para que funcionen igual)
+# ENDPOINTS 
 # =================================================================
 @app.route('/crear-pedido', methods=['POST'])
 def endpoint_crear_pedido():

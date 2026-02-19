@@ -197,12 +197,13 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   };
 
   // =====================================================================
-  // REGLA MATEMÁTICA: TABLA DE COSTOS DE FLETE
+  // REGLA MATEMÁTICA Y NOMBRES DEL TRANSPORTE
   // =====================================================================
   const tcSeguro = tipoCambio && tipoCambio > 0 ? tipoCambio : TIPO_CAMBIO_FALLBACK;
-  const esEnvioADomicilio = envioSeleccionado === 'domicilio' || (transporte?.name || '').toLowerCase().includes('domicilio');
+  const transporteNombre = transporte?.name || transporte?.transporte || 'Desconocido';
+  const esEnvioADomicilio = envioSeleccionado === 'domicilio' || transporteNombre.toLowerCase().includes('domicilio');
 
-  // 1. Calculamos la Base Imponible en USD (solo sumando los productos reales, ignorando el flete viejo)
+  // 1. Calculamos la Base Imponible pura de los productos
   const localBaseSinTransporte = Array.isArray(items) 
     ? items.filter((it: any) => String(it.product_id) !== '4011').reduce((acc: number, it: any) => {
         const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
@@ -213,7 +214,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     }, 0) 
     : 0;
 
-  // 2. Pasamos la base a Pesos Argentinos para aplicar la escala
+  // 2. Aplicamos la tabla de costos de flete (En Pesos convertidos a USD)
   const baseARS = localBaseSinTransporte * tcSeguro;
   let costoEnvioUSD = 0;
 
@@ -227,31 +228,35 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       }
   }
 
-  // 3. Re-mapeamos los items en pantalla para que el producto 4011 muestre el costo de envío perfecto
+  // 3. Nombre exacto para la descripción en Odoo
+  const nombreEnvioCompleto = esEnvioADomicilio 
+        ? `Envío a Domicilio - ${transporteNombre}` 
+        : `Transporte - ${transporteNombre}`;
+
+  // 4. Inyectamos la línea 4011 para que el backend la procese como un producto normal
   let hasTransportItem = false;
   const itemsProcesados = Array.isArray(items) ? items.map((it: any) => {
       if (String(it.product_id) === '4011') {
           hasTransportItem = true;
-          return { ...it, price_unit: costoEnvioUSD, discount1: 0, discount2: 0, discount3: 0 };
+          return { ...it, price_unit: costoEnvioUSD, name: nombreEnvioCompleto, discount1: 0, discount2: 0, discount3: 0 };
       }
       return it;
   }) : [];
 
-  // Si por alguna razón el usuario eligió a domicilio y no estaba el 4011, se lo agregamos visualmente
   if (esEnvioADomicilio && !hasTransportItem && items.length > 0) {
       itemsProcesados.push({
           product_id: 4011,
-          name: 'Envío a Domicilio',
+          name: nombreEnvioCompleto,
           default_code: 'FLETE',
           qty: 1,
           product_uom_qty: 1,
           price_unit: costoEnvioUSD,
-          discount1: 0, discount2: 0, discount3: 0
+          discount1: 0, discount2: 0, discount3: 0,
+          payment_term_id: plazoSeleccionado?.id 
       });
   }
   // =====================================================================
 
-  // EFECTO: Sincronizar totales exactos en segundo plano usando el nuevo flete calculado
   useEffect(() => {
     const fetchExactTotals = async () => {
         if (!draftOrderId || itemsProcesados.length === 0) return;
@@ -264,7 +269,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                 payment_term_id: plazoSeleccionado?.id,
                 partner_shipping_id: direccionEntrega?.id || null,
                 carrier_id: transporte?.id || null,
-                precio_envio_personalizado: costoEnvioUSD, // <--- Aquí pasamos el valor de la tabla!
+                
+                // Enviamos los items ya procesados (Con la línea 4011 inyectada y valuada)
                 items: itemsProcesados.map((it: any) => ({
                     product_id: it.product_id,
                     qty: it.product_uom_qty || it.qty || it.quantity || 1,
@@ -293,9 +299,9 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     };
 
     fetchExactTotals();
-  }, [items, draftOrderId, costoEnvioUSD]); // Se vuelve a llamar si cambia el costo o los items
+  }, [items, draftOrderId, costoEnvioUSD]); 
 
-  // Respaldo Matemático provisorio (Para no ver en 0 mientras carga)
+  // Matemática provisoria
   const localBase = localBaseSinTransporte + costoEnvioUSD;
   const localTax = localBase * 0.21;
   const localTotal = localBase + localTax;
@@ -334,7 +340,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           partner_shipping_id: direccionEntrega?.id || null, 
           created_by_name: v_name, 
           carrier_id: transporte?.id || null, 
-          precio_envio_personalizado: costoEnvioUSD, // <--- También lo mandamos al confirmar
           
           items: itemsValidos.map((it: any) => ({
               product_id: it.product_id,
@@ -435,7 +440,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
               const priceUnit = toNumber(it?.price_unit);
               const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
               const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
-              const subTotalLine = priceUnit * qty * factor; // Como el transporte se mapeó con Dto=0, sirve la misma fórmula
+              
+              const subTotalLine = priceUnit * qty * factor;
               
               return (
                 <View key={it.product_id ?? index} style={styles.prodRow}>
@@ -518,6 +524,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         </View>
       </View>
 
+      {/* Modal de Precios */}
       <Modal visible={modalVisible} transparent animationType="slide" onRequestClose={() => setModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
             <View style={styles.modalContent}>
@@ -537,6 +544,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* Modal de Notas */}
       <Modal visible={showObservationModal} transparent animationType="slide">
             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
                 <View style={styles.modalContent}>
