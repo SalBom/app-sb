@@ -2123,15 +2123,11 @@ def _upsert_order_logic(client, data):
             raw_id = int(it.get('product_id'))
             
             # --- FIX: EL MISTERIO DEL TRANSPORTE (4011) ---
-            # Si el ID es una plantilla (como pasa con el flete), buscamos su Variante real para que Odoo lo acepte.
             pp = client.env['product.product'].search([('id', '=', raw_id)], limit=1)
             if not pp:
                 pp = client.env['product.product'].search([('product_tmpl_id', '=', raw_id)], limit=1)
                 
-            if not pp:
-                log.warning(f"Item ignorado, no existe en Odoo: {raw_id}")
-                continue
-                
+            if not pp: continue
             variant_id = pp[0].id
             
             if variant_id in vistos: continue 
@@ -2159,7 +2155,6 @@ def _upsert_order_logic(client, data):
                 "discount": round(discount_eq, 4),
                 "discount1": d1, "discount2": d2, "discount3": d3
             }
-            # ACÁ ODOO RECIBE EL NOMBRE DEL TRANSPORTE
             if name: line_vals["name"] = str(name)
 
             is_offer = sku in offer_skus
@@ -2225,18 +2220,18 @@ def _upsert_order_logic(client, data):
             vals['order_line'] = order_lines_cmd
             order_obj = client.env['sale.order'].create(vals)
 
-        # 🚀 FIX IMPUESTOS Y PERCEPCIONES (Odoo los suma automáticamente ahora)
+        # 🚀 FIX: MAPEO DE IMPUESTOS Y PERCEPCIONES (IVA + IIBB CABA/ARBA)
         try:
+            fpos = order_obj.fiscal_position_id
             for line in order_obj.order_line:
                 if line.product_id and not line.display_type:
                     product_taxes = line.product_id.taxes_id
-                    if order_obj.fiscal_position_id:
-                        taxes = order_obj.fiscal_position_id.map_tax(product_taxes)
-                    else:
-                        taxes = product_taxes
+                    taxes = fpos.map_tax(product_taxes) if fpos else product_taxes
                     line.write({'tax_id': [(6, 0, taxes.ids)]})
+            
             order_obj._amount_all()
-        except Exception: pass
+        except Exception as e_tax:
+            log.warning(f"Error mapeando impuestos: {e_tax}")
 
         # Nota Interna
         if obs_internas:
@@ -2244,7 +2239,7 @@ def _upsert_order_logic(client, data):
                 order_obj.message_post(body=f"📝 <b>Observación interna (App):</b><br/>{obs_internas}", message_type='comment', subtype_xmlid='mail.mt_note')
             except Exception: pass
 
-        # 9. Formatear Respuesta Exacta (Viaja a la App para coincidir al 100%)
+        # 9. Formatear Respuesta Exacta 
         nro_pedido = f"Pedido #{order_obj.id}"
         total, base, impuestos = 0.0, 0.0, 0.0
         currency = "USD"
