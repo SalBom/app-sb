@@ -83,13 +83,11 @@ const toNumber = (v: any): number => {
   return 0;
 };
 
-// --- RESTAURAMOS LA ESTRUCTURA ORIGINAL (SIN ROUTE) ---
 interface Props { onBack: () => void; }
 
 const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const insets = useSafeAreaInsets();
   
-  // Extraemos todos los datos desde el Store (como lo tenías en tu diseño)
   const { 
     items, 
     clienteSeleccionado, 
@@ -97,7 +95,9 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     envioSeleccionado, 
     clearCart, 
     consultaResumen, 
-    direccionEntrega 
+    direccionEntrega,
+    transporte,
+    notas: notasIniciales
   } = useCartStore() as any;
 
   const [userRole, setUserRole] = useState<string>('');
@@ -113,10 +113,10 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const [finalTotal, setFinalTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const isSubmittingRef = useRef(false); 
-  const [observationText, setObservationText] = useState('');
+  const [observationText, setObservationText] = useState(notasIniciales || '');
   const [showObservationModal, setShowObservationModal] = useState(false);
 
-  // Manejo visual de número de pedido (Borrador)
+  // MANEJO VISUAL DEL NUMERO DE PEDIDO PARA NO MOSTRAR "BORRADOR"
   const rawNroPedido = consultaResumen?.nro_pedido || consultaResumen?.name || '---';
   const isBorrador = ['/', 'New', 'Nuevo', '* Nuevo *', 'Borrador'].includes(rawNroPedido);
   const nroPedidoFormateado = isBorrador ? (consultaResumen?.pedido_id ? `Pedido #${consultaResumen.pedido_id}` : 'Pendiente asignar') : rawNroPedido;
@@ -194,7 +194,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       setEditingItem(null);
   };
 
-  // --- 1. CÁLCULO DE TOTAL CORREGIDO (Incluye Descuentos e IVA) ---
+  // --- RESPALDO MATEMÁTICO (Evita los ceros si la data tarda en llegar) ---
   const calculateTotalLocal = () => {
     let baseImponible = 0;
     if (Array.isArray(items)) {
@@ -210,19 +210,15 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     return baseImponible;
   };
 
-  const baseBackend = consultaResumen?.base_imponible ? toNumber(consultaResumen.base_imponible) : 0;
-  const totalBackend = consultaResumen?.total ? toNumber(consultaResumen.total) : 0;
+  // Lectura directa desde el backend (Prioridad #1)
+  const baseBackend = toNumber(consultaResumen?.base_imponible);
+  const impBackend = toNumber(consultaResumen?.impuestos);
+  const totalBackend = toNumber(consultaResumen?.total);
   const hasBackendData = totalBackend > 0;
 
   const mostrarBase  = hasBackendData ? baseBackend : calculateTotalLocal();
-  // Si tenemos backend usamos su total, sino, le agregamos el 21% de IVA a la base
-  const mostrarTotal = hasBackendData ? totalBackend : (mostrarBase * 1.21);
-  const mostrarImpuestos = mostrarTotal - mostrarBase;
-
-  // --- 2. SEPARACIÓN DE PRODUCTOS (LISTA VS OFERTA) ---
-  const globalTermId = plazoSeleccionado?.id;
-  const itemsOferta = Array.isArray(items) ? items.filter((it: any) => it.payment_term_id && it.payment_term_id !== globalTermId) : [];
-  const itemsLista = Array.isArray(items) ? items.filter((it: any) => !it.payment_term_id || it.payment_term_id === globalTermId) : [];
+  const mostrarImpuestos = hasBackendData ? impBackend : (mostrarBase * 0.21);
+  const mostrarTotal = hasBackendData ? totalBackend : (mostrarBase + mostrarImpuestos);
 
   const confirmarPedido = async () => {
     if (loading || isSubmittingRef.current) return;
@@ -248,9 +244,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       const v_name = loggedUserName || 'Vendedor App';
 
       const payload = {
-          // PARA EVITAR DUPLICADOS (Sobreescribe el pedido creado en PasoDatos)
           order_id_to_update: consultaResumen?.pedido_id || null, 
-          
           cliente_cuit: clienteSeleccionado?.vat || cuitUser, 
           payment_term_id: plazoSeleccionado?.id,
           partner_shipping_id: direccionEntrega?.id || null, 
@@ -268,13 +262,11 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
               discount3: it.discount3 || 0
           })),
           
-          carrier_id: null, 
-          
-          // --- 3. SEPARACIÓN DE NOTAS ---
-          note: observationText, // Va al PDF (Términos e instrucciones)
+          carrier_id: transporte?.id || null, 
+          note: observationText, 
           observaciones: observationText 
-                ? `Cargado por: ${v_name}\n\nObservaciones: ${observationText}` 
-                : `Cargado por: ${v_name}` // Va a la Nota Interna (Chatter)
+                ? `Cargado por: ${v_name}\n\nObservaciones del cliente: ${observationText}` 
+                : `Cargado por: ${v_name}`
       };
 
       const resp = await axios.post(`${API_URL}/crear-pedido`, payload);
@@ -309,26 +301,27 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const getScale = (anim: Animated.Value) => anim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.96] });
   const getTranslate = (anim: Animated.Value) => anim.interpolate({ inputRange: [0, 1], outputRange: [0, 2] });
 
-  // Manejo seguro por si falla el store
-  if (!clienteSeleccionado) {
-     return (
-        <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}>
-           <ActivityIndicator size="large" color="#1C9BD8" />
-           <Text style={{ marginTop: 20, color: '#666' }}>Cargando resumen...</Text>
-        </View>
-     );
-  }
-
   if (showSuccess) {
       return <PantallaExitoPedido nroPedido={finalOrderName} montoTotal={finalTotal} onVolver={() => onBack()} />;
   }
 
-  // Helper de Renderizado de Tablas 
+  if (!clienteSeleccionado) {
+     return (
+        <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}>
+           <ActivityIndicator size="large" color="#1C9BD8" />
+           <Text style={{ marginTop: 20, color: '#666', fontWeight: '600' }}>Cargando resumen...</Text>
+           <TouchableOpacity style={[styles.back, { marginTop: 30, width: 200, flex: 0 }]} onPress={onBack}>
+             <Text style={styles.backText}>VOLVER</Text>
+           </TouchableOpacity>
+        </View>
+     );
+  }
+
   const renderTablaProductos = (data: any[], titulo: string, isOferta: boolean) => {
       if (data.length === 0) return null;
       return (
         <View style={styles.prodWrap}>
-            <Text style={[styles.titleDetalle, { fontSize: 15, marginTop: 10 }, isOferta && { color: '#E53935' }]}>{titulo}</Text>
+            <Text style={[styles.titleDetalle, { fontSize: 15, marginTop: 10, marginLeft: 5 }, isOferta && { color: '#E53935' }]}>{titulo}</Text>
             <View style={styles.tableHeader}>
                 <Text style={[styles.headerText, { flex: 1.1, textAlign: 'left' }]}>REF.</Text>
                 <Text style={[styles.headerText, { flex: 0.5, textAlign: 'center' }]}>CANT</Text>
@@ -378,15 +371,58 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             <View style={styles.row}><Text style={styles.label}>Cliente:</Text><Text style={styles.value}>{getClienteTexto(clienteSeleccionado)}</Text></View>
             <View style={styles.row}><Text style={styles.label}>Pago:</Text><Text style={styles.value}>{getPlazoTexto(plazoSeleccionado)}</Text></View>
             <View style={styles.row}><Text style={styles.label}>Envío:</Text><Text style={styles.value}>{direccionEntrega ? `${direccionEntrega.street || ''}, ${direccionEntrega.city || ''}` : getEnvioTexto(envioSeleccionado)}</Text></View>
+            {transporte && (
+                <View style={styles.row}><Text style={styles.label}>Transporte:</Text><Text style={styles.value}>{transporte.name || transporte.transporte}</Text></View>
+            )}
             <View style={[styles.row, { marginBottom: 0 }]}><Text style={styles.label}>Fecha:</Text><Text style={styles.value}>{formatFecha()}</Text></View>
         </ShapedCard>
 
-        {renderTablaProductos(itemsLista, `PRODUCTOS (${getPlazoTexto(plazoSeleccionado)})`, false)}
-        {renderTablaProductos(itemsOferta, "PRODUCTOS EN OFERTA", true)}
+        {/* LISTA UNIFICADA ORIGINAL SIN DIVISIONES */}
+        {Array.isArray(items) && items.length > 0 && (
+          <View style={styles.prodWrap}>
+            <View style={styles.tableHeader}>
+                <Text style={[styles.headerText, { flex: 1.1, textAlign: 'left' }]}>REF.</Text>
+                <Text style={[styles.headerText, { flex: 0.5, textAlign: 'center' }]}>CANT</Text>
+                <Text style={[styles.headerText, { flex: 0.9, textAlign: 'right' }]}>PRECIO</Text>
+                <Text style={[styles.headerText, { flex: 0.6, textAlign: 'center' }]}>DTO</Text>
+                <Text style={[styles.headerText, { flex: 1, textAlign: 'right' }]}>SUBTOTAL</Text>
+            </View>
+            <View style={styles.headerLine} />
+            {items.map((it: any, index: number) => {
+              const isTransport = String(it.product_id) === '4011';
+              const referral = it.default_code || it.name || 'SIN REF';
+              const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
+              const priceUnit = toNumber(it?.price_unit);
+              const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
+              const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
+              
+              // Subtotal visual en la app
+              const subTotalLine = isTransport ? (priceUnit * qty) : (priceUnit * qty * factor);
+              
+              return (
+                <View key={it.product_id ?? index} style={styles.prodRow}>
+                  <View style={styles.colRef}><Text allowFontScaling={false} style={styles.codeText} numberOfLines={2}>{referral}</Text></View>
+                  <View style={styles.vSep} />
+                  <View style={styles.colQty}><Text allowFontScaling={false} style={styles.qtyText}>x{qty}</Text></View>
+                  <View style={styles.vSep} />
+                  <TouchableOpacity style={styles.colPrice} disabled={!canEdit} onPress={() => openEditModal(it)}>
+                    <Text allowFontScaling={false} style={[styles.priceText, canEdit && { color: '#1C9BD8', textDecorationLine: 'underline' }]} numberOfLines={1}>{formatUsd(priceUnit)}</Text>
+                  </TouchableOpacity>
+                  <View style={styles.vSep} />
+                  <TouchableOpacity style={styles.colDisc} disabled={!canEdit || isTransport} onPress={() => openEditModal(it)}>
+                    {isTransport ? <Text style={styles.dash}>-</Text> : ((d1 > 0 || d2 > 0 || d3 > 0) ? (<View style={[styles.discountBadge, canEdit && { backgroundColor: '#E3F2FD' }]}><Text allowFontScaling={false} style={styles.discountText}>{[d1, d2, d3].filter(d => d > 0).join('+')}%</Text></View>) : (<Text style={[styles.dash, canEdit && { color: '#1C9BD8' }]}>{canEdit ? 'Add' : '-'}</Text>))}
+                  </TouchableOpacity>
+                  <View style={styles.vSep} />
+                  <View style={styles.colSub}><Text allowFontScaling={false} style={styles.subText} numberOfLines={1}>{formatUsd(subTotalLine)}</Text></View>
+                </View>
+              );
+            })}
+          </View>
+        )}
 
         <View style={styles.taxWrap}>
           <View style={styles.taxRow}>
-            <View style={styles.taxLeft}><Text style={styles.taxLeftText}>Base imponible</Text><Text style={styles.taxLeftText}>Impuestos (21%)</Text></View>
+            <View style={styles.taxLeft}><Text style={styles.taxLeftText}>Base imponible</Text><Text style={styles.taxLeftText}>Impuestos</Text></View>
             <View style={styles.taxSeparator} /><View style={styles.taxRight}><Text style={styles.taxRightText}>{formatUsd(mostrarBase)}</Text><Text style={styles.taxRightText}>{formatUsd(mostrarImpuestos)}</Text></View>
           </View>
           <View style={styles.taxDivider} />
@@ -414,8 +450,16 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
 
       <View style={[styles.footerContainer, { paddingBottom: Math.max(20, insets.bottom + 35) }]}>
         <View style={styles.buttons}>
-          <TouchableWithoutFeedback onPressIn={() => animateBtn(backAnim, 1)} onPressOut={() => animateBtn(backAnim, 0)} onPress={handleBackPress}><Animated.View style={[styles.back, { transform: [{ scale: getScale(backAnim) }, { translateY: getTranslate(backAnim) }] }]}><Text style={styles.backText}>VOLVER</Text></Animated.View></TouchableWithoutFeedback>
-          <TouchableWithoutFeedback disabled={loading} onPressIn={() => animateBtn(confirmAnim, 1)} onPressOut={() => animateBtn(confirmAnim, 0)} onPress={handleConfirmPress}><Animated.View style={[styles.confirm, loading && { backgroundColor: '#A0A0A0' }, { transform: [{ scale: getScale(confirmAnim) }, { translateY: getTranslate(confirmAnim) }] }]}><Text style={styles.confirmText}>{loading ? 'PROCESANDO...' : 'CONFIRMAR PEDIDO'}</Text></Animated.View></TouchableWithoutFeedback>
+          <TouchableWithoutFeedback onPressIn={() => animateBtn(backAnim, 1)} onPressOut={() => animateBtn(backAnim, 0)} onPress={handleBackPress}>
+              <Animated.View style={[styles.back, { transform: [{ scale: getScale(backAnim) }, { translateY: getTranslate(backAnim) }] }]}>
+                  <Text style={styles.backText}>VOLVER</Text>
+              </Animated.View>
+          </TouchableWithoutFeedback>
+          <TouchableWithoutFeedback disabled={loading} onPressIn={() => animateBtn(confirmAnim, 1)} onPressOut={() => animateBtn(confirmAnim, 0)} onPress={handleConfirmPress}>
+              <Animated.View style={[styles.confirm, loading && { backgroundColor: '#A0A0A0' }, { transform: [{ scale: getScale(confirmAnim) }, { translateY: getTranslate(confirmAnim) }] }]}>
+                  {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.confirmText}>CONFIRMAR PEDIDO</Text>}
+              </Animated.View>
+          </TouchableWithoutFeedback>
         </View>
       </View>
 
@@ -478,40 +522,46 @@ const styles = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 8 },
   label: { width: 150, fontWeight: '800', color: '#2B2B2B' },
   value: { flex: 1, color: '#2B2B2B', lineHeight: 18 },
-  prodWrap: { marginTop: 16, marginHorizontal: 10, paddingTop: 4, paddingBottom: 6 },
-  tableHeader: { flexDirection: 'row', paddingHorizontal: 4, marginBottom: 4 },
-  headerText: { fontSize: 9, fontWeight: '800', color: '#909090', letterSpacing: 0.5 },
+  
+  prodWrap: { marginTop: 8, paddingBottom: 6 },
+  tableHeader: { flexDirection: 'row', paddingHorizontal: 4, marginBottom: 4, marginTop: 10 },
+  headerText: { fontSize: 10, fontWeight: '800', color: '#909090', letterSpacing: 0.5 },
   headerLine: { height: 1, backgroundColor: '#E5E6EA', marginBottom: 8 },
   prodRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F2F2F2' },
   vSep: { width: 1, height: '80%', backgroundColor: '#E5E6EA', marginHorizontal: 4 },
   colRef: { flex: 1.1, justifyContent: 'center', paddingRight: 2 },
-  codeText: { color: '#2B2B2B', fontWeight: '700', fontSize: 10 }, 
+  codeText: { color: '#2B2B2B', fontWeight: '700', fontSize: 11 }, 
   colQty: { flex: 0.5, alignItems: 'center', justifyContent: 'center' },
-  qtyText: { color: '#666', fontSize: 10, fontWeight: '600' },
+  qtyText: { color: '#666', fontSize: 11, fontWeight: '600' },
   colPrice: { flex: 0.9, alignItems: 'flex-end', justifyContent: 'center' },
-  priceText: { fontWeight: '600', color: '#2B2B2B', fontSize: 10 },
+  priceText: { fontWeight: '600', color: '#2B2B2B', fontSize: 11 },
   colDisc: { flex: 0.6, alignItems: 'center', justifyContent: 'center', gap: 2 },
   discountBadge: { backgroundColor: '#E3F2FD', paddingHorizontal: 3, paddingVertical: 1, borderRadius: 3, minWidth: 28, alignItems: 'center' },
-  discountText: { fontSize: 8, fontWeight: '800', color: '#1C9BD8' },
+  discountText: { fontSize: 9, fontWeight: '800', color: '#1C9BD8' },
   dash: { color: '#CCC', fontSize: 12, textAlign: 'center' },
   colSub: { flex: 1, alignItems: 'flex-end', justifyContent: 'center' },
-  subText: { fontWeight: '800', color: '#2B2B2B', fontSize: 11 },
-  taxWrap: { marginTop: 16, marginHorizontal: 18, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#ECEDEF', paddingHorizontal: 12, paddingTop: 12, paddingBottom: 12 },
+  subText: { fontWeight: '800', color: '#2B2B2B', fontSize: 12 },
+  
+  taxWrap: { backgroundColor: '#F9FAFB', borderRadius: 8, padding: 12, marginTop: 8, marginHorizontal: 14 },
   taxRow: { flexDirection: 'row', alignItems: 'stretch' },
-  taxLeft: { flex: 1.4, gap: 8 }, taxRight: { flex: 1, alignItems: 'flex-end', gap: 8 },
-  taxLeftText: { color: '#2B2B2B' }, taxRightText: { color: '#2B2B2B', fontWeight: '800' },
+  taxLeft: { flex: 1.4, gap: 8 }, 
+  taxRight: { flex: 1, alignItems: 'flex-end', gap: 8 },
+  taxLeftText: { color: '#2B2B2B', fontSize: 13 }, 
+  taxRightText: { color: '#2B2B2B', fontWeight: '800', fontSize: 14 },
   taxSeparator: { width: 2, backgroundColor: '#E5E6EA', marginHorizontal: 12, borderRadius: 2 },
-  taxDivider: { height: 1, backgroundColor: '#E5E6EA', marginTop: 12, marginBottom: 10 },
-  fxLabel: { color: '#6A6E73', fontSize: 12, marginBottom: 2 },
-  fxValue: { color: '#2B2B2B', fontWeight: '800' },
+  taxDivider: { height: 1, backgroundColor: '#E5E6EA', marginTop: 12, marginBottom: 12 },
+  fxLabel: { color: '#6A6E73', fontSize: 11, marginBottom: 2, fontWeight: '600' },
+  fxValue: { color: '#2B2B2B', fontWeight: '800', fontSize: 13 },
   totalLabel: { fontSize: 14, fontWeight: '800', color: '#2B2B2B' },
-  totalValue: { fontSize: 20, fontWeight: '800', color: '#2B2B2B' },
+  totalValue: { fontSize: 24, fontWeight: '900', color: '#1C9BD8' }, // FUENTE ACHICADA AQUÍ
+
   footerContainer: { backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#f0f0f0', paddingTop: 15, paddingHorizontal: 10, shadowColor: '#000', shadowOffset: { width: 0, height: -3 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 5 },
   buttons: { flexDirection: 'row', justifyContent: 'space-between', gap: 10, paddingHorizontal: 8 },
   back: { flex: 1, height: 46, borderRadius: 999, borderWidth: 1, borderColor: '#D3D6DB', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' },
   backText: { color: '#2B2B2B', fontWeight: '800' },
   confirm: { flex: 1, height: 46, borderRadius: 999, backgroundColor: '#1C9BD8', alignItems: 'center', justifyContent: 'center' },
   confirmText: { color: '#fff', fontWeight: '800' },
+
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
   modalContent: { backgroundColor: '#FFF', borderRadius: 12, padding: 20, elevation: 5 },
   modalTitle: { fontSize: 20, fontWeight: '800', color: '#2B2B2B', marginBottom: 4, textAlign: 'center' },
@@ -526,7 +576,7 @@ const styles = StyleSheet.create({
   modalBtnTextSave: { fontWeight: '700', color: '#FFF' },
   
   obsLink: { alignSelf: 'center' }, 
-  obsLinkText: { color: '#1C9BD8', fontFamily: 'Rubik-Medium', textDecorationLine: 'underline' },
+  obsLinkText: { color: '#1C9BD8', fontFamily: 'Rubik-Medium', textDecorationLine: 'underline', fontWeight: '800' },
 });
 
 export default PasoConfirmacion;

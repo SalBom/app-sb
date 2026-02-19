@@ -1989,7 +1989,7 @@ def crear_pedido():
         order_id_to_update  = data.get('order_id_to_update') # FIX: Evita duplicados
 
         # Notas
-        nota_cliente    = data.get('note') or data.get('nota') or data.get('observaciones') or ""
+        nota_cliente    = data.get('note') or data.get('nota') or ""
         obs_internas    = data.get('observaciones') or data.get('internal_note')
         ref_cliente     = data.get('client_order_ref') or data.get('ref') or f"APP-{int(time.time())}"
         created_by_name = data.get('created_by_name', '')
@@ -2055,11 +2055,13 @@ def crear_pedido():
                     pass 
                 vistos.add(variant_id)
 
+                # Cantidades y precios
                 qty = float(it.get('qty') or it.get('product_uom_qty') or it.get('quantity') or 1)
                 price = float(it.get('price_unit', 0))
                 name = it.get('name')
                 item_term_id = int(it.get('payment_term_id') or global_term_id or 0)
 
+                # Descuentos anidados
                 d1 = float(it.get('discount1', 0) or 0.0)
                 d2 = float(it.get('discount2', 0) or 0.0)
                 d3 = float(it.get('discount3', 0) or 0.0)
@@ -2099,7 +2101,7 @@ def crear_pedido():
         if not groups:
             return jsonify({"error": "No hay productos válidos. Vacíe el carrito.", "code": "EMPTY_LINES"}), 400
 
-        # 6. Construir orden inyectando SECCIONES a Odoo (display_type: line_section)
+        # --- 6. CONSTRUIR ORDEN INYECTANDO SECCIONES (display_type: line_section) ---
         sorted_keys = sorted(groups.keys(), key=lambda x: (1 if x[0] else 0, x[1]), reverse=True)
         order_lines_cmd = []
 
@@ -2135,7 +2137,7 @@ def crear_pedido():
             "partner_shipping_id": ship_id if ship_id else cliente.id,
             "payment_term_id": int(global_term_id) if global_term_id else False,
             "origin": "APP SALBOM",
-            "note": nota_cliente,
+            "note": nota_cliente, # Va impreso
             "client_order_ref": ref_cliente,
         }
         if pricelist_id: vals["pricelist_id"] = pricelist_id
@@ -2147,12 +2149,12 @@ def crear_pedido():
         try:
             order_obj = None
 
-            # --- FIX: Intentar actualizar pedido previo (Para que no quede doble en sistema) ---
+            # --- ACTUALIZAR PEDIDO PREVIO (Para que no quede doble en sistema) ---
             if order_id_to_update:
                 try:
                     existing = client.env['sale.order'].search([('id', '=', int(order_id_to_update))])
                     if existing:
-                        # (5, 0, 0) borra las líneas viejas y graba las nuevas
+                        # (5, 0, 0) borra las líneas viejas (incluyendo secciones viejas) y graba las nuevas
                         vals['order_line'] = [(5, 0, 0)] + order_lines_cmd
                         existing.write(vals)
                         order_obj = existing[0]
@@ -2164,37 +2166,39 @@ def crear_pedido():
                 vals['order_line'] = order_lines_cmd
                 order_obj = client.env['sale.order'].create(vals)
 
-            # --- 8. NOTA INTERNA (Chatter) ---
-            mensajes_nota = []
+            # --- 8. NOTA INTERNA (Chatter / Muro de Odoo) ---
             if obs_internas:
-                # Quitamos la etiqueta duplicada "Cargado por: Vendedor App" si ya viene en el obs_internas del Front
-                if "Cargado por:" in obs_internas:
-                    mensajes_nota.append(f"📝 <b>Observación desde App:</b><br/>{obs_internas}")
-                else:
-                    mensajes_nota.append(f"📝 <b>Observaciones del cliente:</b><br/>{obs_internas}")
-                    
-            if created_by_name and "Cargado por:" not in obs_internas:
-                mensajes_nota.append(f"👤 <b>Cargado por:</b> {created_by_name} (desde App)")
-
-            if mensajes_nota:
-                full_body = "<br/><br/>".join(mensajes_nota)
                 try:
-                    order_obj.message_post(body=full_body, message_type='comment', subtype_xmlid='mail.mt_note')
+                    order_obj.message_post(
+                        body=f"📝 <b>Observación interna (App):</b><br/>{obs_internas}", 
+                        message_type='comment', 
+                        subtype_xmlid='mail.mt_note'
+                    )
                 except Exception: pass
 
-            # --- 9. Formatear y Leer Respuesta ---
+            # --- 9. Formatear y Leer Respuesta (CON TOTALES EXACTOS) ---
             nro_pedido = f"Pedido #{order_obj.id}"
             total = 0.0
+            base = 0.0
+            impuestos = 0.0
             currency = "USD"
             try:
-                datos = order_obj.read(['amount_total', 'name', 'currency_id'])[0]
+                # Forzamos a Odoo a calcular todos los impuestos antes de leer
+                try:
+                    order_obj._amount_all()
+                except: pass
+
+                datos = order_obj.read(['amount_total', 'amount_untaxed', 'name', 'currency_id'])[0]
                 read_name = datos.get('name')
                 
-                # Si Odoo responde con nombre basura, usamos el "Pedido #1234"
+                # Si Odoo responde con nombre basura de borrador, mantenemos "Pedido #1234"
                 if read_name and read_name not in ['/', 'New', 'Nuevo', '* Nuevo *', 'Borrador']:
                     nro_pedido = read_name
                     
-                total = datos.get('amount_total', 0.0)
+                total = float(datos.get('amount_total', 0.0))
+                base = float(datos.get('amount_untaxed', 0.0))
+                impuestos = total - base
+                
                 if datos.get('currency_id'):
                     currency = datos['currency_id'][1]
             except Exception: pass
@@ -2202,7 +2206,9 @@ def crear_pedido():
             return jsonify({
                 "pedido_id": order_obj.id,
                 "nro_pedido": nro_pedido,
-                "total": total,
+                "base_imponible": round(base, 2),
+                "impuestos": round(impuestos, 2),
+                "total": round(total, 2),
                 "currency": currency,
                 "status": "success"
             }), 200
@@ -2213,7 +2219,7 @@ def crear_pedido():
                 return jsonify({"error": "Un producto ya no está disponible.", "code": "PRODUCT_MISSING"}), 409
             raise e_odoo
 
-    # Usamos execute_odoo_operation en lugar de _is_xmlrpc_conn_error para mayor estabilidad
+    # Usamos el wrapper de seguridad para que no se cuelgue si la conexión falla
     try:
         return execute_odoo_operation(_logic)
     except Exception as e:
