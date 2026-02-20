@@ -226,7 +226,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       }
   }
 
-  // --- FIX: ARMAMOS EL NOMBRE CON EL TRANSPORTE DEL CLIENTE ---
+  // NOMBRE DINÁMICO QUE VIAJARÁ A ODOO
   const nombreEnvioCompleto = esEnvioADomicilio 
         ? (transporteNombre ? `Envío a Domicilio - ${transporteNombre}` : 'Envío a Domicilio')
         : 'Retiro en Sucursal';
@@ -254,10 +254,13 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   }
   // =====================================================================
 
+  // 🚀 FIX: EL DEBOUNCE (Evita que el servidor crashee por múltiples peticiones simultáneas)
   useEffect(() => {
-    const fetchExactTotals = async () => {
-        if (!draftOrderId || itemsProcesados.length === 0) return;
-        setIsSyncingTotals(true);
+    if (!draftOrderId || itemsProcesados.length === 0) return;
+    
+    setIsSyncingTotals(true);
+    
+    const timeoutId = setTimeout(async () => {
         try {
             const cuitUser = await getCuitFromStorage();
             const payload = {
@@ -272,7 +275,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                     product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
                     price_unit: it.price_unit,
                     payment_term_id: it.payment_term_id,
-                    name: it.name, // ENVIAMOS EL NOMBRE COMPLETO A ODOO
+                    name: it.name, // Odoo tomará este nombre
                     discount1: it.discount1 || 0,
                     discount2: it.discount2 || 0,
                     discount3: it.discount3 || 0
@@ -291,11 +294,12 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         } finally {
             setIsSyncingTotals(false);
         }
-    };
+    }, 600); // <-- Espera 600ms para enviar la petición de forma limpia
 
-    fetchExactTotals();
+    return () => clearTimeout(timeoutId);
   }, [items, draftOrderId, costoEnvioUSD, transporteNombre]); 
 
+  // Matemática provisoria (Para no ver en 0 mientras carga)
   const localBase = localBaseSinTransporte + costoEnvioUSD;
   const localTax = localBase * 0.21;
   const localTotal = localBase + localTax;
@@ -341,7 +345,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
               product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
               price_unit: it.price_unit,
               payment_term_id: it.payment_term_id, 
-              name: it.name, // ENVIAMOS EL NOMBRE COMPLETO A ODOO
+              name: it.name, 
               discount1: it.discount1 || 0,
               discount2: it.discount2 || 0,
               discount3: it.discount3 || 0
@@ -430,7 +434,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             {itemsProcesados.map((it: any, index: number) => {
               const isTransport = String(it.product_id) === '4011';
               
-              // --- FIX: MOSTRAMOS EL NOMBRE DEL TRANSPORTE, NO "FLETE" ---
+              // --- SE MUESTRA EL NOMBRE COMPLETO EN LA APP ---
               const referral = isTransport ? it.name : (it.default_code || it.name || 'SIN REF');
               
               const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
@@ -521,6 +525,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         </View>
       </View>
 
+      {/* Modal de Precios */}
       <Modal visible={modalVisible} transparent animationType="slide" onRequestClose={() => setModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
             <View style={styles.modalContent}>
@@ -540,6 +545,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* Modal de Notas */}
       <Modal visible={showObservationModal} transparent animationType="slide">
             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
                 <View style={styles.modalContent}>
