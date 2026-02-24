@@ -197,21 +197,26 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   };
 
   // =====================================================================
-  // REGLA MATEMÁTICA Y NOMBRE DEL TRANSPORTE
+  // REGLA MATEMÁTICA Y NOMBRE ESTRICTO DEL TRANSPORTE
   // =====================================================================
+  const itemsLimpios = Array.isArray(items) ? items.filter((it: any) => {
+      const pid = Number(it.product_id);
+      return !isNaN(pid) && pid < 2147483647; // Filtro anti-crash vital
+  }) : [];
+
   const tcSeguro = tipoCambio && tipoCambio > 0 ? tipoCambio : TIPO_CAMBIO_FALLBACK;
   const transporteNombre = transporte?.name || transporte?.transporte || '';
   const esEnvioADomicilio = envioSeleccionado === 'domicilio' || transporteNombre.toLowerCase().includes('domicilio');
 
-  const localBaseSinTransporte = Array.isArray(items) 
-    ? items.filter((it: any) => String(it.product_id) !== '4011').reduce((acc: number, it: any) => {
+  const localBaseSinTransporte = itemsLimpios
+    .filter((it: any) => String(it.product_id) !== '4011')
+    .reduce((acc: number, it: any) => {
         const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
         const price = toNumber(it?.price_unit);
         const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
         const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
         return acc + (price * qty * factor);
-    }, 0) 
-    : 0;
+    }, 0);
 
   const baseARS = localBaseSinTransporte * tcSeguro;
   let costoEnvioUSD = 0;
@@ -226,21 +231,19 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       }
   }
 
-  // NOMBRE DINÁMICO QUE VIAJARÁ A ODOO
-  const nombreEnvioCompleto = esEnvioADomicilio 
-        ? (transporteNombre ? `Envío a Domicilio - ${transporteNombre}` : 'Envío a Domicilio')
-        : 'Retiro en Sucursal';
+  // --- FIX: MOSTRAMOS ESTRICTAMENTE EL NOMBRE DEL TRANSPORTE ---
+  const nombreEnvioCompleto = transporteNombre ? transporteNombre : (esEnvioADomicilio ? 'Envío a Domicilio' : 'Retiro en Sucursal');
 
   let hasTransportItem = false;
-  const itemsProcesados = Array.isArray(items) ? items.map((it: any) => {
+  const itemsProcesados = itemsLimpios.map((it: any) => {
       if (String(it.product_id) === '4011') {
           hasTransportItem = true;
           return { ...it, price_unit: costoEnvioUSD, name: nombreEnvioCompleto, discount1: 0, discount2: 0, discount3: 0 };
       }
       return it;
-  }) : [];
+  });
 
-  if (esEnvioADomicilio && !hasTransportItem && items.length > 0) {
+  if (esEnvioADomicilio && !hasTransportItem && itemsLimpios.length > 0) {
       itemsProcesados.push({
           product_id: 4011,
           name: nombreEnvioCompleto,
@@ -252,35 +255,46 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           payment_term_id: plazoSeleccionado?.id 
       });
   }
-  // =====================================================================
 
-  // 🚀 FIX: EL DEBOUNCE (Evita que el servidor crashee por múltiples peticiones simultáneas)
+  // Generador de Payload Único (Para no repetir código y asegurar que todo viaja igual)
+  const buildPayload = async () => {
+      const cuitUser = await getCuitFromStorage();
+      const v_name = loggedUserName || 'Vendedor App';
+      return {
+          order_id_to_update: draftOrderId || null,
+          cliente_cuit: clienteSeleccionado?.vat || cuitUser,
+          payment_term_id: plazoSeleccionado?.id,
+          partner_shipping_id: direccionEntrega?.id || null,
+          carrier_id: transporte?.id || null,
+          created_by_name: v_name,
+          note: observationText,
+          observaciones: observationText 
+                ? `Cargado por: ${v_name}\n\nObservaciones del cliente: ${observationText}` 
+                : `Cargado por: ${v_name}`,
+          items: itemsProcesados.map((it: any) => ({
+              product_id: it.product_id,
+              qty: it.product_uom_qty || it.qty || it.quantity || 1,
+              product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
+              price_unit: it.price_unit,
+              payment_term_id: it.payment_term_id,
+              name: it.name, // Nombre exacto del transporte
+              discount1: it.discount1 || 0,
+              discount2: it.discount2 || 0,
+              discount3: it.discount3 || 0
+          }))
+      };
+  };
+
+  // =====================================================================
+  // EFECTO: SINCRONIZACIÓN AUTOMÁTICA EN SEGUNDO PLANO SIN CRASHES
+  // =====================================================================
   useEffect(() => {
     if (!draftOrderId || itemsProcesados.length === 0) return;
-    
     setIsSyncingTotals(true);
     
     const timeoutId = setTimeout(async () => {
         try {
-            const cuitUser = await getCuitFromStorage();
-            const payload = {
-                order_id_to_update: draftOrderId,
-                cliente_cuit: clienteSeleccionado?.vat || cuitUser,
-                payment_term_id: plazoSeleccionado?.id,
-                partner_shipping_id: direccionEntrega?.id || null,
-                carrier_id: transporte?.id || null,
-                items: itemsProcesados.map((it: any) => ({
-                    product_id: it.product_id,
-                    qty: it.product_uom_qty || it.qty || it.quantity || 1,
-                    product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
-                    price_unit: it.price_unit,
-                    payment_term_id: it.payment_term_id,
-                    name: it.name, // Odoo tomará este nombre
-                    discount1: it.discount1 || 0,
-                    discount2: it.discount2 || 0,
-                    discount3: it.discount3 || 0
-                }))
-            };
+            const payload = await buildPayload();
             const resp = await axios.post(`${API_URL}/actualizar-pedido`, payload);
             if (resp.data && resp.data.total) {
                 setLiveTotals({
@@ -294,12 +308,13 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         } finally {
             setIsSyncingTotals(false);
         }
-    }, 600); // <-- Espera 600ms para enviar la petición de forma limpia
+    }, 600); // Debounce de 600ms para asegurar envío único y estable
 
     return () => clearTimeout(timeoutId);
+    // NOTA: Retiré observationText para que no le hable a Odoo por cada letra que tipeas.
   }, [items, draftOrderId, costoEnvioUSD, transporteNombre]); 
 
-  // Matemática provisoria (Para no ver en 0 mientras carga)
+  // Matemática provisoria 
   const localBase = localBaseSinTransporte + costoEnvioUSD;
   const localTax = localBase * 0.21;
   const localTotal = localBase + localTax;
@@ -315,48 +330,14 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     setLoading(true);
     
     try {
-      const cuitUser = await getCuitFromStorage();
-      
-      const itemsValidos = itemsProcesados.filter((it: any) => {
-        const pid = Number(it.product_id);
-        return !isNaN(pid) && pid < 2147483647;
-      });
-
-      if (itemsValidos.length === 0) {
+      if (itemsProcesados.length === 0) {
         Alert.alert("Error", "No hay productos válidos en el carrito.");
         isSubmittingRef.current = false;
         setLoading(false);
         return;
       }
-      
-      const v_name = loggedUserName || 'Vendedor App';
 
-      const payload = {
-          order_id_to_update: draftOrderId || null, 
-          cliente_cuit: clienteSeleccionado?.vat || cuitUser, 
-          payment_term_id: plazoSeleccionado?.id,
-          partner_shipping_id: direccionEntrega?.id || null, 
-          created_by_name: v_name, 
-          carrier_id: transporte?.id || null, 
-          
-          items: itemsValidos.map((it: any) => ({
-              product_id: it.product_id,
-              qty: it.product_uom_qty || it.qty || it.quantity || 1, 
-              product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
-              price_unit: it.price_unit,
-              payment_term_id: it.payment_term_id, 
-              name: it.name, 
-              discount1: it.discount1 || 0,
-              discount2: it.discount2 || 0,
-              discount3: it.discount3 || 0
-          })),
-          
-          note: observationText, 
-          observaciones: observationText 
-                ? `Cargado por: ${v_name}\n\nObservaciones del cliente: ${observationText}` 
-                : `Cargado por: ${v_name}`
-      };
-
+      const payload = await buildPayload();
       const resp = await axios.post(`${API_URL}/crear-pedido`, payload);
       const j = resp.data;
       
@@ -434,7 +415,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             {itemsProcesados.map((it: any, index: number) => {
               const isTransport = String(it.product_id) === '4011';
               
-              // --- SE MUESTRA EL NOMBRE COMPLETO EN LA APP ---
+              // --- APP MUESTRA DIRECTAMENTE EL NOMBRE DEL TRANSPORTE ---
               const referral = isTransport ? it.name : (it.default_code || it.name || 'SIN REF');
               
               const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
@@ -525,7 +506,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         </View>
       </View>
 
-      {/* Modal de Precios */}
       <Modal visible={modalVisible} transparent animationType="slide" onRequestClose={() => setModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
             <View style={styles.modalContent}>
@@ -545,7 +525,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Modal de Notas */}
       <Modal visible={showObservationModal} transparent animationType="slide">
             <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
                 <View style={styles.modalContent}>

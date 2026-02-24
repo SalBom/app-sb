@@ -2076,17 +2076,17 @@ def _upsert_order_logic(client, data):
     nota_cliente    = data.get('note') or data.get('nota') or ""
     obs_internas    = data.get('observaciones') or data.get('internal_note')
     ref_cliente     = data.get('client_order_ref') or data.get('ref') or f"APP-{int(time.time())}"
-    created_by_name = data.get('created_by_name', '')
 
     if not cliente_cuit: return jsonify({"error": "Falta cliente_cuit"}), 400
     if not items: return jsonify({"error": "El pedido no tiene items"}), 400
 
-    # 2. Buscar cliente
+    # 2. Buscar cliente y Posición Fiscal (CLAVE PARA IMPUESTOS Y IIBB)
     cliente = client.env['res.partner'].search([('vat', '=', cliente_cuit)], limit=1)
     if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
     cliente = cliente[0]
 
     pricelist_id = cliente.property_product_pricelist.id if cliente.property_product_pricelist else None
+    fpos = cliente.property_account_position_id # Posición fiscal para IIBB / Percepciones
 
     # 3. Nombres de Plazos de Pago
     term_ids_to_fetch = set()
@@ -2114,7 +2114,7 @@ def _upsert_order_logic(client, data):
         except Exception: pass
         finally: pg_conn.close()
 
-    # 5. Agrupar Items 
+    # 5. Agrupar Items y Calcular Impuestos Individuales ANTES de guardar
     groups = {}
     vistos = set()
 
@@ -2123,20 +2123,23 @@ def _upsert_order_logic(client, data):
             raw_id = int(it.get('product_id'))
             
             # =================================================================
-            # 🚀 FIX GARRAFAL DE PRODUCTOS: BUSCAMOS POR TEMPLATE PRIMERO
-            # La app manda product_tmpl_id. Si buscamos por id cruzamos productos.
+            # 🚀 FIX GARRAFAL: NO CRUZAR PRODUCTOS (Buscar siempre por Template)
+            # Excepción especial para el Transporte (4011)
             # =================================================================
-            pp = client.env['product.product'].search([('product_tmpl_id', '=', raw_id)], limit=1)
-            if not pp:
-                # Fallback por si la app excepcionalmente manda el ID de Variante
-                pp = client.env['product.product'].search([('id', '=', raw_id)], limit=1)
+            if str(raw_id) == '4011':
+                pp = client.env['product.product'].search([('default_code', '=', 'FLETE')], limit=1)
+                if not pp:
+                    pp = client.env['product.product'].search(['|', ('id', '=', 4011), ('product_tmpl_id', '=', 4011)], limit=1)
+            else:
+                pp = client.env['product.product'].search([('product_tmpl_id', '=', raw_id)], limit=1)
+                if not pp:
+                    pp = client.env['product.product'].search([('id', '=', raw_id)], limit=1)
                 
             if not pp:
                 log.warning(f"Producto ignorado, no se encontró en Odoo: {raw_id}")
                 continue
                 
             variant_id = int(pp[0].id)
-            
             if variant_id in vistos: continue 
             vistos.add(variant_id)
 
@@ -2150,18 +2153,25 @@ def _upsert_order_logic(client, data):
             d3 = float(it.get('discount3', 0) or 0.0)
             discount_eq = 100.0 * (1.0 - (1.0 - d1/100.0)*(1.0 - d2/100.0)*(1.0 - d3/100.0))
 
+            # 🚀 FIX IMPUESTOS: Calculamos los impuestos ANTES para no hacer bucles después
+            product_taxes = pp[0].taxes_id
+            if fpos:
+                taxes = fpos.map_tax(product_taxes)
+            else:
+                taxes = product_taxes
+            tax_ids = [int(t.id) for t in taxes] if taxes else []
+
             try:
                 var_data = client.env['product.product'].read([variant_id], ['default_code'])[0]
                 sku = str(var_data.get('default_code') or "").strip()
             except: sku = ""
 
-            # Valores blindados nativos de Python para evitar crasheos XML-RPC
             line_vals = {
                 "product_id": variant_id,
                 "product_uom_qty": qty,
                 "price_unit": price,
                 "discount": float(round(discount_eq, 4)),
-                "discount1": d1, "discount2": d2, "discount3": d3
+                "tax_id": [(6, 0, tax_ids)] # <--- Impuestos exactos ya inyectados
             }
             if name: line_vals["name"] = str(name)
 
@@ -2172,7 +2182,7 @@ def _upsert_order_logic(client, data):
             groups[group_key].append(line_vals)
 
         except Exception as e_item:
-            log.warning(f"Error procesando item {it}: {e_item}")
+            log.warning(f"Error procesando item: {e_item}")
             continue
 
     if not groups:
@@ -2187,7 +2197,6 @@ def _upsert_order_logic(client, data):
         term_name = terms_map.get(term_id, "Estándar")
         title = f"[OFERTA] {term_name}" if is_offer else f"[LISTA DE PRECIOS] {term_name}"
 
-        # Blindaje str()
         order_lines_cmd.append((0, 0, {'display_type': 'line_section', 'name': str(title)}))
         for l in lines: order_lines_cmd.append((0, 0, l))
 
@@ -2213,7 +2222,7 @@ def _upsert_order_logic(client, data):
             vals["carrier_id"] = int(carrier_id)
     except: pass
 
-    # 8. Guardar en Odoo
+    # 8. Guardar en Odoo (Rápido y Seguro en un solo paso)
     try:
         order_obj = None
 
@@ -2221,8 +2230,8 @@ def _upsert_order_logic(client, data):
             try:
                 existing = client.env['sale.order'].search([('id', '=', int(order_id_to_update))])
                 if existing:
-                    existing.write({'order_line': [(5, 0, 0)]})
-                    vals['order_line'] = order_lines_cmd
+                    # En un solo movimiento, borra lo viejo e inserta lo nuevo
+                    vals['order_line'] = [(5, 0, 0)] + order_lines_cmd
                     existing.write(vals)
                     order_obj = existing[0]
             except Exception: pass
@@ -2231,25 +2240,13 @@ def _upsert_order_logic(client, data):
             vals['order_line'] = order_lines_cmd
             order_obj = client.env['sale.order'].create(vals)
 
-        # 🚀 FIX IMPUESTOS: EVITAMOS "RECURSIVE DICTIONARY" USANDO int(tid)
-        try:
-            fpos = order_obj.fiscal_position_id
-            for line in order_obj.order_line:
-                if line.product_id and not line.display_type:
-                    product_taxes = line.product_id.taxes_id
-                    taxes = fpos.map_tax(product_taxes) if fpos else product_taxes
-                    # Extraemos IDs limpios como enteros
-                    tax_ids = [int(tid) for tid in taxes.ids]
-                    line.write({'tax_id': [(6, 0, tax_ids)]})
-            
-            order_obj._amount_all()
-        except Exception as e_tax:
-            log.warning(f"Error mapeando impuestos: {e_tax}")
+        # Refrescar totales matemáticos
+        try: order_obj._amount_all()
+        except: pass
 
         # Nota Interna
         if obs_internas:
-            try:
-                order_obj.message_post(body=f"📝 <b>Observación interna (App):</b><br/>{obs_internas}", message_type='comment', subtype_xmlid='mail.mt_note')
+            try: order_obj.message_post(body=f"📝 <b>Observación interna (App):</b><br/>{obs_internas}", message_type='comment', subtype_xmlid='mail.mt_note')
             except Exception: pass
 
         # 9. Formatear Respuesta Exacta 
