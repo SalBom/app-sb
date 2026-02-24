@@ -95,7 +95,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     clearCart, 
     consultaResumen, 
     direccionEntrega,
-    transporte,
+    transporte,          // Variable vieja
+    transporteAsignado,  // <--- FIX: VARIABLE CORRECTA DE ZUSTAND
     notas: notasIniciales
   } = useCartStore() as any;
 
@@ -197,7 +198,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   };
 
   // =====================================================================
-  // REGLA MATEMÁTICA Y NOMBRE ESTRICTO DEL TRANSPORTE
+  // 🚀 FIX: OBTENCIÓN DEL NOMBRE CORRECTO DEL TRANSPORTE
   // =====================================================================
   const itemsLimpios = Array.isArray(items) ? items.filter((it: any) => {
       const pid = Number(it.product_id);
@@ -205,7 +206,13 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   }) : [];
 
   const tcSeguro = tipoCambio && tipoCambio > 0 ? tipoCambio : TIPO_CAMBIO_FALLBACK;
-  const transporteNombre = transporte?.name || transporte?.transporte || '';
+  
+  // Extraemos el nombre real priorizando 'transporteAsignado' de Zustand
+  const objTransporte = transporteAsignado || transporte;
+  const transporteNombre = typeof objTransporte === 'string' 
+      ? objTransporte 
+      : (objTransporte?.name || objTransporte?.transporte || '');
+
   const esEnvioADomicilio = envioSeleccionado === 'domicilio' || transporteNombre.toLowerCase().includes('domicilio');
 
   const localBaseSinTransporte = itemsLimpios
@@ -227,11 +234,11 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       } else if (baseARS <= 500000) {
           costoEnvioUSD = 6000 / tcSeguro;
       } else {
-          costoEnvioUSD = 0; // Flete Gratis
+          costoEnvioUSD = 0; 
       }
   }
 
-  // 🚀 FIX NOMBRE: Muestra estrictamente el nombre del transporte (Ej: "Andreani")
+  // --- El nombre será ESTRICTAMENTE el seleccionado ---
   const nombreEnvioCompleto = transporteNombre ? transporteNombre : (esEnvioADomicilio ? 'Envío a Domicilio' : 'Retiro en Sucursal');
 
   let hasTransportItem = false;
@@ -256,7 +263,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       });
   }
 
-  // Payload Único
   const buildPayload = async () => {
       const cuitUser = await getCuitFromStorage();
       const v_name = loggedUserName || 'Vendedor App';
@@ -277,7 +283,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
               product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
               price_unit: it.price_unit,
               payment_term_id: it.payment_term_id,
-              name: it.name, 
+              name: it.name, // Odoo recibe "Andreani"
               discount1: it.discount1 || 0,
               discount2: it.discount2 || 0,
               discount3: it.discount3 || 0
@@ -303,17 +309,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                     tax: toNumber(resp.data.impuestos),
                     total: toNumber(resp.data.total)
                 });
-                
-                // 🚀 FIX IDENTIFICADOR: Aseguramos que la App rastree el ID correcto si Odoo lo actualizó
-                if (resp.data.pedido_id && resp.data.pedido_id !== draftOrderId) {
-                    useCartStore.setState({
-                        consultaResumen: {
-                            ...consultaResumen,
-                            pedido_id: resp.data.pedido_id,
-                            nro_pedido: resp.data.nro_pedido,
-                        }
-                    });
-                }
             }
         } catch (error) {
             console.log("Error sincronizando totales:", error);
@@ -426,7 +421,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             {itemsProcesados.map((it: any, index: number) => {
               const isTransport = String(it.product_id) === '4011';
               
-              // 🚀 FIX: Mostramos puramente el nombre del transporte que viaja al backend
               const referral = isTransport ? it.name : (it.default_code || it.name || 'SIN REF');
               
               const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);

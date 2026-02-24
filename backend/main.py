@@ -2064,7 +2064,6 @@ def editar_perfil():
 # LÓGICA MAESTRA PARA CREAR / ACTUALIZAR PEDIDOS
 # =================================================================
 def _upsert_order_logic(client, data):
-    # 1. Datos Principales
     order_id_to_update  = data.get('order_id_to_update') or data.get('order_id') or data.get('pedido_id')
     cliente_cuit        = data.get('cliente_cuit') or data.get('partner_vat')
     items               = data.get('items', [])
@@ -2072,7 +2071,6 @@ def _upsert_order_logic(client, data):
     partner_shipping_id = data.get('partner_shipping_id')
     carrier_id          = data.get('carrier_id')
 
-    # Notas
     nota_cliente    = data.get('note') or data.get('nota') or ""
     obs_internas    = data.get('observaciones') or data.get('internal_note')
     ref_cliente     = data.get('client_order_ref') or data.get('ref') or f"APP-{int(time.time())}"
@@ -2080,14 +2078,12 @@ def _upsert_order_logic(client, data):
     if not cliente_cuit: return jsonify({"error": "Falta cliente_cuit"}), 400
     if not items: return jsonify({"error": "El pedido no tiene items"}), 400
 
-    # 2. Buscar cliente
     cliente = client.env['res.partner'].search([('vat', '=', cliente_cuit)], limit=1)
     if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
     cliente = cliente[0]
 
     pricelist_id = cliente.property_product_pricelist.id if cliente.property_product_pricelist else None
 
-    # 3. Nombres de Plazos de Pago
     term_ids_to_fetch = set()
     if global_term_id: term_ids_to_fetch.add(int(global_term_id))
     for it in items:
@@ -2101,7 +2097,6 @@ def _upsert_order_logic(client, data):
                 terms_map[t.id] = "CONTADO" if t.name and "inmediato" in str(t.name).lower() else str(t.name)
     except Exception: pass
 
-    # 4. SKUs de Oferta
     offer_skus = set()
     pg_conn = get_pg_connection()
     if pg_conn:
@@ -2113,7 +2108,6 @@ def _upsert_order_logic(client, data):
         except Exception: pass
         finally: pg_conn.close()
 
-    # 5. Agrupar Items (Con protección y búsqueda correcta por Template)
     groups = {}
     vistos = set()
 
@@ -2121,8 +2115,7 @@ def _upsert_order_logic(client, data):
         try:
             raw_id = int(it.get('product_id'))
             
-            # 🚀 FIX GARRAFAL: BUSCAMOS SIEMPRE POR TEMPLATE (Para no cruzar productos)
-            # Y le damos una vía rápida al Transporte (4011)
+            # --- FIX: EL MISTERIO DEL TRANSPORTE Y LOS PRODUCTOS CRUZADOS ---
             if str(raw_id) == '4011':
                 pp = client.env['product.product'].search([('default_code', '=', 'FLETE')], limit=1)
                 if not pp:
@@ -2133,7 +2126,7 @@ def _upsert_order_logic(client, data):
                     pp = client.env['product.product'].search([('id', '=', raw_id)], limit=1)
                 
             if not pp:
-                log.warning(f"Producto ignorado, no se encontró: {raw_id}")
+                log.warning(f"Producto ignorado, no se encontró en Odoo: {raw_id}")
                 continue
                 
             variant_id = int(pp[0].id)
@@ -2161,7 +2154,6 @@ def _upsert_order_logic(client, data):
                 "price_unit": price,
                 "discount": float(round(discount_eq, 4)),
             }
-            # EL NOMBRE DEL TRANSPORTE INGRESA ACÁ
             if name: line_vals["name"] = str(name)
 
             is_offer = sku in offer_skus
@@ -2177,7 +2169,6 @@ def _upsert_order_logic(client, data):
     if not groups:
         return jsonify({"error": "No hay productos válidos.", "code": "EMPTY_LINES"}), 400
 
-    # 6. Construir orden con SECCIONES
     sorted_keys = sorted(groups.keys(), key=lambda x: (1 if x[0] else 0, x[1]), reverse=True)
     order_lines_cmd = []
 
@@ -2195,7 +2186,7 @@ def _upsert_order_logic(client, data):
             ship_id = int(partner_shipping_id)
     except: pass
 
-    # 7. Guardar en Odoo (Actualización 100% segura y limpia)
+    # --- FIX CRÍTICO 500: SEPARAR EL BORRADO Y LA CREACIÓN ---
     try:
         order_obj = None
 
@@ -2203,9 +2194,12 @@ def _upsert_order_logic(client, data):
             try:
                 existing = client.env['sale.order'].search([('id', '=', int(order_id_to_update))])
                 if existing:
-                    # En vez de recrear, limpiamos e insertamos en la misma orden
+                    # 1. Borramos líneas limpiamente
+                    existing.write({'order_line': [(5, 0, 0)]})
+                    
+                    # 2. Preparamos datos nuevos
                     update_vals = {
-                        'order_line': [(5, 0, 0)] + order_lines_cmd,
+                        'order_line': order_lines_cmd,
                         'note': str(nota_cliente),
                         'client_order_ref': str(ref_cliente)
                     }
@@ -2214,6 +2208,7 @@ def _upsert_order_logic(client, data):
                         if carrier_id and str(carrier_id).isdigit(): update_vals['carrier_id'] = int(carrier_id)
                     except: pass
                     
+                    # 3. Insertamos
                     existing.write(update_vals)
                     order_obj = existing[0]
             except Exception as e_upd:
@@ -2236,7 +2231,7 @@ def _upsert_order_logic(client, data):
             except: pass
             order_obj = client.env['sale.order'].create(vals)
 
-        # 🚀 ODOO SE ENCARGA DE LOS IMPUESTOS: Solo pedimos que haga el cálculo final
+        # Odoo calcula IVA + IIBB solo (Sin el error de recursividad)
         try: order_obj._amount_all()
         except: pass
 
@@ -2244,7 +2239,6 @@ def _upsert_order_logic(client, data):
             try: order_obj.message_post(body=f"📝 <b>Observación interna:</b><br/>{obs_internas}", message_type='comment', subtype_xmlid='mail.mt_note')
             except: pass
 
-        # 8. Formatear Respuesta Exacta 
         nro_pedido = f"Pedido #{order_obj.id}"
         total, base, impuestos = 0.0, 0.0, 0.0
         currency = "USD"
@@ -2276,6 +2270,53 @@ def _upsert_order_logic(client, data):
         if "MissingError" in err_msg or "Record does not exist" in err_msg:
             return jsonify({"error": "Un producto ya no está disponible.", "code": "PRODUCT_MISSING"}), 409
         raise e_odoo
+
+# =================================================================
+# FIX XML-RPC LIMITS: GUARDADO DEL CARRITO
+# =================================================================
+@app.route('/cart/save', methods=['POST'])
+def update_cart():
+    data = request.json or {}
+    cuit = data.get('cuit')
+    items = data.get('items', [])
+    
+    if not cuit: return jsonify({"error": "Falta CUIT"}), 400
+
+    def _execute_save(client_inst):
+        partner = client_inst.env["res.partner"].search([("vat", "=", cuit)], limit=1)
+        if not partner: return False
+        user = client_inst.env["res.users"].search([("partner_id", "=", partner[0].id)], limit=1)
+        if not user: return False
+        
+        user_id = int(user[0].id)
+        pg_conn = get_pg_connection()
+        if pg_conn:
+            try:
+                cur = pg_conn.cursor()
+                items_json = json.dumps(items)
+                # Guarda en Postgres rapidísimo en vez de saturar a Odoo
+                cur.execute("""
+                    INSERT INTO app_user_carts (user_id, items_json) 
+                    VALUES (%s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET 
+                    items_json = EXCLUDED.items_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """, (user_id, items_json))
+                pg_conn.commit()
+                cur.close()
+            except Exception as e:
+                pg_conn.rollback()
+                log.error(f"Error guardando carrito local: {e}")
+            finally:
+                pg_conn.close()
+        return True
+
+    try:
+        execute_odoo_operation(_execute_save)
+        return jsonify({"status": "ok"}), 200
+    except Exception as e:
+        log.error(f"❌ Error en /cart/save: {e}")
+        return jsonify({"status": "error", "detail": str(e)}), 200
 
 # =================================================================
 # ENDPOINTS 
