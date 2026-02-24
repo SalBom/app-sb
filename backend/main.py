@@ -2272,53 +2272,6 @@ def _upsert_order_logic(client, data):
         raise e_odoo
 
 # =================================================================
-# FIX XML-RPC LIMITS: GUARDADO DEL CARRITO
-# =================================================================
-@app.route('/cart/save', methods=['POST'])
-def update_cart():
-    data = request.json or {}
-    cuit = data.get('cuit')
-    items = data.get('items', [])
-    
-    if not cuit: return jsonify({"error": "Falta CUIT"}), 400
-
-    def _execute_save(client_inst):
-        partner = client_inst.env["res.partner"].search([("vat", "=", cuit)], limit=1)
-        if not partner: return False
-        user = client_inst.env["res.users"].search([("partner_id", "=", partner[0].id)], limit=1)
-        if not user: return False
-        
-        user_id = int(user[0].id)
-        pg_conn = get_pg_connection()
-        if pg_conn:
-            try:
-                cur = pg_conn.cursor()
-                items_json = json.dumps(items)
-                # Guarda en Postgres rapidísimo en vez de saturar a Odoo
-                cur.execute("""
-                    INSERT INTO app_user_carts (user_id, items_json) 
-                    VALUES (%s, %s)
-                    ON CONFLICT (user_id) DO UPDATE SET 
-                    items_json = EXCLUDED.items_json,
-                    updated_at = CURRENT_TIMESTAMP
-                """, (user_id, items_json))
-                pg_conn.commit()
-                cur.close()
-            except Exception as e:
-                pg_conn.rollback()
-                log.error(f"Error guardando carrito local: {e}")
-            finally:
-                pg_conn.close()
-        return True
-
-    try:
-        execute_odoo_operation(_execute_save)
-        return jsonify({"status": "ok"}), 200
-    except Exception as e:
-        log.error(f"❌ Error en /cart/save: {e}")
-        return jsonify({"status": "error", "detail": str(e)}), 200
-
-# =================================================================
 # ENDPOINTS 
 # =================================================================
 @app.route('/crear-pedido', methods=['POST'])
@@ -4237,6 +4190,9 @@ def init_cart_table():
 
 init_cart_table()
 
+# =================================================================
+# FIX XML-RPC LIMITS: GUARDADO DEL CARRITO
+# =================================================================
 @app.route('/cart/save', methods=['POST'])
 def update_cart():
     data = request.json or {}
@@ -4246,32 +4202,32 @@ def update_cart():
     if not cuit: return jsonify({"error": "Falta CUIT"}), 400
 
     def _execute_save(client_inst):
-        user = client_inst.env['res.users'].search([('login', '=', cuit)], limit=1)
+        partner = client_inst.env["res.partner"].search([("vat", "=", cuit)], limit=1)
+        if not partner: return False
+        user = client_inst.env["res.users"].search([("partner_id", "=", partner[0].id)], limit=1)
         if not user: return False
         
-        lines_clean = []
-        
-        for i in items:
+        user_id = int(user[0].id)
+        pg_conn = get_pg_connection()
+        if pg_conn:
             try:
-                raw_pid = i.get('product_id') or i.get('id')
-                
-                # --- USO DEL HELPER SEGURO ---
-                # Si raw_pid es gigante, devuelve None y NO se agrega a la lista
-                pid = _get_variant_id(client_inst, raw_pid)
-                
-                if not pid: continue
-                
-                raw_qty = i.get('quantity') or i.get('product_uom_qty') or 1
-                qty = float(raw_qty)
-
-                lines_clean.append({'product_id': pid, 'qty': qty})
-            except Exception:
-                continue
-
-        if not lines_clean: return True
-
-        if hasattr(client_inst.env, 'app.user.cart'):
-            client_inst.env['app.user.cart'].create_or_update_cart(user[0], lines_clean)
+                cur = pg_conn.cursor()
+                items_json = json.dumps(items)
+                # Guarda en Postgres rapidísimo en vez de saturar a Odoo
+                cur.execute("""
+                    INSERT INTO app_user_carts (user_id, items_json) 
+                    VALUES (%s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET 
+                    items_json = EXCLUDED.items_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """, (user_id, items_json))
+                pg_conn.commit()
+                cur.close()
+            except Exception as e:
+                pg_conn.rollback()
+                log.error(f"Error guardando carrito local: {e}")
+            finally:
+                pg_conn.close()
         return True
 
     try:
@@ -4279,8 +4235,6 @@ def update_cart():
         return jsonify({"status": "ok"}), 200
     except Exception as e:
         log.error(f"❌ Error en /cart/save: {e}")
-        # Retornamos 200 para que la App no muestre error al usuario, 
-        # ya que es un proceso en segundo plano.
         return jsonify({"status": "error", "detail": str(e)}), 200
 
 @app.route('/cart/load', methods=['GET'])
