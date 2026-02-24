@@ -95,8 +95,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     clearCart, 
     consultaResumen, 
     direccionEntrega,
-    transporte,          // Variable vieja
-    transporteAsignado,  // <--- FIX: VARIABLE CORRECTA DE ZUSTAND
+    transporte, 
+    transporteAsignado,
     notas: notasIniciales
   } = useCartStore() as any;
 
@@ -198,22 +198,25 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   };
 
   // =====================================================================
-  // 🚀 FIX: OBTENCIÓN DEL NOMBRE CORRECTO DEL TRANSPORTE
+  // 🚀 FIX: NOMBRE ESTRICTO DEL TRANSPORTE
   // =====================================================================
   const itemsLimpios = Array.isArray(items) ? items.filter((it: any) => {
       const pid = Number(it.product_id);
-      return !isNaN(pid) && pid < 2147483647; // Filtro anti-crash
+      return !isNaN(pid) && pid < 2147483647; 
   }) : [];
 
   const tcSeguro = tipoCambio && tipoCambio > 0 ? tipoCambio : TIPO_CAMBIO_FALLBACK;
   
-  // Extraemos el nombre real priorizando 'transporteAsignado' de Zustand
+  // Extraemos puramente el nombre del transporte elegido en el estado
   const objTransporte = transporteAsignado || transporte;
-  const transporteNombre = typeof objTransporte === 'string' 
-      ? objTransporte 
-      : (objTransporte?.name || objTransporte?.transporte || '');
+  let transporteNombrePuro = '';
+  if (typeof objTransporte === 'string') {
+      transporteNombrePuro = objTransporte;
+  } else if (objTransporte) {
+      transporteNombrePuro = objTransporte.name || objTransporte.transporte || '';
+  }
 
-  const esEnvioADomicilio = envioSeleccionado === 'domicilio' || transporteNombre.toLowerCase().includes('domicilio');
+  const esEnvioADomicilio = envioSeleccionado === 'domicilio' || transporteNombrePuro.toLowerCase().includes('domicilio');
 
   const localBaseSinTransporte = itemsLimpios
     .filter((it: any) => String(it.product_id) !== '4011')
@@ -238,22 +241,23 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       }
   }
 
-  // --- El nombre será ESTRICTAMENTE el seleccionado ---
-  const nombreEnvioCompleto = transporteNombre ? transporteNombre : (esEnvioADomicilio ? 'Envío a Domicilio' : 'Retiro en Sucursal');
+  // Si hay un nombre puro (ej: "Andreani"), se usa ese. Sino, un texto por defecto según el método.
+  const nombreEnvioFinal = transporteNombrePuro ? transporteNombrePuro : (esEnvioADomicilio ? 'Envío a Domicilio' : 'Retiro en Sucursal');
 
   let hasTransportItem = false;
   const itemsProcesados = itemsLimpios.map((it: any) => {
       if (String(it.product_id) === '4011') {
           hasTransportItem = true;
-          return { ...it, price_unit: costoEnvioUSD, name: nombreEnvioCompleto, discount1: 0, discount2: 0, discount3: 0 };
+          return { ...it, price_unit: costoEnvioUSD, name: nombreEnvioFinal, discount1: 0, discount2: 0, discount3: 0 };
       }
       return it;
   });
 
+  // Solo inyectamos el transporte si es Envío y no estaba en la lista.
   if (esEnvioADomicilio && !hasTransportItem && itemsLimpios.length > 0) {
       itemsProcesados.push({
           product_id: 4011,
-          name: nombreEnvioCompleto,
+          name: nombreEnvioFinal,
           default_code: 'FLETE',
           qty: 1,
           product_uom_qty: 1,
@@ -283,7 +287,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
               product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
               price_unit: it.price_unit,
               payment_term_id: it.payment_term_id,
-              name: it.name, // Odoo recibe "Andreani"
+              name: it.name, // Odoo recibe estrictamente el nombre configurado arriba
               discount1: it.discount1 || 0,
               discount2: it.discount2 || 0,
               discount3: it.discount3 || 0
@@ -292,7 +296,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   };
 
   // =====================================================================
-  // EFECTO: SINCRONIZACIÓN AUTOMÁTICA EN SEGUNDO PLANO
+  // 🚀 FIX: DEBOUNCE A 1 SEGUNDO (Evita que Odoo bloquee el borrador)
   // =====================================================================
   useEffect(() => {
     if (!draftOrderId || itemsProcesados.length === 0) return;
@@ -311,16 +315,15 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                 });
             }
         } catch (error) {
-            console.log("Error sincronizando totales:", error);
+            console.log("Error sincronizando totales en background:", error);
         } finally {
             setIsSyncingTotals(false);
         }
-    }, 600); 
+    }, 1000); // 1000ms es el tiempo perfecto para asegurar que el server XML-RPC está liberado.
 
     return () => clearTimeout(timeoutId);
-  }, [items, draftOrderId, costoEnvioUSD, transporteNombre]); 
+  }, [items, draftOrderId, costoEnvioUSD, nombreEnvioFinal]); 
 
-  // Matemática provisoria
   const localBase = localBaseSinTransporte + costoEnvioUSD;
   const localTax = localBase * 0.21;
   const localTotal = localBase + localTax;
@@ -403,7 +406,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             <View style={styles.row}><Text style={styles.label}>Pago:</Text><Text style={styles.value}>{getPlazoTexto(plazoSeleccionado)}</Text></View>
             <View style={styles.row}><Text style={styles.label}>Envío:</Text><Text style={styles.value}>{direccionEntrega ? `${direccionEntrega.street || ''}, ${direccionEntrega.city || ''}` : getEnvioTexto(envioSeleccionado)}</Text></View>
             {transporte && (
-                <View style={styles.row}><Text style={styles.label}>Transporte:</Text><Text style={styles.value}>{transporteNombre}</Text></View>
+                <View style={styles.row}><Text style={styles.label}>Transporte:</Text><Text style={styles.value}>{nombreEnvioFinal}</Text></View>
             )}
             <View style={[styles.row, { marginBottom: 0 }]}><Text style={styles.label}>Fecha:</Text><Text style={styles.value}>{formatFecha()}</Text></View>
         </ShapedCard>
@@ -421,6 +424,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             {itemsProcesados.map((it: any, index: number) => {
               const isTransport = String(it.product_id) === '4011';
               
+              // 🚀 FIX APP UI: En la tabla mostramos exactamente el nombre del transporte.
               const referral = isTransport ? it.name : (it.default_code || it.name || 'SIN REF');
               
               const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);

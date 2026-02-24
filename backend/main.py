@@ -2063,13 +2063,20 @@ def editar_perfil():
 # =================================================================
 # LÓGICA MAESTRA PARA CREAR / ACTUALIZAR PEDIDOS
 # =================================================================
+def clean_int(val):
+    try:
+        v = int(val)
+        return v if v > 0 else False
+    except:
+        return False
+
 def _upsert_order_logic(client, data):
-    order_id_to_update  = data.get('order_id_to_update') or data.get('order_id') or data.get('pedido_id')
+    order_id_to_update  = clean_int(data.get('order_id_to_update') or data.get('order_id') or data.get('pedido_id'))
     cliente_cuit        = data.get('cliente_cuit') or data.get('partner_vat')
     items               = data.get('items', [])
-    global_term_id      = data.get('payment_term_id')
-    partner_shipping_id = data.get('partner_shipping_id')
-    carrier_id          = data.get('carrier_id')
+    global_term_id      = clean_int(data.get('payment_term_id'))
+    partner_shipping_id = clean_int(data.get('partner_shipping_id'))
+    carrier_id          = clean_int(data.get('carrier_id'))
 
     nota_cliente    = data.get('note') or data.get('nota') or ""
     obs_internas    = data.get('observaciones') or data.get('internal_note')
@@ -2085,9 +2092,10 @@ def _upsert_order_logic(client, data):
     pricelist_id = cliente.property_product_pricelist.id if cliente.property_product_pricelist else None
 
     term_ids_to_fetch = set()
-    if global_term_id: term_ids_to_fetch.add(int(global_term_id))
+    if global_term_id: term_ids_to_fetch.add(global_term_id)
     for it in items:
-        if it.get('payment_term_id'): term_ids_to_fetch.add(int(it.get('payment_term_id')))
+        it_term = clean_int(it.get('payment_term_id'))
+        if it_term: term_ids_to_fetch.add(it_term)
 
     terms_map = {}
     try:
@@ -2113,9 +2121,9 @@ def _upsert_order_logic(client, data):
 
     for it in items:
         try:
-            raw_id = int(it.get('product_id'))
+            raw_id = clean_int(it.get('product_id'))
+            if not raw_id: continue
             
-            # --- FIX: EL MISTERIO DEL TRANSPORTE Y LOS PRODUCTOS CRUZADOS ---
             if str(raw_id) == '4011':
                 pp = client.env['product.product'].search([('default_code', '=', 'FLETE')], limit=1)
                 if not pp:
@@ -2125,9 +2133,7 @@ def _upsert_order_logic(client, data):
                 if not pp:
                     pp = client.env['product.product'].search([('id', '=', raw_id)], limit=1)
                 
-            if not pp:
-                log.warning(f"Producto ignorado, no se encontró en Odoo: {raw_id}")
-                continue
+            if not pp: continue
                 
             variant_id = int(pp[0].id)
             if variant_id in vistos: continue 
@@ -2136,7 +2142,7 @@ def _upsert_order_logic(client, data):
             qty = float(it.get('qty') or it.get('product_uom_qty') or it.get('quantity') or 1)
             price = float(it.get('price_unit', 0))
             name = it.get('name')
-            item_term_id = int(it.get('payment_term_id') or global_term_id or 0)
+            item_term_id = clean_int(it.get('payment_term_id')) or global_term_id or 0
 
             d1 = float(it.get('discount1', 0) or 0.0)
             d2 = float(it.get('discount2', 0) or 0.0)
@@ -2162,9 +2168,7 @@ def _upsert_order_logic(client, data):
             if group_key not in groups: groups[group_key] = []
             groups[group_key].append(line_vals)
 
-        except Exception as e_item:
-            log.warning(f"Error procesando item: {e_item}")
-            continue
+        except Exception: continue
 
     if not groups:
         return jsonify({"error": "No hay productos válidos.", "code": "EMPTY_LINES"}), 400
@@ -2180,35 +2184,24 @@ def _upsert_order_logic(client, data):
         order_lines_cmd.append((0, 0, {'display_type': 'line_section', 'name': str(title)}))
         for l in lines: order_lines_cmd.append((0, 0, l))
 
-    ship_id = None
-    try:
-        if partner_shipping_id and str(partner_shipping_id).isdigit():
-            ship_id = int(partner_shipping_id)
-    except: pass
-
-    # --- FIX CRÍTICO 500: SEPARAR EL BORRADO Y LA CREACIÓN ---
+    # 🚀 FIX 500 ERROR: UNIFIED WRITE COMMAND FOR ODOO
     try:
         order_obj = None
 
         if order_id_to_update:
             try:
-                existing = client.env['sale.order'].search([('id', '=', int(order_id_to_update))])
+                existing = client.env['sale.order'].search([('id', '=', order_id_to_update)])
                 if existing:
-                    # 1. Borramos líneas limpiamente
-                    existing.write({'order_line': [(5, 0, 0)]})
-                    
-                    # 2. Preparamos datos nuevos
                     update_vals = {
-                        'order_line': order_lines_cmd,
+                        # Odoo 14 permite eliminar y recrear en el mismo array sin generar locks
+                        'order_line': [(5, 0, 0)] + order_lines_cmd,
                         'note': str(nota_cliente),
                         'client_order_ref': str(ref_cliente)
                     }
-                    if global_term_id: update_vals['payment_term_id'] = int(global_term_id)
-                    try:
-                        if carrier_id and str(carrier_id).isdigit(): update_vals['carrier_id'] = int(carrier_id)
-                    except: pass
+                    if global_term_id: update_vals['payment_term_id'] = global_term_id
+                    if carrier_id: update_vals['carrier_id'] = carrier_id
+                    if partner_shipping_id: update_vals['partner_shipping_id'] = partner_shipping_id
                     
-                    # 3. Insertamos
                     existing.write(update_vals)
                     order_obj = existing[0]
             except Exception as e_upd:
@@ -2219,19 +2212,17 @@ def _upsert_order_logic(client, data):
             vals = {
                 "partner_id": int(cliente.id),
                 "partner_invoice_id": int(cliente.id),
-                "partner_shipping_id": ship_id if ship_id else int(cliente.id),
-                "payment_term_id": int(global_term_id) if global_term_id else False,
+                "partner_shipping_id": partner_shipping_id if partner_shipping_id else int(cliente.id),
+                "payment_term_id": global_term_id if global_term_id else False,
                 "origin": "APP SALBOM",
                 "note": str(nota_cliente),
                 "client_order_ref": str(ref_cliente),
                 "order_line": order_lines_cmd
             }
-            try:
-                if carrier_id and str(carrier_id).isdigit(): vals["carrier_id"] = int(carrier_id)
-            except: pass
+            if carrier_id: vals["carrier_id"] = carrier_id
             order_obj = client.env['sale.order'].create(vals)
 
-        # Odoo calcula IVA + IIBB solo (Sin el error de recursividad)
+        # Odoo calcula impuestos y totales nativamente
         try: order_obj._amount_all()
         except: pass
 
