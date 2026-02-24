@@ -2080,13 +2080,12 @@ def _upsert_order_logic(client, data):
     if not cliente_cuit: return jsonify({"error": "Falta cliente_cuit"}), 400
     if not items: return jsonify({"error": "El pedido no tiene items"}), 400
 
-    # 2. Buscar cliente y Posición Fiscal (CLAVE PARA IMPUESTOS Y IIBB)
+    # 2. Buscar cliente
     cliente = client.env['res.partner'].search([('vat', '=', cliente_cuit)], limit=1)
     if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
     cliente = cliente[0]
 
     pricelist_id = cliente.property_product_pricelist.id if cliente.property_product_pricelist else None
-    fpos = cliente.property_account_position_id # Posición fiscal para IIBB / Percepciones
 
     # 3. Nombres de Plazos de Pago
     term_ids_to_fetch = set()
@@ -2114,7 +2113,7 @@ def _upsert_order_logic(client, data):
         except Exception: pass
         finally: pg_conn.close()
 
-    # 5. Agrupar Items y Calcular Impuestos Individuales ANTES de guardar
+    # 5. Agrupar Items (Con protección y búsqueda correcta por Template)
     groups = {}
     vistos = set()
 
@@ -2122,10 +2121,8 @@ def _upsert_order_logic(client, data):
         try:
             raw_id = int(it.get('product_id'))
             
-            # =================================================================
-            # 🚀 FIX GARRAFAL: NO CRUZAR PRODUCTOS (Buscar siempre por Template)
-            # Excepción especial para el Transporte (4011)
-            # =================================================================
+            # 🚀 FIX GARRAFAL: BUSCAMOS SIEMPRE POR TEMPLATE (Para no cruzar productos)
+            # Y le damos una vía rápida al Transporte (4011)
             if str(raw_id) == '4011':
                 pp = client.env['product.product'].search([('default_code', '=', 'FLETE')], limit=1)
                 if not pp:
@@ -2136,7 +2133,7 @@ def _upsert_order_logic(client, data):
                     pp = client.env['product.product'].search([('id', '=', raw_id)], limit=1)
                 
             if not pp:
-                log.warning(f"Producto ignorado, no se encontró en Odoo: {raw_id}")
+                log.warning(f"Producto ignorado, no se encontró: {raw_id}")
                 continue
                 
             variant_id = int(pp[0].id)
@@ -2153,14 +2150,6 @@ def _upsert_order_logic(client, data):
             d3 = float(it.get('discount3', 0) or 0.0)
             discount_eq = 100.0 * (1.0 - (1.0 - d1/100.0)*(1.0 - d2/100.0)*(1.0 - d3/100.0))
 
-            # 🚀 FIX IMPUESTOS: Calculamos los impuestos ANTES para no hacer bucles después
-            product_taxes = pp[0].taxes_id
-            if fpos:
-                taxes = fpos.map_tax(product_taxes)
-            else:
-                taxes = product_taxes
-            tax_ids = [int(t.id) for t in taxes] if taxes else []
-
             try:
                 var_data = client.env['product.product'].read([variant_id], ['default_code'])[0]
                 sku = str(var_data.get('default_code') or "").strip()
@@ -2171,8 +2160,8 @@ def _upsert_order_logic(client, data):
                 "product_uom_qty": qty,
                 "price_unit": price,
                 "discount": float(round(discount_eq, 4)),
-                "tax_id": [(6, 0, tax_ids)] # <--- Impuestos exactos ya inyectados
             }
+            # EL NOMBRE DEL TRANSPORTE INGRESA ACÁ
             if name: line_vals["name"] = str(name)
 
             is_offer = sku in offer_skus
@@ -2200,29 +2189,13 @@ def _upsert_order_logic(client, data):
         order_lines_cmd.append((0, 0, {'display_type': 'line_section', 'name': str(title)}))
         for l in lines: order_lines_cmd.append((0, 0, l))
 
-    # 7. Valores base del pedido
     ship_id = None
     try:
         if partner_shipping_id and str(partner_shipping_id).isdigit():
             ship_id = int(partner_shipping_id)
     except: pass
 
-    vals = {
-        "partner_id": int(cliente.id),
-        "partner_invoice_id": int(cliente.id),
-        "partner_shipping_id": ship_id if ship_id else int(cliente.id),
-        "payment_term_id": int(global_term_id) if global_term_id else False,
-        "origin": "APP SALBOM",
-        "note": str(nota_cliente),
-        "client_order_ref": str(ref_cliente),
-    }
-    if pricelist_id: vals["pricelist_id"] = int(pricelist_id)
-    try:
-        if carrier_id and str(carrier_id).isdigit():
-            vals["carrier_id"] = int(carrier_id)
-    except: pass
-
-    # 8. Guardar en Odoo (Rápido y Seguro en un solo paso)
+    # 7. Guardar en Odoo (Actualización 100% segura y limpia)
     try:
         order_obj = None
 
@@ -2230,26 +2203,48 @@ def _upsert_order_logic(client, data):
             try:
                 existing = client.env['sale.order'].search([('id', '=', int(order_id_to_update))])
                 if existing:
-                    # En un solo movimiento, borra lo viejo e inserta lo nuevo
-                    vals['order_line'] = [(5, 0, 0)] + order_lines_cmd
-                    existing.write(vals)
+                    # En vez de recrear, limpiamos e insertamos en la misma orden
+                    update_vals = {
+                        'order_line': [(5, 0, 0)] + order_lines_cmd,
+                        'note': str(nota_cliente),
+                        'client_order_ref': str(ref_cliente)
+                    }
+                    if global_term_id: update_vals['payment_term_id'] = int(global_term_id)
+                    try:
+                        if carrier_id and str(carrier_id).isdigit(): update_vals['carrier_id'] = int(carrier_id)
+                    except: pass
+                    
+                    existing.write(update_vals)
                     order_obj = existing[0]
-            except Exception: pass
+            except Exception as e_upd:
+                log.error(f"Fallo actualización orden {order_id_to_update}: {e_upd}")
+                raise e_upd
 
         if not order_obj:
-            vals['order_line'] = order_lines_cmd
+            vals = {
+                "partner_id": int(cliente.id),
+                "partner_invoice_id": int(cliente.id),
+                "partner_shipping_id": ship_id if ship_id else int(cliente.id),
+                "payment_term_id": int(global_term_id) if global_term_id else False,
+                "origin": "APP SALBOM",
+                "note": str(nota_cliente),
+                "client_order_ref": str(ref_cliente),
+                "order_line": order_lines_cmd
+            }
+            try:
+                if carrier_id and str(carrier_id).isdigit(): vals["carrier_id"] = int(carrier_id)
+            except: pass
             order_obj = client.env['sale.order'].create(vals)
 
-        # Refrescar totales matemáticos
+        # 🚀 ODOO SE ENCARGA DE LOS IMPUESTOS: Solo pedimos que haga el cálculo final
         try: order_obj._amount_all()
         except: pass
 
-        # Nota Interna
         if obs_internas:
-            try: order_obj.message_post(body=f"📝 <b>Observación interna (App):</b><br/>{obs_internas}", message_type='comment', subtype_xmlid='mail.mt_note')
-            except Exception: pass
+            try: order_obj.message_post(body=f"📝 <b>Observación interna:</b><br/>{obs_internas}", message_type='comment', subtype_xmlid='mail.mt_note')
+            except: pass
 
-        # 9. Formatear Respuesta Exacta 
+        # 8. Formatear Respuesta Exacta 
         nro_pedido = f"Pedido #{order_obj.id}"
         total, base, impuestos = 0.0, 0.0, 0.0
         currency = "USD"

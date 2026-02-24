@@ -201,7 +201,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   // =====================================================================
   const itemsLimpios = Array.isArray(items) ? items.filter((it: any) => {
       const pid = Number(it.product_id);
-      return !isNaN(pid) && pid < 2147483647; // Filtro anti-crash vital
+      return !isNaN(pid) && pid < 2147483647; // Filtro anti-crash
   }) : [];
 
   const tcSeguro = tipoCambio && tipoCambio > 0 ? tipoCambio : TIPO_CAMBIO_FALLBACK;
@@ -231,7 +231,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       }
   }
 
-  // --- FIX: MOSTRAMOS ESTRICTAMENTE EL NOMBRE DEL TRANSPORTE ---
+  // 🚀 FIX NOMBRE: Muestra estrictamente el nombre del transporte (Ej: "Andreani")
   const nombreEnvioCompleto = transporteNombre ? transporteNombre : (esEnvioADomicilio ? 'Envío a Domicilio' : 'Retiro en Sucursal');
 
   let hasTransportItem = false;
@@ -256,7 +256,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       });
   }
 
-  // Generador de Payload Único (Para no repetir código y asegurar que todo viaja igual)
+  // Payload Único
   const buildPayload = async () => {
       const cuitUser = await getCuitFromStorage();
       const v_name = loggedUserName || 'Vendedor App';
@@ -277,7 +277,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
               product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
               price_unit: it.price_unit,
               payment_term_id: it.payment_term_id,
-              name: it.name, // Nombre exacto del transporte
+              name: it.name, 
               discount1: it.discount1 || 0,
               discount2: it.discount2 || 0,
               discount3: it.discount3 || 0
@@ -286,7 +286,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   };
 
   // =====================================================================
-  // EFECTO: SINCRONIZACIÓN AUTOMÁTICA EN SEGUNDO PLANO SIN CRASHES
+  // EFECTO: SINCRONIZACIÓN AUTOMÁTICA EN SEGUNDO PLANO
   // =====================================================================
   useEffect(() => {
     if (!draftOrderId || itemsProcesados.length === 0) return;
@@ -296,25 +296,36 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         try {
             const payload = await buildPayload();
             const resp = await axios.post(`${API_URL}/actualizar-pedido`, payload);
+            
             if (resp.data && resp.data.total) {
                 setLiveTotals({
                     base: toNumber(resp.data.base_imponible),
                     tax: toNumber(resp.data.impuestos),
                     total: toNumber(resp.data.total)
                 });
+                
+                // 🚀 FIX IDENTIFICADOR: Aseguramos que la App rastree el ID correcto si Odoo lo actualizó
+                if (resp.data.pedido_id && resp.data.pedido_id !== draftOrderId) {
+                    useCartStore.setState({
+                        consultaResumen: {
+                            ...consultaResumen,
+                            pedido_id: resp.data.pedido_id,
+                            nro_pedido: resp.data.nro_pedido,
+                        }
+                    });
+                }
             }
         } catch (error) {
             console.log("Error sincronizando totales:", error);
         } finally {
             setIsSyncingTotals(false);
         }
-    }, 600); // Debounce de 600ms para asegurar envío único y estable
+    }, 600); 
 
     return () => clearTimeout(timeoutId);
-    // NOTA: Retiré observationText para que no le hable a Odoo por cada letra que tipeas.
   }, [items, draftOrderId, costoEnvioUSD, transporteNombre]); 
 
-  // Matemática provisoria 
+  // Matemática provisoria
   const localBase = localBaseSinTransporte + costoEnvioUSD;
   const localTax = localBase * 0.21;
   const localTotal = localBase + localTax;
@@ -415,7 +426,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             {itemsProcesados.map((it: any, index: number) => {
               const isTransport = String(it.product_id) === '4011';
               
-              // --- APP MUESTRA DIRECTAMENTE EL NOMBRE DEL TRANSPORTE ---
+              // 🚀 FIX: Mostramos puramente el nombre del transporte que viaja al backend
               const referral = isTransport ? it.name : (it.default_code || it.name || 'SIN REF');
               
               const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
