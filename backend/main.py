@@ -2702,19 +2702,19 @@ def clientes_del_vendedor():
         # 1. Identificar al usuario en Odoo
         partner = client.env["res.partner"].search([("vat", "=", cuit)], limit=1)
         if not partner:
-            return jsonify({"items": [], "is_admin": False}) # Devolver vacío en lugar de error 404 para evitar que el front se rompa
+            return jsonify({"items": [], "is_admin": False}) 
         
-        user = client.env["res.users"].search([("partner_id", "=", partner.id)], limit=1)
+        user = client.env["res.users"].search([("partner_id", "=", partner[0].id)], limit=1)
         
-        # 2. Verificar Rol con Manejo de Errores (Evita el error HTML <)
+        # 2. Verificar Rol (CORREGIDO: Ahora lee de la tabla 'app_users' mediante el CUIT)
         is_admin = False
         try:
             pg_conn = get_pg_connection()
-            if pg_conn and user:
+            if pg_conn:
                 cur = pg_conn.cursor()
-                cur.execute("SELECT role_name FROM app_user_roles WHERE user_id = %s", (user.id,))
+                cur.execute("SELECT role FROM app_users WHERE cuit = %s", (cuit,))
                 row = cur.fetchone()
-                if row and row[0].upper() == 'ADMIN':
+                if row and row[0] and row[0].upper() == 'ADMIN':
                     is_admin = True
                 cur.close()
         except Exception as pg_e:
@@ -2723,14 +2723,15 @@ def clientes_del_vendedor():
             if pg_conn: pg_conn.close()
 
         # 3. Definir Dominio de Búsqueda
-        # Si no hay usuario (caso raro) o no es admin, filtramos por su ID.
         if is_admin:
-            domain = [("customer_rank", ">", 0)]
+            # Si es admin, ve toda la cartera activa
+            domain = [("customer_rank", ">", 0), ("active", "=", True)]
         else:
-            user_id = user.id if user else 0
-            domain = [("user_id", "=", user_id), ("customer_rank", ">", 0)]
+            # Si es vendedor, solo ve sus clientes asignados
+            user_id = user[0].id if user else 0
+            domain = [("user_id", "=", user_id), ("customer_rank", ">", 0), ("active", "=", True)]
 
-        # Agregamos filtro de búsqueda si existe
+        # Filtro de búsqueda por texto
         if q:
             domain += ["|", ("name", "ilike", q), ("vat", "ilike", q)]
 
@@ -2738,7 +2739,7 @@ def clientes_del_vendedor():
         clientes_raw = client.env["res.partner"].search_read(
             domain,
             ["id", "name", "vat", "street", "city", "state_id", "zip"],
-            limit=1000, # Límite razonable para evitar timeout
+            limit=2500, # Ampliado para soportar toda la base
             order="name asc"
         )
 
