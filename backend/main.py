@@ -2706,7 +2706,7 @@ def clientes_del_vendedor():
         
         user = client.env["res.users"].search([("partner_id", "=", partner[0].id)], limit=1)
         
-        # 2. Verificar Rol (CORREGIDO: Ahora lee de la tabla 'app_users' mediante el CUIT)
+        # 2. Verificar Rol (Tabla 'app_users' mediante CUIT)
         is_admin = False
         try:
             pg_conn = get_pg_connection()
@@ -2722,14 +2722,12 @@ def clientes_del_vendedor():
         finally:
             if pg_conn: pg_conn.close()
 
-        # 3. Definir Dominio de Búsqueda
+        # 3. Definir Dominio de Búsqueda (¡CORREGIDO PARA FILTRAR TIPO CONTACTO!)
         if is_admin:
-            # Si es admin, ve toda la cartera activa
-            domain = [("customer_rank", ">", 0), ("active", "=", True)]
+            domain = [("customer_rank", ">", 0), ("active", "=", True), ("type", "=", "contact")]
         else:
-            # Si es vendedor, solo ve sus clientes asignados
             user_id = user[0].id if user else 0
-            domain = [("user_id", "=", user_id), ("customer_rank", ">", 0), ("active", "=", True)]
+            domain = [("user_id", "=", user_id), ("customer_rank", ">", 0), ("active", "=", True), ("type", "=", "contact")]
 
         # Filtro de búsqueda por texto
         if q:
@@ -2739,7 +2737,7 @@ def clientes_del_vendedor():
         clientes_raw = client.env["res.partner"].search_read(
             domain,
             ["id", "name", "vat", "street", "city", "state_id", "zip"],
-            limit=2500, # Ampliado para soportar toda la base
+            limit=2500,
             order="name asc"
         )
 
