@@ -1914,41 +1914,52 @@ def calcular_descuentos():
 def get_clients():
     cuit_solicitante = request.args.get('cuit')
     
-    # 1. Obtener Datos Locales
+    # 1. Obtener Datos Locales (Rol desde Postgres)
     conn = get_pg_connection()
     rol = "VENDEDOR"
-    user_odoo_id = None
     if conn:
         try:
             cur = conn.cursor(cursor_factory=RealDictCursor)
-            cur.execute("SELECT role, id FROM app_users WHERE cuit = %s", (cuit_solicitante,))
+            cur.execute("SELECT role FROM app_users WHERE cuit = %s", (cuit_solicitante,))
             ud = cur.fetchone()
-            if ud:
-                rol = ud['role']
-                user_odoo_id = ud['id']
-        except: pass
-        finally: conn.close()
+            if ud and ud.get('role'):
+                rol = str(ud['role']).upper() # Normalizamos a mayúsculas (Admin -> ADMIN)
+        except Exception as e:
+            log.error(f"Error consultando rol en /clients: {e}")
+        finally: 
+            conn.close()
 
     # 2. Lógica Odoo con REINTENTO AUTOMÁTICO
     def _fetch_clients(client_inst):
-        domain = [('active', '=', True)]
-        es_super_admin = (user_odoo_id in [1, 2])
+        # Exigimos que estén activos y sean clientes reales
+        domain = [('active', '=', True), ('customer_rank', '>', 0)]
         
-        if rol == 'ADMIN' or es_super_admin:
-            # Admin ve todo
+        if rol == 'ADMIN':
+            # Admin ve absolutamente todos los clientes (No agregamos filtros de user_id)
             pass 
         else:
-            # Vendedor ve asignados o a sí mismo
-            user_filter = ['|', ('user_id', '=', user_odoo_id)]
-            if cuit_solicitante: user_filter.append(('vat', '=', cuit_solicitante))
-            
-            if len(user_filter) > 1: domain.extend(user_filter)
-            else: domain.append(('user_id', '=', user_odoo_id))
+            # Vendedor ve solo sus asignados (hay que buscar su ID real de vendedor en Odoo)
+            user_odoo_id = False
+            if cuit_solicitante:
+                partner = client_inst.env["res.partner"].search([("vat", "=", cuit_solicitante)], limit=1)
+                if partner:
+                    user_odoo = client_inst.env["res.users"].search([("partner_id", "=", partner[0].id)], limit=1)
+                    if user_odoo:
+                        user_odoo_id = user_odoo[0].id
+
+            if user_odoo_id:
+                # O es su cliente asignado, o es él mismo (su propio CUIT)
+                domain += ['|', ('user_id', '=', user_odoo_id), ('vat', '=', cuit_solicitante)]
+            else:
+                # Si no tiene cuenta de vendedor en Odoo, solo ve su propio registro
+                if cuit_solicitante:
+                    domain.append(('vat', '=', cuit_solicitante))
 
         return client_inst.env['res.partner'].search_read(
             domain=domain,
             fields=['id', 'name', 'vat', 'street', 'city', 'state_id', 'zip', 'email'],
-            limit=2500
+            limit=2500,
+            order="name asc"
         )
 
     client = get_odoo_client()
@@ -1961,7 +1972,7 @@ def get_clients():
         if "Request-sent" in error_msg or "Idle" in error_msg or "CannotSendRequest" in error_msg:
             log.warning(f"⚠️ Conexión trabada en /clients. Reintentando... ({error_msg})")
             try:
-                release_odoo_client(client)
+                release_odoo_client(client, destroy=True)
                 client = get_odoo_client()
                 data = _fetch_clients(client) # Reintentar
                 log.info("✅ Reintento exitoso en /clients")

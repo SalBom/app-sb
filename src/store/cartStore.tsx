@@ -76,7 +76,9 @@ type CartState = {
   plazoSeleccionado: PlazoSel | null;
   envioSeleccionado: MetodoEnvio | null;
   direccionEntrega: DireccionEntrega | null;
+  transporte: any | null;         // Agregado: Objeto completo de transporte (id, name, etc.)
   transporteAsignado: string | null;
+  notas: string | null;           // Agregado: Notas/Observaciones del pedido
   consultaResumen: ConsultaResumen | null;
   orderId: number | null;
 
@@ -96,6 +98,8 @@ type CartState = {
   setConsultaResumen: (r: ConsultaResumen | null) => void;
   setOrderId: (id: number | null) => void;
   setTransporte: (nombre: string | null) => void;
+  setTransporteObj: (t: any | null) => void;   // Agregado: Setter para el objeto transporte
+  setNotas: (n: string | null) => void;        // Agregado: Setter para las notas
   addOrUpdateTransporteItem: (label?: string, priceUSD?: number) => void;
   removeTransporteItem: () => void;
 };
@@ -106,7 +110,9 @@ export const useCartStore = create<CartState>((set, get) => ({
   plazoSeleccionado: null,
   envioSeleccionado: null,
   direccionEntrega: null,
+  transporte: null,         // Inicializado
   transporteAsignado: null,
+  notas: null,              // Inicializado
   consultaResumen: null,
   orderId: null,
 
@@ -207,7 +213,9 @@ export const useCartStore = create<CartState>((set, get) => ({
         plazoSeleccionado: null, 
         envioSeleccionado: null, 
         direccionEntrega: null, 
+        transporte: null,         // 🚀 FIX: Ahora limpiamos el objeto de transporte
         transporteAsignado: null, 
+        notas: null,              // 🚀 FIX: Ahora limpiamos las notas del pedido
         consultaResumen: null, 
         orderId: null 
       });
@@ -226,6 +234,10 @@ export const useCartStore = create<CartState>((set, get) => ({
   setConsultaResumen: (r) => set({ consultaResumen: r }),
   setOrderId: (id) => set({ orderId: id }),
   setTransporte: (nombre) => set({ transporteAsignado: nombre }),
+  
+  // 🚀 FIX: Setters añadidos para las variables que usa PasoConfirmacion
+  setTransporteObj: (t) => set({ transporte: t }),
+  setNotas: (n) => set({ notas: n }),
 
   addOrUpdateTransporteItem: (label = 'ENVÍO A DOMICILIO', priceUSD = 0) =>
     set((state) => {

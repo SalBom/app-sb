@@ -198,7 +198,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   };
 
   // =====================================================================
-  // 🚀 FIX: NOMBRE ESTRICTO DEL TRANSPORTE
+  // OBTENCIÓN Y LIMPIEZA DEL TRANSPORTE
   // =====================================================================
   const itemsLimpios = Array.isArray(items) ? items.filter((it: any) => {
       const pid = Number(it.product_id);
@@ -241,7 +241,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       }
   }
 
-  // Si hay un nombre puro (ej: "Andreani"), se usa ese. Sino, un texto por defecto según el método.
   const nombreEnvioFinal = transporteNombrePuro ? transporteNombrePuro : (esEnvioADomicilio ? 'Envío a Domicilio' : 'Retiro en Sucursal');
 
   let hasTransportItem = false;
@@ -253,7 +252,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       return it;
   });
 
-  // Solo inyectamos el transporte si es Envío y no estaba en la lista.
   if (esEnvioADomicilio && !hasTransportItem && itemsLimpios.length > 0) {
       itemsProcesados.push({
           product_id: 4011,
@@ -277,17 +275,18 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           partner_shipping_id: direccionEntrega?.id || null,
           carrier_id: transporte?.id || null,
           created_by_name: v_name,
+          // 🚀 FIX: Inyectar el nombre del transporte en las observaciones
           note: observationText,
           observaciones: observationText 
-                ? `Cargado por: ${v_name}\n\nObservaciones del cliente: ${observationText}` 
-                : `Cargado por: ${v_name}`,
+                ? `Cargado por: ${v_name}\nTransporte: ${transporteNombrePuro || nombreEnvioFinal}\n\nObservaciones del cliente: ${observationText}` 
+                : `Cargado por: ${v_name}\nTransporte: ${transporteNombrePuro || nombreEnvioFinal}`,
           items: itemsProcesados.map((it: any) => ({
               product_id: it.product_id,
               qty: it.product_uom_qty || it.qty || it.quantity || 1,
               product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
               price_unit: it.price_unit,
               payment_term_id: it.payment_term_id,
-              name: it.name, // Odoo recibe estrictamente el nombre configurado arriba
+              name: it.name, 
               discount1: it.discount1 || 0,
               discount2: it.discount2 || 0,
               discount3: it.discount3 || 0
@@ -299,14 +298,12 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   // 🚀 FIX: CONSULTA SIMPLE DE TOTALES YA CARGADOS EN ODOO
   // =====================================================================
   useEffect(() => {
-    // Si no hay ID de pedido en el sistema, no hacemos nada
     if (!draftOrderId) return;
     
-    setIsSyncingTotals(true); // Ponemos la app en espera ("Calculando...")
+    setIsSyncingTotals(true);
     
     const fetchTotals = async () => {
         try {
-            // Usamos el nuevo endpoint GET que solo lee datos, no escribe ni recalcula
             const resp = await axios.get(`${API_URL}/pedido/${draftOrderId}/totales`);
             
             if (resp.data) {
@@ -319,12 +316,12 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         } catch (error) {
             console.log("Error consultando totales del pedido:", error);
         } finally {
-            setIsSyncingTotals(false); // Sacamos el loading cuando ya tenemos la info
+            setIsSyncingTotals(false);
         }
     };
     
     fetchTotals();
-  }, [draftOrderId]); // Solo dependerá del ID del pedido, no de los items
+  }, [draftOrderId]); 
 
   const localBase = localBaseSinTransporte + costoEnvioUSD;
   const localTax = localBase * 0.21;
@@ -407,9 +404,15 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             <View style={styles.row}><Text style={styles.label}>Cliente:</Text><Text style={styles.value}>{getClienteTexto(clienteSeleccionado)}</Text></View>
             <View style={styles.row}><Text style={styles.label}>Pago:</Text><Text style={styles.value}>{getPlazoTexto(plazoSeleccionado)}</Text></View>
             <View style={styles.row}><Text style={styles.label}>Envío:</Text><Text style={styles.value}>{direccionEntrega ? `${direccionEntrega.street || ''}, ${direccionEntrega.city || ''}` : getEnvioTexto(envioSeleccionado)}</Text></View>
-            {transporte && (
-                <View style={styles.row}><Text style={styles.label}>Transporte:</Text><Text style={styles.value}>{nombreEnvioFinal}</Text></View>
+            
+            {/* 🚀 FIX: VISIBILIDAD DE TRANSPORTE EN APP */}
+            {transporteNombrePuro !== '' && (
+                <View style={styles.row}>
+                    <Text style={styles.label}>Transporte:</Text>
+                    <Text style={styles.value}>{transporteNombrePuro}</Text>
+                </View>
             )}
+            
             <View style={[styles.row, { marginBottom: 0 }]}><Text style={styles.label}>Fecha:</Text><Text style={styles.value}>{formatFecha()}</Text></View>
         </ShapedCard>
 
@@ -426,7 +429,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             {itemsProcesados.map((it: any, index: number) => {
               const isTransport = String(it.product_id) === '4011';
               
-              // 🚀 FIX APP UI: En la tabla mostramos exactamente el nombre del transporte.
               const referral = isTransport ? it.name : (it.default_code || it.name || 'SIN REF');
               
               const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
