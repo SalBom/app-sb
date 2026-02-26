@@ -2262,6 +2262,30 @@ def _upsert_order_logic(client, data):
             return jsonify({"error": "Un producto ya no está disponible.", "code": "PRODUCT_MISSING"}), 409
         raise e_odoo
 
+@app.route('/pedido/<int:pedido_id>/totales', methods=['GET'])
+def get_pedido_totales(pedido_id):
+    client = get_odoo_client()
+    try:
+        def logic(cli):
+            # Solo leemos los 3 campos necesarios del pedido ya existente
+            orden = cli.env['sale.order'].search_read(
+                [('id', '=', pedido_id)], 
+                ['amount_untaxed', 'amount_tax', 'amount_total']
+            )
+            if not orden:
+                return jsonify({"error": "Pedido no encontrado"}), 404
+            
+            return jsonify({
+                "base_imponible": orden[0].get('amount_untaxed', 0),
+                "impuestos": orden[0].get('amount_tax', 0),
+                "total": orden[0].get('amount_total', 0)
+            })
+            
+        return execute_odoo_operation(logic)
+    except Exception as e:
+        log.error(f"❌ Error leyendo totales del pedido {pedido_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
 # =================================================================
 # ENDPOINTS 
 # =================================================================

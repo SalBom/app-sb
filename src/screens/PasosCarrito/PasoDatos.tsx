@@ -11,10 +11,10 @@ import CarritoHeader from '../../components/CarritoHeader';
 import { useCartStore } from '../../store/cartStore';
 import LayoutRefresh from '../../components/LayoutRefresh'; 
 
-// SVGs
 import PlaceIcon from '../../../assets/place.svg';
 import RetiroIcon from '../../../assets/retiro.svg';
 import { Ionicons } from '@expo/vector-icons';
+import { API_URL } from '../../config';
 
 interface Props { onNext: () => void; onBack: () => void; }
 type Cliente = { id: number; name: string; vat?: string | null; street?: string; city?: string; state?: string; zip?: string; is_self?: boolean; };
@@ -31,11 +31,10 @@ const ENVIO_RATIO = E_W / E_H;
 const BG_DIRECCION = require('../../../assets/contenedorDireccion.png');
 
 const SIDE_MARGIN = 10;
-const CARD_HSCALE = 1.45; // <--- Aumentado para más espacio
+const CARD_HSCALE = 1.45; 
 const ENV_CARD_HSCALE = 1.18;
 const PICKER_HEIGHT = 46;
 const PICKER_RADIUS = 14;
-import { API_URL } from '../../config';
 
 async function safeFetch(url: string) {
   try {
@@ -111,24 +110,14 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
       }
 
       const resTC = await safeFetch(`${API_URL}/tipo-cambio`);
-      setTipoCambio(resTC.ok ? (resTC.data?.inverse_rate || 1290) : 1290);
+      setTipoCambio(resTC.ok ? (resTC.data?.inverse_rate || 1450) : 1450);
 
       const resP = await safeFetch(`${API_URL}/plazos-pago`);
       if (resP.ok) setPlazosData(resP.data || []);
 
       setLoadingClientes(true);
-      
-      // --- CAMBIO CLAVE: Usamos /clients en lugar de /clientes-del-vendedor ---
-      const resCli = await safeFetch(`${API_URL}/clients?cuit=${encodeURIComponent(cuit)}`);
-      
-      // Ajuste para soportar tanto array directo (nuevo endpoint) como objeto (viejo)
-      let rawList = [];
-      if (resCli.ok) {
-          rawList = Array.isArray(resCli.data) ? resCli.data : (resCli.data.items || []);
-      }
-      
-      let normList = normalizeClientes(rawList);
-      
+      const resCli = await safeFetch(`${API_URL}/clientes-del-vendedor?cuit=${encodeURIComponent(cuit)}`);
+      let normList = normalizeClientes(resCli.ok ? resCli.data.items : []);
       if (selfAsCliente) {
           const yaEsta = normList.some(c => c.id === selfAsCliente!.id);
           if (!yaEsta) normList = [selfAsCliente, ...normList];
@@ -174,31 +163,107 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
     const plazoIdFinal = (plazoSeleccionado as any)?.id;
     if (!clienteObj?.id || !plazoIdFinal) { Alert.alert('Faltan datos', 'Seleccioná un cliente válido.'); return; }
 
-    setStore({ clienteSeleccionado: clienteObj, envioSeleccionado: metodoEnvio, direccionEntrega: metodoEnvio === 'domicilio' && addrSelected ? { ...addrSelected } : null });
+    const st = getStore();
+    const objTransporte = st.transporteAsignado || st.transporte;
+    let transporteNombrePuro = typeof objTransporte === 'string' ? objTransporte : (objTransporte?.name || objTransporte?.transporte || '');
+    const esEnvioADomicilio = metodoEnvio === 'domicilio' || transporteNombrePuro.toLowerCase().includes('domicilio');
+    const nombreEnvioFinal = transporteNombrePuro ? transporteNombrePuro : (esEnvioADomicilio ? 'Envío a Domicilio' : 'Retiro en Sucursal');
+
+    const tcSeguro = tipoCambio && tipoCambio > 0 ? tipoCambio : 1450;
+    const itemsLimpios = items.filter((it: any) => {
+        const pid = Number(it.product_id);
+        return !isNaN(pid) && pid < 2147483647;
+    });
+
+    const localBaseSinTransporte = itemsLimpios
+        .filter((it:any) => String(it.product_id) !== '4011')
+        .reduce((acc:number, it:any) => {
+            const q = toNum(it.product_uom_qty ?? it.qty ?? it.quantity ?? 1);
+            const p = toNum(it.price_unit);
+            const d1 = toNum(it.discount1); const d2 = toNum(it.discount2); const d3 = toNum(it.discount3);
+            const f = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
+            return acc + (p * q * f);
+        }, 0);
+
+    const baseARS = localBaseSinTransporte * tcSeguro;
+    let costoEnvioUSD = 0;
+
+    if (esEnvioADomicilio) {
+        if (baseARS <= 250000) costoEnvioUSD = 9000 / tcSeguro;
+        else if (baseARS <= 500000) costoEnvioUSD = 6000 / tcSeguro;
+        else costoEnvioUSD = 0;
+    }
+
+    // 🚀 FIX TS 1: Declaramos como any[] para evitar el error de "name does not exist"
+    const odooItems: any[] = itemsLimpios.filter((it:any) => String(it.product_id) !== '4011').map((it: any) => ({
+        product_id: it.product_id, 
+        product_uom_qty: it.product_uom_qty ?? it.qty ?? it.quantity ?? 1, 
+        price_unit: Number(it.price_unit ?? 0),
+        discount1: Number(it.discount1 ?? 0), 
+        discount2: Number(it.discount2 ?? 0),
+        discount3: Number(it.discount3 ?? 0),
+        payment_term_id: it.payment_term_id,
+    }));
+
+    odooItems.push({
+        product_id: 4011,
+        product_uom_qty: 1,
+        price_unit: costoEnvioUSD,
+        discount1: 0, discount2: 0, discount3: 0,
+        payment_term_id: plazoIdFinal,
+        name: nombreEnvioFinal 
+    });
+
+    // 🚀 FIX TS 2: Eliminamos la propiedad qty y lo tipamos como any[]
+    const itemsParaZustand: any[] = itemsLimpios.filter((it:any) => String(it.product_id) !== '4011');
+    itemsParaZustand.push({
+        product_id: 4011,
+        name: nombreEnvioFinal,
+        default_code: 'FLETE',
+        product_uom_qty: 1,  // <-- ELIMINADO EL 'qty'
+        price_unit: costoEnvioUSD,
+        discount1: 0, discount2: 0, discount3: 0,
+        payment_term_id: plazoIdFinal
+    });
+
+    setStore({ 
+        clienteSeleccionado: clienteObj, 
+        envioSeleccionado: metodoEnvio, 
+        direccionEntrega: metodoEnvio === 'domicilio' && addrSelected ? { ...addrSelected } : null,
+        items: itemsParaZustand 
+    });
 
     try {
-        const odooItems = items.map((it: any) => ({
-            product_id: it.product_id, product_uom_qty: it.product_uom_qty ?? 1, price_unit: Number(it.price_unit ?? 0),
-            discount1: Number(it.discount1 ?? 0), discount2: Number(it.discount2 ?? 0),
-            payment_term_id: it.payment_term_id,
-            ...(metodoEnvio === 'sucursal' && Number(it.product_id) === 4011 ? { name: 'RETIRO EN CC' } : {}),
-        }));
-
         const existingOrderId = getStore().orderId;
-        const payload: any = { cliente_cuit: clienteObj.vat, payment_term_id: plazoIdFinal, items: odooItems };
-        if (metodoEnvio === 'domicilio' && addrSelected && typeof addrSelected.id === 'number') payload.partner_shipping_id = addrSelected.id;
-        if (metodoEnvio === 'sucursal') payload.carrier_id = 926;
+        const payload: any = { 
+            cliente_cuit: clienteObj.vat, 
+            payment_term_id: plazoIdFinal, 
+            items: odooItems,
+            carrier_id: objTransporte?.id || null 
+        };
         
-        // --- CAMBIO CLAVE: Usamos 'order_id_to_update' para reciclar el pedido ---
-        if (existingOrderId) payload.order_id_to_update = existingOrderId;
+        if (metodoEnvio === 'domicilio' && addrSelected && typeof addrSelected.id === 'number') {
+            payload.partner_shipping_id = addrSelected.id;
+        }
 
-        const url = `${API_URL}/crear-pedido`;
+        const url = existingOrderId ? `${API_URL}/actualizar-pedido` : `${API_URL}/crear-pedido`;
         const resp = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
         const d = await resp.json();
 
         if (resp.ok && !d.error) {
             if (d.pedido_id) setStore({ orderId: Number(d.pedido_id) });
-            setStore({ consultaResumen: { consulta_id: d.pedido_id, name: d.nro_pedido, currency: d.currency || 'USD', base_imponible: d.base_imponible ?? 0, total: d.total ?? 0, tax_totals: { groups: Array.isArray(d.groups) ? d.groups : [], raw: d.tax_totals || null } } });
+            
+            setStore({ 
+                consultaResumen: { 
+                    pedido_id: d.pedido_id, 
+                    nro_pedido: d.nro_pedido, 
+                    name: d.nro_pedido, 
+                    currency: d.currency || 'USD', 
+                    base_imponible: d.base_imponible ?? 0, 
+                    impuestos: d.impuestos ?? 0,
+                    total: d.total ?? 0 
+                } 
+            });
             onNext();
         } else { Alert.alert('Error', d.error || 'No se pudo procesar.'); }
     } catch (e) { Alert.alert('Error de conexión', 'Verifica tu internet.'); }
@@ -207,7 +272,7 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
   return (
     <View style={styles.container}>
       <LayoutRefresh onRecargar={cargarDatos} contentContainerStyle={[styles.scrollContent, { paddingBottom: 10 + insets.bottom }]}>
-        <CarritoHeader step={2} />
+        <CarritoHeader step={2} onBack={onBack} />
         <View style={[styles.cardWrap, { width: cardW }]}>
           <ImageBackground source={BG_PICKERS} style={[styles.cardBg, { width: cardW, height: pickersH }]} resizeMode="stretch">
             <View style={styles.cardContent}>
@@ -310,7 +375,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
   scrollContent: { paddingBottom: 40 },
   cardWrap: { alignSelf: 'center', marginHorizontal: SIDE_MARGIN, marginTop: 10 },
-  cardBg: { paddingHorizontal: 18, paddingTop: 20, paddingBottom: 25 }, // Ajustado el padding interno
+  cardBg: { paddingHorizontal: 18, paddingTop: 20, paddingBottom: 25 }, 
   envioBg: { paddingTop: 18, paddingBottom: 18 },
   cardContent: { flex: 1, justifyContent: 'center' },
   select: { height: PICKER_HEIGHT, borderRadius: PICKER_RADIUS, paddingHorizontal: 10, backgroundColor: '#EEF0F2', borderWidth: 1, borderColor: '#E7EAED', flexDirection: 'row', alignItems: 'center' },

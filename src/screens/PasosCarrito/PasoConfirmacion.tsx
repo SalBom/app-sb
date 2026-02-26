@@ -296,18 +296,20 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   };
 
   // =====================================================================
-  // 🚀 FIX: DEBOUNCE A 1 SEGUNDO (Evita que Odoo bloquee el borrador)
+  // 🚀 FIX: CONSULTA SIMPLE DE TOTALES YA CARGADOS EN ODOO
   // =====================================================================
   useEffect(() => {
-    if (!draftOrderId || itemsProcesados.length === 0) return;
-    setIsSyncingTotals(true);
+    // Si no hay ID de pedido en el sistema, no hacemos nada
+    if (!draftOrderId) return;
     
-    const timeoutId = setTimeout(async () => {
+    setIsSyncingTotals(true); // Ponemos la app en espera ("Calculando...")
+    
+    const fetchTotals = async () => {
         try {
-            const payload = await buildPayload();
-            const resp = await axios.post(`${API_URL}/actualizar-pedido`, payload);
+            // Usamos el nuevo endpoint GET que solo lee datos, no escribe ni recalcula
+            const resp = await axios.get(`${API_URL}/pedido/${draftOrderId}/totales`);
             
-            if (resp.data && resp.data.total) {
+            if (resp.data) {
                 setLiveTotals({
                     base: toNumber(resp.data.base_imponible),
                     tax: toNumber(resp.data.impuestos),
@@ -315,14 +317,14 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                 });
             }
         } catch (error) {
-            console.log("Error sincronizando totales en background:", error);
+            console.log("Error consultando totales del pedido:", error);
         } finally {
-            setIsSyncingTotals(false);
+            setIsSyncingTotals(false); // Sacamos el loading cuando ya tenemos la info
         }
-    }, 1000); // 1000ms es el tiempo perfecto para asegurar que el server XML-RPC está liberado.
-
-    return () => clearTimeout(timeoutId);
-  }, [items, draftOrderId, costoEnvioUSD, nombreEnvioFinal]); 
+    };
+    
+    fetchTotals();
+  }, [draftOrderId]); // Solo dependerá del ID del pedido, no de los items
 
   const localBase = localBaseSinTransporte + costoEnvioUSD;
   const localTax = localBase * 0.21;
