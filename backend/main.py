@@ -2275,10 +2275,14 @@ def _upsert_order_logic(client, data):
 
 @app.route('/pedido/<int:pedido_id>/totales', methods=['GET'])
 def get_pedido_totales(pedido_id):
+    """
+    Recupera los totales de un pedido ya existente en Odoo.
+    No recalcula ni escribe nada, solo lee (para evitar lentitud).
+    """
     client = get_odoo_client()
     try:
         def logic(cli):
-            # Solo leemos los 3 campos necesarios del pedido ya existente
+            # Solo leemos los 3 campos necesarios del pedido
             orden = cli.env['sale.order'].search_read(
                 [('id', '=', pedido_id)], 
                 ['amount_untaxed', 'amount_tax', 'amount_total']
@@ -2699,14 +2703,15 @@ def clientes_del_vendedor():
         if not cuit:
             return jsonify({"error": "CUIT requerido"}), 400
 
-        # 1. Identificar al usuario en Odoo
+        # 1. Identificar al usuario en Odoo (para saber su ID de vendedor)
         partner = client.env["res.partner"].search([("vat", "=", cuit)], limit=1)
         if not partner:
+            # Si no existe el partner, devolvemos vacío pero sin error 500
             return jsonify({"items": [], "is_admin": False}) 
         
         user = client.env["res.users"].search([("partner_id", "=", partner[0].id)], limit=1)
         
-        # 2. Verificar Rol (Tabla 'app_users' mediante CUIT)
+        # 2. Verificar Rol REAL en Postgres (normalizando mayúsculas)
         is_admin = False
         try:
             pg_conn = get_pg_connection()
@@ -2714,7 +2719,8 @@ def clientes_del_vendedor():
                 cur = pg_conn.cursor()
                 cur.execute("SELECT role FROM app_users WHERE cuit = %s", (cuit,))
                 row = cur.fetchone()
-                if row and row[0] and row[0].upper() == 'ADMIN':
+                # Aceptamos 'Admin', 'ADMIN', 'admin', etc.
+                if row and row[0] and str(row[0]).upper() == 'ADMIN':
                     is_admin = True
                 cur.close()
         except Exception as pg_e:
@@ -2722,22 +2728,42 @@ def clientes_del_vendedor():
         finally:
             if pg_conn: pg_conn.close()
 
-        # 3. Definir Dominio de Búsqueda (¡CORREGIDO PARA FILTRAR TIPO CONTACTO!)
-        if is_admin:
-            domain = [("customer_rank", ">", 0), ("active", "=", True), ("type", "=", "contact")]
-        else:
-            user_id = user[0].id if user else 0
-            domain = [("user_id", "=", user_id), ("customer_rank", ">", 0), ("active", "=", True), ("type", "=", "contact")]
+        # 3. Definir Dominio de Búsqueda
+        #  - customer_rank > 0: Es cliente
+        #  - active = True: Está activo
+        #  - type = 'contact': Es la empresa/contacto principal (no dirección de entrega)
+        base_domain = [
+            ("customer_rank", ">", 0), 
+            ("active", "=", True), 
+            ("type", "=", "contact") 
+        ]
 
-        # Filtro de búsqueda por texto
+        if is_admin:
+            # Admin ve TODO
+            domain = base_domain
+        else:
+            # Vendedor ve solo lo asignado a su ID de usuario Odoo
+            user_id = user[0].id if user else 0
+            domain = [("user_id", "=", user_id)] + base_domain
+
+        # Filtro de búsqueda por texto (si el usuario escribe en el buscador)
         if q:
             domain += ["|", ("name", "ilike", q), ("vat", "ilike", q)]
 
-        # 4. Consulta optimizada
+        # 4. Consulta optimizada incluyendo el TRANSPORTE
         clientes_raw = client.env["res.partner"].search_read(
             domain,
-            ["id", "name", "vat", "street", "city", "state_id", "zip"],
-            limit=2500,
+            [
+                "id", 
+                "name", 
+                "vat", 
+                "street", 
+                "city", 
+                "state_id", 
+                "zip",
+                "property_delivery_carrier_id" # <--- CAMPO CLAVE AGREGADO
+            ],
+            limit=2500, # Límite alto para ver toda la cartera
             order="name asc"
         )
 
