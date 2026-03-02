@@ -4255,14 +4255,21 @@ init_cart_table()
 @app.route('/cart/save', methods=['POST'])
 def update_cart():
     data = request.json or {}
-    cuit = data.get('cuit')
+    
+    # 🚀 FIX: Forzamos el CUIT a ser siempre texto (string)
+    raw_cuit = data.get('cuit')
+    cuit = str(raw_cuit).strip() if raw_cuit else None
+    
     items = data.get('items', [])
     
     if not cuit: return jsonify({"error": "Falta CUIT"}), 400
 
     def _execute_save(client_inst):
+        # Al ser un string, Odoo lo procesa perfecto y XML-RPC no explota
         partner = client_inst.env["res.partner"].search([("vat", "=", cuit)], limit=1)
         if not partner: return False
+        
+        # ... el resto de la función sigue igual ...
         user = client_inst.env["res.users"].search([("partner_id", "=", partner[0].id)], limit=1)
         if not user: return False
         
@@ -4272,7 +4279,6 @@ def update_cart():
             try:
                 cur = pg_conn.cursor()
                 items_json = json.dumps(items)
-                # Guarda en Postgres rapidísimo en vez de saturar a Odoo
                 cur.execute("""
                     INSERT INTO app_user_carts (user_id, items_json) 
                     VALUES (%s, %s)

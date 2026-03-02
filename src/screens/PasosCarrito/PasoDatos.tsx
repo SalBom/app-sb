@@ -17,8 +17,20 @@ import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../../config';
 
 interface Props { onNext: () => void; onBack: () => void; }
+
 // 🚀 FIX: Agregamos el transport_data a la interfaz
-type Cliente = { id: number; name: string; vat?: string | null; street?: string; city?: string; state?: string; zip?: string; is_self?: boolean; transport_data?: { id: number; name: string } | null; };
+type Cliente = { 
+    id: number; 
+    name: string; 
+    vat?: string | null; 
+    street?: string; 
+    city?: string; 
+    state?: string; 
+    zip?: string; 
+    is_self?: boolean; 
+    transport_data?: { id: number; name: string } | null; 
+};
+
 type Plazo = { id: number; nombre: string };
 type MetodoEnvio = 'domicilio' | 'sucursal' | null;
 type Address = { id?: number | string; name?: string; street?: string; city?: string; state?: string; zip?: string; source?: 'partner' | 'delivery_child'; };
@@ -48,12 +60,16 @@ async function safeFetch(url: string) {
   } catch (e) { return { ok: false, data: null }; }
 }
 
-// 🚀 FIX: Extraemos el transporte que manda Odoo
+// 🚀 FIX: Extraemos el transporte dinámico que ahora manda Odoo de forma segura
 function normalizeClientes(lista: any[]): Cliente[] {
   if (!Array.isArray(lista)) return [];
   return lista.map((c: any) => {
-    let tData = null;
-    if (Array.isArray(c.property_delivery_carrier_id) && c.property_delivery_carrier_id.length === 2) {
+    
+    // Le damos prioridad absoluta al nuevo campo dinámico que armamos en el backend
+    let tData = c.app_transport_data || null;
+    
+    // Fallback por las dudas si entra directo
+    if (!tData && Array.isArray(c.property_delivery_carrier_id) && c.property_delivery_carrier_id.length === 2) {
         tData = { id: c.property_delivery_carrier_id[0], name: c.property_delivery_carrier_id[1] };
     }
 
@@ -264,7 +280,7 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
             cliente_cuit: clienteObj.vat, 
             payment_term_id: plazoIdFinal, 
             items: odooItems,
-            carrier_id: objTransporte?.id || null // 🚀 FIX: Ahora manda el ID correctamente
+            carrier_id: objTransporte?.id || null 
         };
         
         if (metodoEnvio === 'domicilio' && addrSelected && typeof addrSelected.id === 'number') {
