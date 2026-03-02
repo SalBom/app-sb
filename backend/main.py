@@ -2703,15 +2703,14 @@ def clientes_del_vendedor():
         if not cuit:
             return jsonify({"error": "CUIT requerido"}), 400
 
-        # 1. Identificar al usuario en Odoo (para saber su ID de vendedor)
+        # 1. Identificar al usuario en Odoo
         partner = client.env["res.partner"].search([("vat", "=", cuit)], limit=1)
         if not partner:
-            # Si no existe el partner, devolvemos vacío pero sin error 500
             return jsonify({"items": [], "is_admin": False}) 
         
         user = client.env["res.users"].search([("partner_id", "=", partner[0].id)], limit=1)
         
-        # 2. Verificar Rol REAL en Postgres (normalizando mayúsculas)
+        # 2. Verificar Rol REAL en Postgres
         is_admin = False
         try:
             pg_conn = get_pg_connection()
@@ -2719,19 +2718,15 @@ def clientes_del_vendedor():
                 cur = pg_conn.cursor()
                 cur.execute("SELECT role FROM app_users WHERE cuit = %s", (cuit,))
                 row = cur.fetchone()
-                # Aceptamos 'Admin', 'ADMIN', 'admin', etc.
                 if row and row[0] and str(row[0]).upper() == 'ADMIN':
                     is_admin = True
                 cur.close()
         except Exception as pg_e:
-            log.error(f"⚠️ Error verificando rol en PG: {pg_e}")
+            log.error(f"⚠️ Error PG: {pg_e}")
         finally:
             if pg_conn: pg_conn.close()
 
         # 3. Definir Dominio de Búsqueda
-        #  - customer_rank > 0: Es cliente
-        #  - active = True: Está activo
-        #  - type = 'contact': Es la empresa/contacto principal (no dirección de entrega)
         base_domain = [
             ("customer_rank", ">", 0), 
             ("active", "=", True), 
@@ -2739,33 +2734,46 @@ def clientes_del_vendedor():
         ]
 
         if is_admin:
-            # Admin ve TODO
             domain = base_domain
         else:
-            # Vendedor ve solo lo asignado a su ID de usuario Odoo
             user_id = user[0].id if user else 0
             domain = [("user_id", "=", user_id)] + base_domain
 
-        # Filtro de búsqueda por texto (si el usuario escribe en el buscador)
         if q:
             domain += ["|", ("name", "ilike", q), ("vat", "ilike", q)]
 
-        # 4. Consulta optimizada incluyendo el TRANSPORTE
+        # 🚀 4. BÚSQUEDA DINÁMICA DEL CAMPO DE TRANSPORTE
+        # Odoo puede tenerlo guardado con distintos nombres. Buscamos cuál existe en tu BD.
+        posibles_campos = ["property_delivery_carrier_id", "carrier_id", "x_carrier_id", "x_transporte_id", "x_transporte"]
+        transport_field = None
+        try:
+            res_fields = client.env["res.partner"].fields_get(posibles_campos, attributes=["type"])
+            for f in posibles_campos:
+                if f in res_fields:
+                    transport_field = f
+                    break
+        except Exception:
+            transport_field = "property_delivery_carrier_id"
+
+        fields_to_read = ["id", "name", "vat", "street", "city", "state_id", "zip"]
+        if transport_field:
+            fields_to_read.append(transport_field)
+
         clientes_raw = client.env["res.partner"].search_read(
             domain,
-            [
-                "id", 
-                "name", 
-                "vat", 
-                "street", 
-                "city", 
-                "state_id", 
-                "zip",
-                "property_delivery_carrier_id" # <--- CAMPO CLAVE AGREGADO
-            ],
-            limit=2500, # Límite alto para ver toda la cartera
+            fields_to_read,
+            limit=2500,
             order="name asc"
         )
+
+        # 🚀 5. INYECCIÓN DEL DATO LIMPIO PARA LA APP
+        for c in clientes_raw:
+            c["app_transport_data"] = None
+            if transport_field and c.get(transport_field):
+                val = c[transport_field]
+                # Aseguramos que sea una tupla [ID, "Nombre"]
+                if isinstance(val, (list, tuple)) and len(val) >= 2:
+                    c["app_transport_data"] = {"id": val[0], "name": val[1]}
 
         return jsonify({
             "items": clientes_raw,

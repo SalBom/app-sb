@@ -17,7 +17,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../../config';
 
 interface Props { onNext: () => void; onBack: () => void; }
-type Cliente = { id: number; name: string; vat?: string | null; street?: string; city?: string; state?: string; zip?: string; is_self?: boolean; };
+// 🚀 FIX: Agregamos el transport_data a la interfaz
+type Cliente = { id: number; name: string; vat?: string | null; street?: string; city?: string; state?: string; zip?: string; is_self?: boolean; transport_data?: { id: number; name: string } | null; };
 type Plazo = { id: number; nombre: string };
 type MetodoEnvio = 'domicilio' | 'sucursal' | null;
 type Address = { id?: number | string; name?: string; street?: string; city?: string; state?: string; zip?: string; source?: 'partner' | 'delivery_child'; };
@@ -47,17 +48,26 @@ async function safeFetch(url: string) {
   } catch (e) { return { ok: false, data: null }; }
 }
 
+// 🚀 FIX: Extraemos el transporte que manda Odoo
 function normalizeClientes(lista: any[]): Cliente[] {
   if (!Array.isArray(lista)) return [];
-  return lista.map((c: any) => ({
-    id: c.id ?? c.partner_id ?? c.partnerId,
-    name: c.name ?? c.display_name ?? c.razon_social ?? c.nombre,
-    vat: c.vat ?? c.cuit ?? null,
-    street: c.street ?? c.calle ?? '',
-    city: c.city ?? c.ciudad ?? '',
-    state: (Array.isArray(c.state_id) ? c.state_id[1] : c.state) ?? '',
-    zip: c.zip ?? c.codigo_postal ?? '',
-  })).filter(x => x.id && x.name);
+  return lista.map((c: any) => {
+    let tData = null;
+    if (Array.isArray(c.property_delivery_carrier_id) && c.property_delivery_carrier_id.length === 2) {
+        tData = { id: c.property_delivery_carrier_id[0], name: c.property_delivery_carrier_id[1] };
+    }
+
+    return {
+      id: c.id ?? c.partner_id ?? c.partnerId,
+      name: c.name ?? c.display_name ?? c.razon_social ?? c.nombre,
+      vat: c.vat ?? c.cuit ?? null,
+      street: c.street ?? c.calle ?? '',
+      city: c.city ?? c.ciudad ?? '',
+      state: (Array.isArray(c.state_id) ? c.state_id[1] : c.state) ?? '',
+      zip: c.zip ?? c.codigo_postal ?? '',
+      transport_data: tData 
+    };
+  }).filter(x => x.id && x.name);
 }
 
 const toNum = (v:any)=> (typeof v==='number'? v : Number(String(v).replace(/\./g,'').replace(',','.'))||0);
@@ -87,6 +97,20 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
   }, [clientes, clientSearch]);
 
   const clienteSel = useMemo(() => clientes.find(c => c.id === clienteId) ?? null, [clientes, clienteId]);
+
+  // 🚀 NUEVO: Escuchamos el cambio de cliente y le inyectamos su transporte al Store Global
+  useEffect(() => {
+    if (clienteSel) {
+        if (clienteSel.transport_data) {
+            setStore({ 
+                transporte: clienteSel.transport_data, 
+                transporteAsignado: clienteSel.transport_data.name 
+            });
+        } else {
+            setStore({ transporte: null, transporteAsignado: null });
+        }
+    }
+  }, [clienteSel, setStore]);
 
   const nombrePlazoMaximo = useMemo(() => {
     if (!plazoSeleccionado || !plazosData.length) return 'Calculando...';
@@ -164,8 +188,11 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
     if (!clienteObj?.id || !plazoIdFinal) { Alert.alert('Faltan datos', 'Seleccioná un cliente válido.'); return; }
 
     const st = getStore();
-    const objTransporte = st.transporteAsignado || st.transporte;
-    let transporteNombrePuro = typeof objTransporte === 'string' ? objTransporte : (objTransporte?.name || objTransporte?.transporte || '');
+    
+    // 🚀 FIX: Leemos limpiamente el objeto y el nombre del transporte
+    const objTransporte = st.transporte;
+    let transporteNombrePuro = objTransporte?.name || st.transporteAsignado || '';
+    
     const esEnvioADomicilio = metodoEnvio === 'domicilio' || transporteNombrePuro.toLowerCase().includes('domicilio');
     const nombreEnvioFinal = transporteNombrePuro ? transporteNombrePuro : (esEnvioADomicilio ? 'Envío a Domicilio' : 'Retiro en Sucursal');
 
@@ -194,7 +221,6 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
         else costoEnvioUSD = 0;
     }
 
-    // 🚀 FIX TS 1: Declaramos como any[] para evitar el error de "name does not exist"
     const odooItems: any[] = itemsLimpios.filter((it:any) => String(it.product_id) !== '4011').map((it: any) => ({
         product_id: it.product_id, 
         product_uom_qty: it.product_uom_qty ?? it.qty ?? it.quantity ?? 1, 
@@ -214,13 +240,12 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
         name: nombreEnvioFinal 
     });
 
-    // 🚀 FIX TS 2: Eliminamos la propiedad qty y lo tipamos como any[]
     const itemsParaZustand: any[] = itemsLimpios.filter((it:any) => String(it.product_id) !== '4011');
     itemsParaZustand.push({
         product_id: 4011,
         name: nombreEnvioFinal,
         default_code: 'FLETE',
-        product_uom_qty: 1,  // <-- ELIMINADO EL 'qty'
+        product_uom_qty: 1,
         price_unit: costoEnvioUSD,
         discount1: 0, discount2: 0, discount3: 0,
         payment_term_id: plazoIdFinal
@@ -239,7 +264,7 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
             cliente_cuit: clienteObj.vat, 
             payment_term_id: plazoIdFinal, 
             items: odooItems,
-            carrier_id: objTransporte?.id || null 
+            carrier_id: objTransporte?.id || null // 🚀 FIX: Ahora manda el ID correctamente
         };
         
         if (metodoEnvio === 'domicilio' && addrSelected && typeof addrSelected.id === 'number') {

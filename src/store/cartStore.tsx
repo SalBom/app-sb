@@ -1,6 +1,5 @@
 import { create } from 'zustand';
 import axios from 'axios';
-import { Alert } from 'react-native';
 import { getCuitFromStorage } from '../utils/authStorage';
 import { API_URL } from '../config'; 
 
@@ -9,18 +8,9 @@ const syncCartToBackend = async (items: any[]) => {
     try {
         const cuit = await getCuitFromStorage();
         if (cuit) {
-            // Enviamos al backend sin esperar respuesta
-            axios.post(`${API_URL}/cart/save`, {
-                cuit: cuit,
-                items: items
-            }).catch(() => {
-                // Silenciamos errores de red en background para no spamear la consola
-                // Si es crítico, el usuario lo notará al no ver sus items en otro lado.
-            });
+            axios.post(`${API_URL}/cart/save`, { cuit, items }).catch(() => {});
         }
-    } catch (e) {
-        // Error accediendo al storage local, no es crítico para mostrar en consola prod
-    }
+    } catch (e) {}
 };
 
 export type DireccionEntrega = {
@@ -51,15 +41,12 @@ export type ProductoBase = {
   name: string;
   price_unit: number;
   default_code: string;
-  image_128?: string;
   list_price: number;
   product_uom_qty: number;
   discount1?: number;
   discount2?: number;
   discount3?: number;
   image_thumb_url?: string | null;
-  image_md_url?: string | null;
-  image_1920?: string | null;
   payment_term_id?: number; 
 };
 
@@ -76,9 +63,13 @@ type CartState = {
   plazoSeleccionado: PlazoSel | null;
   envioSeleccionado: MetodoEnvio | null;
   direccionEntrega: DireccionEntrega | null;
-  transporte: any | null;         // Agregado: Objeto completo de transporte (id, name, etc.)
+  
+  // --- VARIABLES IMPORTANTES PARA EL TRANSPORTE ---
+  transporte: any | null;         
   transporteAsignado: string | null;
-  notas: string | null;           // Agregado: Notas/Observaciones del pedido
+  notas: string | null;           
+  // ------------------------------------------------
+  
   consultaResumen: ConsultaResumen | null;
   orderId: number | null;
 
@@ -97,9 +88,11 @@ type CartState = {
   setDireccionEntrega: (d: DireccionEntrega | null) => void;
   setConsultaResumen: (r: ConsultaResumen | null) => void;
   setOrderId: (id: number | null) => void;
+  
   setTransporte: (nombre: string | null) => void;
-  setTransporteObj: (t: any | null) => void;   // Agregado: Setter para el objeto transporte
-  setNotas: (n: string | null) => void;        // Agregado: Setter para las notas
+  setTransporteObj: (t: any | null) => void;   
+  setNotas: (n: string | null) => void;        
+
   addOrUpdateTransporteItem: (label?: string, priceUSD?: number) => void;
   removeTransporteItem: () => void;
 };
@@ -110,9 +103,11 @@ export const useCartStore = create<CartState>((set, get) => ({
   plazoSeleccionado: null,
   envioSeleccionado: null,
   direccionEntrega: null,
-  transporte: null,         // Inicializado
+  
+  transporte: null,         
   transporteAsignado: null,
-  notas: null,              // Inicializado
+  notas: null,              
+  
   consultaResumen: null,
   orderId: null,
 
@@ -123,16 +118,9 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   updateMaxPaymentTerm: () => {
     const { items } = get();
-    if (items.length === 0) {
-      set({ plazoSeleccionado: null });
-      return;
-    }
+    if (items.length === 0) { set({ plazoSeleccionado: null }); return; }
     const itemsParaPlazo = items.filter(it => it.product_id !== PRODUCTO_TRANSPORTE_ID);
-    if (itemsParaPlazo.length === 0) {
-        set({ plazoSeleccionado: null });
-        return;
-    }
-
+    if (itemsParaPlazo.length === 0) { set({ plazoSeleccionado: null }); return; }
     const maxId = Math.max(...itemsParaPlazo.map(it => it.payment_term_id || 0));
     set({ plazoSeleccionado: { id: maxId } });
   },
@@ -141,23 +129,11 @@ export const useCartStore = create<CartState>((set, get) => ({
     set((state) => {
       const exists = state.items.find((it) => it.product_id === product.product_id);
       let newItems;
-
       if (exists) {
         if (product.product_id === PRODUCTO_TRANSPORTE_ID) return { items: state.items };
-        newItems = state.items.map((it) =>
-            it.product_id === product.product_id
-              ? { ...it, product_uom_qty: it.product_uom_qty + 1 }
-              : it
-          );
+        newItems = state.items.map((it) => it.product_id === product.product_id ? { ...it, product_uom_qty: it.product_uom_qty + 1 } : it);
       } else {
-        newItems = [
-          ...state.items,
-          {
-            ...product,
-            product_uom_qty: product.product_uom_qty ?? 1,
-            payment_term_id: product.payment_term_id ?? 1, 
-          },
-        ];
+        newItems = [...state.items, { ...product, product_uom_qty: product.product_uom_qty ?? 1, payment_term_id: product.payment_term_id ?? 1 }];
       }
       syncCartToBackend(newItems);
       return { items: newItems };
@@ -167,9 +143,7 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   updateQuantity: (productId, quantity) => {
     set((state) => {
-      const newItems = state.items.map((item) =>
-        item.product_id === productId ? { ...item, product_uom_qty: quantity } : item
-      );
+      const newItems = state.items.map((item) => item.product_id === productId ? { ...item, product_uom_qty: quantity } : item);
       syncCartToBackend(newItems);
       return { items: newItems };
     });
@@ -177,20 +151,14 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   updateDiscount: (productId, descuentos) =>
     set((state) => {
-      const newItems = state.items.map((item) =>
-        item.product_id === productId
-          ? { ...item, ...descuentos }
-          : item
-      );
+      const newItems = state.items.map((item) => item.product_id === productId ? { ...item, ...descuentos } : item);
       syncCartToBackend(newItems);
       return { items: newItems };
     }),
 
   updateItemPaymentTerm: (productId, termId) => {
     set((state) => {
-        const newItems = state.items.map((item) => 
-            item.product_id === productId ? { ...item, payment_term_id: termId } : item
-        );
+        const newItems = state.items.map((item) => item.product_id === productId ? { ...item, payment_term_id: termId } : item);
         syncCartToBackend(newItems);
         return { items: newItems };
     });
@@ -208,25 +176,13 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   clearCart: () => {
       set({ 
-        items: [], 
-        clienteSeleccionado: null, 
-        plazoSeleccionado: null, 
-        envioSeleccionado: null, 
-        direccionEntrega: null, 
-        transporte: null,         // 🚀 FIX: Ahora limpiamos el objeto de transporte
-        transporteAsignado: null, 
-        notas: null,              // 🚀 FIX: Ahora limpiamos las notas del pedido
-        consultaResumen: null, 
-        orderId: null 
+        items: [], clienteSeleccionado: null, plazoSeleccionado: null, envioSeleccionado: null, direccionEntrega: null, 
+        transporte: null, transporteAsignado: null, notas: null, consultaResumen: null, orderId: null 
       });
       syncCartToBackend([]); 
   },
 
-  getQuantity: (productId) => {
-    const it = get().items.find((x) => x.product_id === productId);
-    return it ? it.product_uom_qty : 0;
-  },
-
+  getQuantity: (productId) => { const it = get().items.find((x) => x.product_id === productId); return it ? it.product_uom_qty : 0; },
   setCliente: (c) => set({ clienteSeleccionado: c }),
   setPlazo: (p) => set({ plazoSeleccionado: p }),
   setEnvio: (m) => set({ envioSeleccionado: m }),
@@ -234,35 +190,16 @@ export const useCartStore = create<CartState>((set, get) => ({
   setConsultaResumen: (r) => set({ consultaResumen: r }),
   setOrderId: (id) => set({ orderId: id }),
   setTransporte: (nombre) => set({ transporteAsignado: nombre }),
-  
-  // 🚀 FIX: Setters añadidos para las variables que usa PasoConfirmacion
   setTransporteObj: (t) => set({ transporte: t }),
   setNotas: (n) => set({ notas: n }),
 
   addOrUpdateTransporteItem: (label = 'ENVÍO A DOMICILIO', priceUSD = 0) =>
     set((state) => {
       const exists = state.items.find((it) => it.product_id === PRODUCTO_TRANSPORTE_ID);
-      const baseItem: ProductoCarrito = {
-        product_id: PRODUCTO_TRANSPORTE_ID,
-        name: label,
-        default_code: 'TRANSPORTE',
-        price_unit: priceUSD,
-        list_price: priceUSD,
-        product_uom_qty: 1,
-        payment_term_id: 1,
-      };
-      
-      let newItems;
-      if (exists) {
-        newItems = state.items.map((it) =>
-            it.product_id === PRODUCTO_TRANSPORTE_ID
-              ? { ...it, name: label, price_unit: priceUSD, list_price: priceUSD }
-              : it
-          );
-      } else {
-        newItems = [...state.items, baseItem];
-      }
-      
+      const baseItem: ProductoCarrito = { product_id: PRODUCTO_TRANSPORTE_ID, name: label, default_code: 'TRANSPORTE', price_unit: priceUSD, list_price: priceUSD, product_uom_qty: 1, payment_term_id: 1 };
+      let newItems = exists 
+        ? state.items.map((it) => it.product_id === PRODUCTO_TRANSPORTE_ID ? { ...it, name: label, price_unit: priceUSD, list_price: priceUSD } : it) 
+        : [...state.items, baseItem];
       syncCartToBackend(newItems);
       return { items: newItems };
     }),
