@@ -4256,7 +4256,7 @@ init_cart_table()
 def update_cart():
     data = request.json or {}
     
-    # 🚀 FIX: Forzamos el CUIT a ser siempre texto (string)
+    # 🚀 ACÁ ESTÁ LA MAGIA: Forzar a texto SIEMPRE
     raw_cuit = data.get('cuit')
     cuit = str(raw_cuit).strip() if raw_cuit else None
     
@@ -4265,11 +4265,8 @@ def update_cart():
     if not cuit: return jsonify({"error": "Falta CUIT"}), 400
 
     def _execute_save(client_inst):
-        # Al ser un string, Odoo lo procesa perfecto y XML-RPC no explota
         partner = client_inst.env["res.partner"].search([("vat", "=", cuit)], limit=1)
         if not partner: return False
-        
-        # ... el resto de la función sigue igual ...
         user = client_inst.env["res.users"].search([("partner_id", "=", partner[0].id)], limit=1)
         if not user: return False
         
