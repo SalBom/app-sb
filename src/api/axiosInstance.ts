@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const axiosInstance = axios.create({
-  baseURL: "https://app-salbom-production.up.railway.app", // Cambialo si usás .env
+  baseURL: "https://app-sb-production.up.railway.app", // Cambialo si usás .env
   timeout: 5000,
   headers: {
     "Content-Type": "application/json",

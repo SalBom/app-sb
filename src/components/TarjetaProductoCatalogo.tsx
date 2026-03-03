@@ -74,7 +74,7 @@ const TarjetaProductoCatalogo: React.FC<Props> = ({
       try {
         setLoadingImg(true);
         setHadError(false);
-        const res = await fetch(`https://app-salbom-production.up.railway.app/producto/${producto.id}/imagen`);
+        const res = await fetch(`https://app-sb-production.up.railway.app/producto/${producto.id}/imagen`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         if (!cancelled && data?.image_128) setImagen(producto.id, data.image_128);

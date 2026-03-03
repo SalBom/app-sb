@@ -108,7 +108,7 @@ const TableroVendedor: React.FC = () => {
   });
   const [loadingKpi, setLoadingKpi] = useState(false);
 
-  const getBaseUrl = () => 'https://app-salbom-production.up.railway.app';
+  const getBaseUrl = () => 'https://app-sb-production.up.railway.app';
 
   useEffect(() => {
     fetchData();

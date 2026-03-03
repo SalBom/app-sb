@@ -30,7 +30,7 @@ export const useProductosStore = create<ProductosState>((set, get) => ({
     set({ loading: true });
 
     try {
-      const res = await axios.get('https://app-salbom-production.up.railway.app/productos', {
+      const res = await axios.get('https://app-sb-production.up.railway.app/productos', {
         params: {
           limit: LIMITE,
           offset: append ? pagina * LIMITE : 0,
