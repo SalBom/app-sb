@@ -2160,6 +2160,8 @@ def _upsert_order_logic(client, data):
             d1 = float(it.get('discount1', 0) or 0.0)
             d2 = float(it.get('discount2', 0) or 0.0)
             d3 = float(it.get('discount3', 0) or 0.0)
+            
+            # Mantenemos el descuento equivalente por si el core nativo de Odoo lo necesita
             discount_eq = 100.0 * (1.0 - (1.0 - d1/100.0)*(1.0 - d2/100.0)*(1.0 - d3/100.0))
 
             try:
@@ -2167,11 +2169,15 @@ def _upsert_order_logic(client, data):
                 sku = str(var_data.get('default_code') or "").strip()
             except: sku = ""
 
+            # 🚀 INYECCIÓN DIRECTA DE LAS 3 COLUMNAS
             line_vals = {
                 "product_id": variant_id,
                 "product_uom_qty": qty,
                 "price_unit": price,
                 "discount": float(round(discount_eq, 4)),
+                "discount1": d1,
+                "discount2": d2,
+                "discount3": d3
             }
             if name: line_vals["name"] = str(name)
 
@@ -2197,7 +2203,6 @@ def _upsert_order_logic(client, data):
         order_lines_cmd.append((0, 0, {'display_type': 'line_section', 'name': str(title)}))
         for l in lines: order_lines_cmd.append((0, 0, l))
 
-    # 🚀 FIX 500 ERROR: UNIFIED WRITE COMMAND FOR ODOO
     try:
         order_obj = None
 
@@ -2206,7 +2211,6 @@ def _upsert_order_logic(client, data):
                 existing = client.env['sale.order'].search([('id', '=', order_id_to_update)])
                 if existing:
                     update_vals = {
-                        # Odoo 14 permite eliminar y recrear en el mismo array sin generar locks
                         'order_line': [(5, 0, 0)] + order_lines_cmd,
                         'note': str(nota_cliente),
                         'client_order_ref': str(ref_cliente)
@@ -2235,7 +2239,6 @@ def _upsert_order_logic(client, data):
             if carrier_id: vals["carrier_id"] = carrier_id
             order_obj = client.env['sale.order'].create(vals)
 
-        # Odoo calcula impuestos y totales nativamente
         try: order_obj._amount_all()
         except: pass
 
