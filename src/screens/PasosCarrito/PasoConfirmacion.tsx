@@ -577,7 +577,7 @@ const styles = StyleSheet.create({
   label: { width: 150, fontWeight: '800', color: '#2B2B2B' },
   value: { flex: 1, color: '#2B2B2B', lineHeight: 18 },
   
-  prodWrap: { marginTop: 8, paddingBottom: 6 },
+  prodWrap: { marginTop: 8, paddingBottom: 6, marginHorizontal: 14 },
   tableHeader: { flexDirection: 'row', paddingHorizontal: 4, marginBottom: 4, marginTop: 10 },
   headerText: { fontSize: 10, fontWeight: '800', color: '#909090', letterSpacing: 0.5 },
   headerLine: { height: 1, backgroundColor: '#E5E6EA', marginBottom: 8 },
@@ -607,7 +607,7 @@ const styles = StyleSheet.create({
   fxLabel: { color: '#6A6E73', fontSize: 11, marginBottom: 2, fontWeight: '600' },
   fxValue: { color: '#2B2B2B', fontWeight: '800', fontSize: 13 },
   totalLabel: { fontSize: 14, fontWeight: '800', color: '#2B2B2B' },
-  totalValue: { fontSize: 24, fontWeight: '900', color: '#1C9BD8' },
+  totalValue: { fontSize: 20, fontWeight: '900', color: '#1C9BD8' },
 
   footerContainer: { backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#f0f0f0', paddingTop: 15, paddingHorizontal: 10, shadowColor: '#000', shadowOffset: { width: 0, height: -3 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 5 },
   buttons: { flexDirection: 'row', justifyContent: 'space-between', gap: 10, paddingHorizontal: 8 },

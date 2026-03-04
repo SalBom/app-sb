@@ -18,7 +18,6 @@ import { API_URL } from '../../config';
 
 interface Props { onNext: () => void; onBack: () => void; }
 
-// 🚀 FIX: Agregamos el transport_data a la interfaz
 type Cliente = { 
     id: number; 
     name: string; 
@@ -60,19 +59,13 @@ async function safeFetch(url: string) {
   } catch (e) { return { ok: false, data: null }; }
 }
 
-// 🚀 FIX: Extraemos el transporte dinámico que ahora manda Odoo de forma segura
 function normalizeClientes(lista: any[]): Cliente[] {
   if (!Array.isArray(lista)) return [];
   return lista.map((c: any) => {
-    
-    // Le damos prioridad absoluta al nuevo campo dinámico que armamos en el backend
     let tData = c.app_transport_data || null;
-    
-    // Fallback por las dudas si entra directo
     if (!tData && Array.isArray(c.property_delivery_carrier_id) && c.property_delivery_carrier_id.length === 2) {
         tData = { id: c.property_delivery_carrier_id[0], name: c.property_delivery_carrier_id[1] };
     }
-
     return {
       id: c.id ?? c.partner_id ?? c.partnerId,
       name: c.name ?? c.display_name ?? c.razon_social ?? c.nombre,
@@ -114,14 +107,10 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
 
   const clienteSel = useMemo(() => clientes.find(c => c.id === clienteId) ?? null, [clientes, clienteId]);
 
-  // 🚀 NUEVO: Escuchamos el cambio de cliente y le inyectamos su transporte al Store Global
   useEffect(() => {
     if (clienteSel) {
         if (clienteSel.transport_data) {
-            setStore({ 
-                transporte: clienteSel.transport_data, 
-                transporteAsignado: clienteSel.transport_data.name 
-            });
+            setStore({ transporte: clienteSel.transport_data, transporteAsignado: clienteSel.transport_data.name });
         } else {
             setStore({ transporte: null, transporteAsignado: null });
         }
@@ -204,47 +193,126 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
     if (!clienteObj?.id || !plazoIdFinal) { Alert.alert('Faltan datos', 'Seleccioná un cliente válido.'); return; }
 
     const st = getStore();
-    
-    // 🚀 FIX: Leemos limpiamente el objeto y el nombre del transporte
     const objTransporte = st.transporte;
     let transporteNombrePuro = objTransporte?.name || st.transporteAsignado || '';
-    
     const esEnvioADomicilio = metodoEnvio === 'domicilio' || transporteNombrePuro.toLowerCase().includes('domicilio');
     const nombreEnvioFinal = transporteNombrePuro ? transporteNombrePuro : (esEnvioADomicilio ? 'Envío a Domicilio' : 'Retiro en Sucursal');
-
     const tcSeguro = tipoCambio && tipoCambio > 0 ? tipoCambio : 1450;
+
     const itemsLimpios = items.filter((it: any) => {
         const pid = Number(it.product_id);
         return !isNaN(pid) && pid < 2147483647;
     });
 
-    const localBaseSinTransporte = itemsLimpios
+    // 1. Calculamos la Base Imponible sin Descuentos (para verificar si alcanza el mínimo de la regla)
+    const baseParaValidarRegla = itemsLimpios
         .filter((it:any) => String(it.product_id) !== '4011')
         .reduce((acc:number, it:any) => {
             const q = toNum(it.product_uom_qty ?? it.qty ?? it.quantity ?? 1);
             const p = toNum(it.price_unit);
-            const d1 = toNum(it.discount1); const d2 = toNum(it.discount2); const d3 = toNum(it.discount3);
-            const f = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
-            return acc + (p * q * f);
+            return acc + (p * q);
         }, 0);
 
-    const baseARS = localBaseSinTransporte * tcSeguro;
-    let costoEnvioUSD = 0;
+    // 2. Traer regla de descuentos del backend
+    let desc1 = 0, desc2 = 0, desc3 = 0, allowOffer = false, appliedRule = false;
+    try {
+        const resDesc = await fetch(`${API_URL}/calcular-descuentos`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ payment_term_id: plazoIdFinal, amount_total: baseParaValidarRegla })
+        });
+        const dData = await resDesc.json();
+        
+        if (dData && dData.applied_rule) {
+            appliedRule = true;
+            desc1 = Number(dData.discount1 || 0);
+            desc2 = Number(dData.discount2 || 0);
+            desc3 = Number(dData.discount3 || 0);
+            allowOffer = Boolean(dData.allow_in_offer);
+        }
+    } catch (e) {
+        console.log("Error consultando regla de descuentos", e);
+    }
 
+    // 3. Aplicar regla ítem por ítem
+    const itemsConDescuentosAplicados = itemsLimpios.filter((it:any) => String(it.product_id) !== '4011').map((it: any) => {
+        // Es oferta si el precio de lista existe y el precio de venta es menor
+        const isOffer = it.list_price && (it.list_price - it.price_unit > 0.01);
+
+        let finalD1 = it.discount1 || 0;
+        let finalD2 = it.discount2 || 0;
+        let finalD3 = it.discount3 || 0;
+
+        if (appliedRule) {
+            if (isOffer && !allowOffer) {
+                // Producto en oferta y la regla NO permite aplicarle descuento
+                finalD1 = 0; finalD2 = 0; finalD3 = 0;
+            } else {
+                // Aplicar descuentos completos
+                finalD1 = desc1; finalD2 = desc2; finalD3 = desc3;
+            }
+        }
+
+        return {
+            product_id: it.product_id,
+            product_uom_qty: it.product_uom_qty ?? it.qty ?? it.quantity ?? 1,
+            price_unit: Number(it.price_unit ?? 0),
+            discount1: finalD1,
+            discount2: finalD2,
+            discount3: finalD3,
+            payment_term_id: it.payment_term_id,
+            name: it.name,
+            list_price: it.list_price,
+            default_code: it.default_code
+        };
+    });
+
+    // 4. Calcular costo del envío
+    const baseParaEnvioUSD = itemsConDescuentosAplicados.reduce((acc:number, it:any) => {
+        const q = it.product_uom_qty;
+        const p = it.price_unit;
+        const factor = (1 - it.discount1/100) * (1 - it.discount2/100) * (1 - it.discount3/100);
+        return acc + (p * q * factor);
+    }, 0);
+
+    const baseARS = baseParaEnvioUSD * tcSeguro;
+    let costoEnvioUSD = 0;
     if (esEnvioADomicilio) {
         if (baseARS <= 250000) costoEnvioUSD = 9000 / tcSeguro;
         else if (baseARS <= 500000) costoEnvioUSD = 6000 / tcSeguro;
         else costoEnvioUSD = 0;
     }
 
-    const odooItems: any[] = itemsLimpios.filter((it:any) => String(it.product_id) !== '4011').map((it: any) => ({
+    // 5. Inyectar en Zustand para que PasoConfirmacion lo renderice exactamente como quedó
+    const itemsParaZustand: any[] = [...itemsConDescuentosAplicados];
+    itemsParaZustand.push({
+        product_id: 4011,
+        name: nombreEnvioFinal,
+        default_code: 'FLETE',
+        product_uom_qty: 1,
+        price_unit: costoEnvioUSD,
+        discount1: 0, discount2: 0, discount3: 0,
+        payment_term_id: plazoIdFinal,
+        list_price: costoEnvioUSD
+    });
+
+    setStore({ 
+        clienteSeleccionado: clienteObj, 
+        envioSeleccionado: metodoEnvio, 
+        direccionEntrega: metodoEnvio === 'domicilio' && addrSelected ? { ...addrSelected } : null,
+        items: itemsParaZustand 
+    });
+
+    // 6. Enviar a Odoo
+    const odooItems = itemsConDescuentosAplicados.map((it: any) => ({
         product_id: it.product_id, 
-        product_uom_qty: it.product_uom_qty ?? it.qty ?? it.quantity ?? 1, 
-        price_unit: Number(it.price_unit ?? 0),
-        discount1: Number(it.discount1 ?? 0), 
-        discount2: Number(it.discount2 ?? 0),
-        discount3: Number(it.discount3 ?? 0),
+        product_uom_qty: it.product_uom_qty, 
+        price_unit: it.price_unit,
+        discount1: it.discount1, 
+        discount2: it.discount2,
+        discount3: it.discount3,
         payment_term_id: it.payment_term_id,
+        name: it.name
     }));
 
     odooItems.push({
@@ -254,24 +322,6 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
         discount1: 0, discount2: 0, discount3: 0,
         payment_term_id: plazoIdFinal,
         name: nombreEnvioFinal 
-    });
-
-    const itemsParaZustand: any[] = itemsLimpios.filter((it:any) => String(it.product_id) !== '4011');
-    itemsParaZustand.push({
-        product_id: 4011,
-        name: nombreEnvioFinal,
-        default_code: 'FLETE',
-        product_uom_qty: 1,
-        price_unit: costoEnvioUSD,
-        discount1: 0, discount2: 0, discount3: 0,
-        payment_term_id: plazoIdFinal
-    });
-
-    setStore({ 
-        clienteSeleccionado: clienteObj, 
-        envioSeleccionado: metodoEnvio, 
-        direccionEntrega: metodoEnvio === 'domicilio' && addrSelected ? { ...addrSelected } : null,
-        items: itemsParaZustand 
     });
 
     try {

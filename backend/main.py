@@ -1857,54 +1857,56 @@ def save_payment_discounts_config():
 @app.route('/calcular-descuentos', methods=['POST'])
 def calcular_descuentos():
     """
-    Nueva lógica:
-    - Ya NO mira historial de compras.
-    - Mira la tabla app_payment_discounts en PG.
-    - Aplica si payment_term_id coincide Y total_pedido >= min_amount.
+    Evalúa la regla de descuentos de Postgres y le devuelve 
+    las condiciones exactas a la App para que procese ítem por ítem.
     """
     pg_conn = None
     try:
         data = request.get_json() or {}
         payment_term_id = data.get('payment_term_id')
-        total_amount = data.get('amount_total', 0) # El frontend debe enviar esto ahora
+        total_amount = data.get('amount_total', 0) 
 
-        # Descuentos base (se mantienen en 0 o según lógica manual si quieres)
-        # En el nuevo esquema, Discount 1 es el que manda según la regla.
         descuento1 = 0
-        descuento2 = 0 
-        descuento3 = 0
+        descuento2 = 0
+        allow_in_offer = False
+        rule_applied = False
 
         if payment_term_id and DATABASE_URL:
             pg_conn = get_pg_connection()
             if pg_conn:
                 cur = pg_conn.cursor()
                 cur.execute(
-                    "SELECT discount, min_amount FROM app_payment_discounts WHERE payment_term_id = %s", 
+                    "SELECT discount, min_amount, discount2, allow_in_offer FROM app_payment_discounts WHERE payment_term_id = %s", 
                     (payment_term_id,)
                 )
                 row = cur.fetchone()
                 cur.close()
                 
                 if row:
-                    rule_discount = float(row[0])
-                    rule_min = float(row[1])
+                    rule_discount = float(row[0] or 0)
+                    rule_min = float(row[1] or 0)
+                    rule_discount2 = float(row[2] or 0)
+                    r_allow_offer = bool(row[3])
                     
-                    # Verificamos si cumple el mínimo
                     if float(total_amount) >= rule_min:
                         descuento1 = rule_discount
+                        descuento2 = rule_discount2
+                        allow_in_offer = r_allow_offer
+                        rule_applied = True
 
         return jsonify({
             "discount1": descuento1,
             "discount2": descuento2,
-            "discount3": descuento3,
-            "applied_rule": True
+            "discount3": 0,
+            "allow_in_offer": allow_in_offer,
+            "applied_rule": rule_applied
         })
 
     except Exception as e:
         log.error(f"❌ /calcular-descuentos: {e}")
-        # En caso de error, devolvemos 0 para no bloquear la venta
         return jsonify({
-            "discount1": 0, "discount2": 0, "discount3": 0
+            "discount1": 0, "discount2": 0, "discount3": 0,
+            "allow_in_offer": False, "applied_rule": False
         })
     finally:
         if pg_conn: pg_conn.close()
