@@ -236,7 +236,7 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
 
     // 3. Aplicar regla ítem por ítem
     const itemsConDescuentosAplicados = itemsLimpios.filter((it:any) => String(it.product_id) !== '4011').map((it: any) => {
-        // Es oferta si el precio de lista existe y el precio de venta es menor
+        // Es oferta si el precio de lista existe y el precio unitario es menor
         const isOffer = it.list_price && (it.list_price - it.price_unit > 0.01);
 
         let finalD1 = it.discount1 || 0;
@@ -244,12 +244,19 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
         let finalD3 = it.discount3 || 0;
 
         if (appliedRule) {
-            if (isOffer && !allowOffer) {
-                // Producto en oferta y la regla NO permite aplicarle descuento
-                finalD1 = 0; finalD2 = 0; finalD3 = 0;
+            if (isOffer) {
+                // 🚀 REGLA DE OFERTA: 
+                // Nunca lleva el descuento principal (D1).
+                // Solo lleva el descuento de contado (D2) si la regla lo permite.
+                finalD1 = 0; 
+                finalD2 = allowOffer ? desc2 : 0; 
+                finalD3 = 0;
             } else {
-                // Aplicar descuentos completos
-                finalD1 = desc1; finalD2 = desc2; finalD3 = desc3;
+                // 🚀 REGLA DE LISTA DE PRECIOS:
+                // Lleva todos los descuentos completos según la tabla.
+                finalD1 = desc1; 
+                finalD2 = desc2; 
+                finalD3 = desc3;
             }
         }
 

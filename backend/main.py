@@ -1868,10 +1868,6 @@ def save_payment_discounts_config():
 
 @app.route('/calcular-descuentos', methods=['POST'])
 def calcular_descuentos():
-    """
-    Evalúa la regla de descuentos de Postgres y le devuelve 
-    las condiciones exactas a la App para que procese ítem por ítem.
-    """
     pg_conn = None
     try:
         data = request.get_json() or {}
@@ -1887,6 +1883,7 @@ def calcular_descuentos():
             pg_conn = get_pg_connection()
             if pg_conn:
                 cur = pg_conn.cursor()
+                # 🚀 ACÁ ESTÁ LA CLAVE: El SELECT debe incluir discount2 y allow_in_offer
                 cur.execute(
                     "SELECT discount, min_amount, discount2, allow_in_offer FROM app_payment_discounts WHERE payment_term_id = %s", 
                     (payment_term_id,)
