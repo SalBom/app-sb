@@ -2231,9 +2231,9 @@ def _upsert_order_logic(client, data):
             try:
                 existing = client.env['sale.order'].search([('id', '=', order_id_to_update)])
                 if existing:
+                    # 🚀 ACTUALIZACIÓN: Sin el campo 'note'
                     update_vals = {
                         'order_line': [(5, 0, 0)] + order_lines_cmd,
-                        'note': str(nota_cliente),
                         'client_order_ref': str(ref_cliente)
                     }
                     if global_term_id: update_vals['payment_term_id'] = global_term_id
@@ -2247,13 +2247,13 @@ def _upsert_order_logic(client, data):
                 raise e_upd
 
         if not order_obj:
+            # 🚀 CREACIÓN: Sin el campo 'note'
             vals = {
                 "partner_id": int(cliente.id),
                 "partner_invoice_id": int(cliente.id),
                 "partner_shipping_id": partner_shipping_id if partner_shipping_id else int(cliente.id),
                 "payment_term_id": global_term_id if global_term_id else False,
                 "origin": "APP SALBOM",
-                "note": str(nota_cliente),
                 "client_order_ref": str(ref_cliente),
                 "order_line": order_lines_cmd
             }
@@ -2263,8 +2263,13 @@ def _upsert_order_logic(client, data):
         try: order_obj._amount_all()
         except: pass
 
+        # 🚀 REGISTRO DE NOTAS INTERNAS (CHATTER)
         if obs_internas:
             try: order_obj.message_post(body=f"📝 <b>Observación interna:</b><br/>{obs_internas}", message_type='comment', subtype_xmlid='mail.mt_note')
+            except: pass
+            
+        if nota_cliente:
+            try: order_obj.message_post(body=f"🗣️ <b>Instrucciones del Cliente:</b><br/>{nota_cliente}", message_type='comment', subtype_xmlid='mail.mt_note')
             except: pass
 
         nro_pedido = f"Pedido #{order_obj.id}"
