@@ -2111,6 +2111,18 @@ def _upsert_order_logic(client, data):
     if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
     cliente = cliente[0]
 
+    # 🚀 0. BUSCAR O CREAR ETIQUETA "Pedidos APP"
+    tag_id = None
+    try:
+        tags = client.env['crm.tag'].search([('name', '=', 'Pedidos APP')], limit=1)
+        if tags:
+            tag_id = int(tags[0].id)
+        else:
+            new_tag = client.env['crm.tag'].create({'name': 'Pedidos APP'})
+            tag_id = int(new_tag.id)
+    except Exception:
+        pass # Si falla (ej: permisos), ignora y sigue sin romper el pedido
+
     # 🚀 1. BUSCAR EL PLAZO "CONTADO" O "INMEDIATO" EN ODOO
     immediate_term_id = None
     try:
@@ -2120,7 +2132,7 @@ def _upsert_order_logic(client, data):
 
     term_ids_to_fetch = set()
     if global_term_id: term_ids_to_fetch.add(global_term_id)
-    if immediate_term_id: term_ids_to_fetch.add(immediate_term_id) # Lo agregamos para tener su nombre luego
+    if immediate_term_id: term_ids_to_fetch.add(immediate_term_id)
 
     for it in items:
         it_term = clean_int(it.get('payment_term_id'))
@@ -2142,7 +2154,6 @@ def _upsert_order_logic(client, data):
             raw_id = clean_int(it.get('product_id'))
             if not raw_id: continue
             
-            # Lógica para encontrar el producto/template
             if str(raw_id) == '4011':
                 pp = client.env['product.product'].search([('default_code', '=', 'FLETE')], limit=1)
                 if not pp:
@@ -2155,18 +2166,14 @@ def _upsert_order_logic(client, data):
             if not pp: continue
                 
             variant_id = int(pp[0].id)
-            # Permitimos repetir el transporte si hiciera falta, pero bloqueamos duplicados de productos normales
             if str(raw_id) != '4011' and variant_id in vistos: continue 
             vistos.add(variant_id)
 
             qty = float(it.get('qty') or it.get('product_uom_qty') or it.get('quantity') or 1)
             price = float(it.get('price_unit', 0))
             name = it.get('name')
-            
-            # Determinamos el plazo original del ítem
             item_term_id = clean_int(it.get('payment_term_id')) or global_term_id or 0
 
-            # 🚀 2. FORZAR TRANSPORTE A CONTADO
             if str(raw_id) == '4011' and immediate_term_id:
                 item_term_id = immediate_term_id
 
@@ -2195,7 +2202,6 @@ def _upsert_order_logic(client, data):
             }
             if name: line_vals["name"] = str(name)
 
-            # Clasificación de Oferta (Flete NUNCA es oferta)
             is_offer = False
             if str(raw_id) != '4011':
                 is_offer = (lst_price > 0.0) and ((lst_price - price) > 0.01)
@@ -2228,7 +2234,6 @@ def _upsert_order_logic(client, data):
             try:
                 existing = client.env['sale.order'].search([('id', '=', order_id_to_update)])
                 if existing:
-                    # 🚀 ACTUALIZACIÓN: Sin el campo 'note'
                     update_vals = {
                         'order_line': [(5, 0, 0)] + order_lines_cmd,
                         'client_order_ref': str(ref_cliente)
@@ -2237,6 +2242,10 @@ def _upsert_order_logic(client, data):
                     if carrier_id: update_vals['carrier_id'] = carrier_id
                     if partner_shipping_id: update_vals['partner_shipping_id'] = partner_shipping_id
                     
+                    # 🚀 INYECTAR ETIQUETA EN ACTUALIZACIÓN
+                    if tag_id: 
+                        update_vals['tag_ids'] = [(4, tag_id)] # El comando 4 de Odoo significa "Agregar ID sin borrar el resto"
+                    
                     existing.write(update_vals)
                     order_obj = existing[0]
             except Exception as e_upd:
@@ -2244,7 +2253,6 @@ def _upsert_order_logic(client, data):
                 raise e_upd
 
         if not order_obj:
-            # 🚀 CREACIÓN: Sin el campo 'note'
             vals = {
                 "partner_id": int(cliente.id),
                 "partner_invoice_id": int(cliente.id),
@@ -2255,12 +2263,16 @@ def _upsert_order_logic(client, data):
                 "order_line": order_lines_cmd
             }
             if carrier_id: vals["carrier_id"] = carrier_id
+            
+            # 🚀 INYECTAR ETIQUETA EN CREACIÓN
+            if tag_id: 
+                vals["tag_ids"] = [(4, tag_id)]
+
             order_obj = client.env['sale.order'].create(vals)
 
         try: order_obj._amount_all()
         except: pass
 
-        # 🚀 REGISTRO DE NOTAS INTERNAS (CHATTER)
         if obs_internas:
             try: order_obj.message_post(body=f"📝 <b>Observación interna:</b><br/>{obs_internas}", message_type='comment', subtype_xmlid='mail.mt_note')
             except: pass

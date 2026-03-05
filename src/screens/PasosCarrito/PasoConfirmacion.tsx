@@ -94,6 +94,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     envioSeleccionado, 
     clearCart, 
     consultaResumen, 
+    orderId, // 🚀 ID Maestro
     direccionEntrega,
     transporte, 
     transporteAsignado,
@@ -119,7 +120,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const [liveTotals, setLiveTotals] = useState({ base: 0, tax: 0, total: 0 });
   const [isSyncingTotals, setIsSyncingTotals] = useState(false);
 
-  const draftOrderId = consultaResumen?.pedido_id;
+  // 🚀 Utilizamos el ID Maestro para nunca perder el hilo y evitar duplicados
+  const draftOrderId = consultaResumen?.pedido_id || orderId;
   const rawNroPedido = consultaResumen?.nro_pedido || consultaResumen?.name || '---';
   const isBorrador = ['/', 'New', 'Nuevo', '* Nuevo *', 'Borrador'].includes(rawNroPedido);
   const nroPedidoFormateado = isBorrador ? (draftOrderId ? `Pedido #${draftOrderId}` : 'Pendiente asignar') : rawNroPedido;
@@ -165,7 +167,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     } catch { setTipoCambio(TIPO_CAMBIO_FALLBACK); }
   }, []);
 
-  const canEdit = userRole === 'Admin' || userRole === 'Vendedor Black';
+  const canEdit = ['ADMIN', 'VENDEDOR BLACK'].includes(String(userRole).toUpperCase());
 
   const openEditModal = (item: any) => {
       setEditingItem(item);
@@ -178,109 +180,80 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       setModalVisible(true);
   };
 
-  const handleSaveEdit = () => {
-      if (!editingItem) return;
-      const newPrice = parseFloat(editValues.price) || 0;
-      const nd1 = parseFloat(editValues.d1) || 0;
-      const nd2 = parseFloat(editValues.d2) || 0;
-      const nd3 = parseFloat(editValues.d3) || 0;
+  // =====================================================================
+  // LÓGICA DE PROCESAMIENTO Y ACTUALIZACIÓN SILENCIOSA
+  // =====================================================================
 
-      const currentItems = useCartStore.getState().items;
-      const newItems = currentItems.map((it: any) => {
-          if (it.product_id === editingItem.product_id) {
-              return { ...it, price_unit: newPrice, discount1: nd1, discount2: nd2, discount3: nd3 };
+  const tcSeguro = tipoCambio && tipoCambio > 0 ? tipoCambio : TIPO_CAMBIO_FALLBACK;
+  const objTransporte = transporteAsignado || transporte;
+  let transporteNombrePuro = '';
+  if (typeof objTransporte === 'string') transporteNombrePuro = objTransporte;
+  else if (objTransporte) transporteNombrePuro = objTransporte.name || objTransporte.transporte || '';
+
+  const esEnvioADomicilio = envioSeleccionado === 'domicilio' || transporteNombrePuro.toLowerCase().includes('domicilio');
+  const nombreEnvioFinal = transporteNombrePuro ? transporteNombrePuro : (esEnvioADomicilio ? 'Envío a Domicilio' : 'Retiro en Sucursal');
+
+  const processItemsForTransport = (sourceItems: any[]) => {
+      const limpios = Array.isArray(sourceItems) ? sourceItems.filter((it: any) => !isNaN(Number(it.product_id)) && Number(it.product_id) < 2147483647) : [];
+      const baseLocal = limpios
+          .filter((it: any) => String(it.product_id) !== '4011')
+          .reduce((acc: number, it: any) => {
+              const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
+              const price = toNumber(it?.price_unit);
+              const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
+              const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
+              return acc + (price * qty * factor);
+          }, 0);
+
+      const baseARS = baseLocal * tcSeguro;
+      let costEnvio = 0;
+      if (esEnvioADomicilio) {
+          if (baseARS <= 250000) costEnvio = 9000 / tcSeguro;
+          else if (baseARS <= 500000) costEnvio = 6000 / tcSeguro;
+      }
+
+      let hasTrans = false;
+      const procesados = limpios.map((it: any) => {
+          if (String(it.product_id) === '4011') {
+              hasTrans = true;
+              return { ...it, price_unit: costEnvio, name: nombreEnvioFinal, discount1: 0, discount2: 0, discount3: 0 };
           }
           return it;
       });
-      useCartStore.setState({ items: newItems });
-      setModalVisible(false);
-      setEditingItem(null);
+
+      if (esEnvioADomicilio && !hasTrans && limpios.length > 0) {
+          procesados.push({
+              product_id: 4011,
+              name: nombreEnvioFinal,
+              default_code: 'FLETE',
+              qty: 1,
+              product_uom_qty: 1,
+              price_unit: costEnvio,
+              discount1: 0, discount2: 0, discount3: 0,
+              payment_term_id: plazoSeleccionado?.id 
+          });
+      }
+      return { procesados, baseLocal, costEnvio };
   };
 
-  // =====================================================================
-  // OBTENCIÓN Y LIMPIEZA DEL TRANSPORTE
-  // =====================================================================
-  const itemsLimpios = Array.isArray(items) ? items.filter((it: any) => {
-      const pid = Number(it.product_id);
-      return !isNaN(pid) && pid < 2147483647; 
-  }) : [];
-
-  const tcSeguro = tipoCambio && tipoCambio > 0 ? tipoCambio : TIPO_CAMBIO_FALLBACK;
-  
-  // Extraemos puramente el nombre del transporte elegido en el estado
-  const objTransporte = transporteAsignado || transporte;
-  let transporteNombrePuro = '';
-  if (typeof objTransporte === 'string') {
-      transporteNombrePuro = objTransporte;
-  } else if (objTransporte) {
-      transporteNombrePuro = objTransporte.name || objTransporte.transporte || '';
-  }
-
-  const esEnvioADomicilio = envioSeleccionado === 'domicilio' || transporteNombrePuro.toLowerCase().includes('domicilio');
-
-  const localBaseSinTransporte = itemsLimpios
-    .filter((it: any) => String(it.product_id) !== '4011')
-    .reduce((acc: number, it: any) => {
-        const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
-        const price = toNumber(it?.price_unit);
-        const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
-        const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
-        return acc + (price * qty * factor);
-    }, 0);
-
-  const baseARS = localBaseSinTransporte * tcSeguro;
-  let costoEnvioUSD = 0;
-
-  if (esEnvioADomicilio) {
-      if (baseARS <= 250000) {
-          costoEnvioUSD = 9000 / tcSeguro;
-      } else if (baseARS <= 500000) {
-          costoEnvioUSD = 6000 / tcSeguro;
-      } else {
-          costoEnvioUSD = 0; 
-      }
-  }
-
-  const nombreEnvioFinal = transporteNombrePuro ? transporteNombrePuro : (esEnvioADomicilio ? 'Envío a Domicilio' : 'Retiro en Sucursal');
-
-  let hasTransportItem = false;
-  const itemsProcesados = itemsLimpios.map((it: any) => {
-      if (String(it.product_id) === '4011') {
-          hasTransportItem = true;
-          return { ...it, price_unit: costoEnvioUSD, name: nombreEnvioFinal, discount1: 0, discount2: 0, discount3: 0 };
-      }
-      return it;
-  });
-
-  if (esEnvioADomicilio && !hasTransportItem && itemsLimpios.length > 0) {
-      itemsProcesados.push({
-          product_id: 4011,
-          name: nombreEnvioFinal,
-          default_code: 'FLETE',
-          qty: 1,
-          product_uom_qty: 1,
-          price_unit: costoEnvioUSD,
-          discount1: 0, discount2: 0, discount3: 0,
-          payment_term_id: plazoSeleccionado?.id 
-      });
-  }
-
-  const buildPayload = async () => {
+  const buildPayload = async (rawItems: any[]) => {
       const cuitUser = await getCuitFromStorage();
       const v_name = loggedUserName || 'Vendedor App';
+      const { procesados } = processItemsForTransport(rawItems);
+      
       return {
           order_id_to_update: draftOrderId || null,
+          pedido_id: draftOrderId || null, // Redundancia de seguridad para evitar crear nuevos
           cliente_cuit: clienteSeleccionado?.vat || cuitUser,
           payment_term_id: plazoSeleccionado?.id,
           partner_shipping_id: direccionEntrega?.id || null,
           carrier_id: transporte?.id || null,
           created_by_name: v_name,
-          // 🚀 FIX: Inyectar el nombre del transporte en las observaciones
           note: observationText,
           observaciones: observationText 
                 ? `Cargado por: ${v_name}\nTransporte: ${transporteNombrePuro || nombreEnvioFinal}\n\nObservaciones del cliente: ${observationText}` 
                 : `Cargado por: ${v_name}\nTransporte: ${transporteNombrePuro || nombreEnvioFinal}`,
-          items: itemsProcesados.map((it: any) => ({
+          items: procesados.map((it: any) => ({
               product_id: it.product_id,
               qty: it.product_uom_qty || it.qty || it.quantity || 1,
               product_uom_qty: it.product_uom_qty || it.qty || it.quantity || 1,
@@ -294,18 +267,53 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       };
   };
 
-  // =====================================================================
-  // 🚀 FIX: CONSULTA SIMPLE DE TOTALES YA CARGADOS EN ODOO
-  // =====================================================================
+  // 🚀 EL GUARDE ACTUALIZA ODOO SILENCIOSAMENTE Y RECALCULA TOTALES
+  const handleSaveEdit = async () => {
+      if (!editingItem) return;
+      const newPrice = toNumber(editValues.price);
+      const nd1 = toNumber(editValues.d1);
+      const nd2 = toNumber(editValues.d2);
+      const nd3 = toNumber(editValues.d3);
+
+      const currentItems = useCartStore.getState().items;
+      const newItems = currentItems.map((it: any) => {
+          if (it.product_id === editingItem.product_id) {
+              return { ...it, price_unit: newPrice, discount1: nd1, discount2: nd2, discount3: nd3 };
+          }
+          return it;
+      });
+      
+      useCartStore.setState({ items: newItems });
+      setModalVisible(false);
+      setEditingItem(null);
+
+      // Reseteamos totales para que la pantalla calcule el cambio matemáticamente al instante
+      setLiveTotals({ base: 0, tax: 0, total: 0 });
+      setIsSyncingTotals(true);
+
+      try {
+          const freshPayload = await buildPayload(newItems);
+          const resp = await axios.post(`${API_URL}/actualizar-pedido`, freshPayload);
+          if (resp.data && resp.data.pedido_id) {
+              setLiveTotals({
+                  base: toNumber(resp.data.base_imponible),
+                  tax: toNumber(resp.data.impuestos),
+                  total: toNumber(resp.data.total)
+              });
+          }
+      } catch (e) {
+          console.log("Error al sincronizar totales editados", e);
+      } finally {
+          setIsSyncingTotals(false);
+      }
+  };
+
   useEffect(() => {
     if (!draftOrderId) return;
-    
     setIsSyncingTotals(true);
-    
     const fetchTotals = async () => {
         try {
             const resp = await axios.get(`${API_URL}/pedido/${draftOrderId}/totales`);
-            
             if (resp.data) {
                 setLiveTotals({
                     base: toNumber(resp.data.base_imponible),
@@ -313,15 +321,13 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                     total: toNumber(resp.data.total)
                 });
             }
-        } catch (error) {
-            console.log("Error consultando totales del pedido:", error);
-        } finally {
-            setIsSyncingTotals(false);
-        }
+        } catch (error) { } 
+        finally { setIsSyncingTotals(false); }
     };
-    
     fetchTotals();
   }, [draftOrderId]); 
+
+  const { procesados: itemsProcesados, baseLocal: localBaseSinTransporte, costEnvio: costoEnvioUSD } = processItemsForTransport(items);
 
   const localBase = localBaseSinTransporte + costoEnvioUSD;
   const localTax = localBase * 0.21;
@@ -345,8 +351,10 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         return;
       }
 
-      const payload = await buildPayload();
-      const resp = await axios.post(`${API_URL}/crear-pedido`, payload);
+      // 🚀 Siempre utilizamos /actualizar-pedido para evitar duplicados, 
+      // ya que PasoDatos se encargó de crearlo en borrador.
+      const payload = await buildPayload(useCartStore.getState().items);
+      const resp = await axios.post(`${API_URL}/actualizar-pedido`, payload);
       const j = resp.data;
       
       if (j && j.pedido_id) {
@@ -405,7 +413,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             <View style={styles.row}><Text style={styles.label}>Pago:</Text><Text style={styles.value}>{getPlazoTexto(plazoSeleccionado)}</Text></View>
             <View style={styles.row}><Text style={styles.label}>Envío:</Text><Text style={styles.value}>{direccionEntrega ? `${direccionEntrega.street || ''}, ${direccionEntrega.city || ''}` : getEnvioTexto(envioSeleccionado)}</Text></View>
             
-            {/* 🚀 FIX: VISIBILIDAD DE TRANSPORTE EN APP */}
             {transporteNombrePuro !== '' && (
                 <View style={styles.row}>
                     <Text style={styles.label}>Transporte:</Text>

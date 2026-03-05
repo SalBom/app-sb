@@ -273,10 +273,10 @@ const styles = StyleSheet.create({
   placeholderText: { color: '#9CA3AF', fontSize: 11, fontFamily: 'BarlowCondensed-Regular' },
   rightCol: { flex: 1, paddingLeft: 12, justifyContent: 'flex-start', minWidth: 0 },
   cuotas: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, letterSpacing: 0.4, color: '#1F2937', marginBottom: 2 },
-  price: { fontFamily: 'BarlowCondensed-Bold', fontSize: 38, lineHeight: 38, color: '#2B2B2B', letterSpacing: -1 },
+  price: { fontFamily: 'BarlowCondensed-Bold', fontSize: 34, lineHeight: 38, color: '#2B2B2B', letterSpacing: -1 },
   priceRow: { flexDirection: 'row', alignItems: 'baseline' }, 
   priceOld: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#9CA3AF', textDecorationLine: 'line-through', marginRight: 8, marginBottom: 0 },
-  priceOffer: { fontFamily: 'BarlowCondensed-Bold', fontSize: 38, lineHeight: 38, color: '#D32F2F', letterSpacing: -1 },
+  priceOffer: { fontFamily: 'BarlowCondensed-Bold', fontSize: 34, lineHeight: 38, color: '#D32F2F', letterSpacing: -1 },
   title: { fontFamily: 'BarlowCondensed-Bold', fontSize: 18, color: '#1F2937', textTransform: 'uppercase', lineHeight: 20, marginBottom: 2 },
   
   codeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 2 },

@@ -245,15 +245,15 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
 
         if (appliedRule) {
             if (isOffer) {
-                // 🚀 REGLA DE OFERTA: 
-                // Nunca lleva el descuento principal (D1).
-                // Solo lleva el descuento de contado (D2) si la regla lo permite.
-                finalD1 = 0; 
-                finalD2 = allowOffer ? desc2 : 0; 
+                // 🚀 TRUCO DE OFERTA: 
+                // Mandamos el descuento de contado (Ej: 5%) a la COLUMNA 1.
+                // Así en Odoo no queda la primera columna en 0 y la segunda en 5.
+                finalD1 = allowOffer ? desc2 : 0; 
+                finalD2 = 0; 
                 finalD3 = 0;
             } else {
                 // 🚀 REGLA DE LISTA DE PRECIOS:
-                // Lleva todos los descuentos completos según la tabla.
+                // Llenamos las columnas completas (Ej: D1: 25% y D2: 5%)
                 finalD1 = desc1; 
                 finalD2 = desc2; 
                 finalD3 = desc3;
