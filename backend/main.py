@@ -2114,8 +2114,17 @@ def _upsert_order_logic(client, data):
     if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
     cliente = cliente[0]
 
+    # 🚀 1. BUSCAR EL PLAZO "CONTADO" O "INMEDIATO" EN ODOO
+    immediate_term_id = None
+    try:
+        t_imm = client.env['account.payment.term'].search(['|', ('name', 'ilike', 'inmediato'), ('name', 'ilike', 'contado')], limit=1)
+        if t_imm: immediate_term_id = int(t_imm[0])
+    except: pass
+
     term_ids_to_fetch = set()
     if global_term_id: term_ids_to_fetch.add(global_term_id)
+    if immediate_term_id: term_ids_to_fetch.add(immediate_term_id) # Lo agregamos para tener su nombre luego
+
     for it in items:
         it_term = clean_int(it.get('payment_term_id'))
         if it_term: term_ids_to_fetch.add(it_term)
@@ -2136,6 +2145,7 @@ def _upsert_order_logic(client, data):
             raw_id = clean_int(it.get('product_id'))
             if not raw_id: continue
             
+            # Lógica para encontrar el producto/template
             if str(raw_id) == '4011':
                 pp = client.env['product.product'].search([('default_code', '=', 'FLETE')], limit=1)
                 if not pp:
@@ -2148,13 +2158,20 @@ def _upsert_order_logic(client, data):
             if not pp: continue
                 
             variant_id = int(pp[0].id)
-            if variant_id in vistos: continue 
+            # Permitimos repetir el transporte si hiciera falta, pero bloqueamos duplicados de productos normales
+            if str(raw_id) != '4011' and variant_id in vistos: continue 
             vistos.add(variant_id)
 
             qty = float(it.get('qty') or it.get('product_uom_qty') or it.get('quantity') or 1)
             price = float(it.get('price_unit', 0))
             name = it.get('name')
+            
+            # Determinamos el plazo original del ítem
             item_term_id = clean_int(it.get('payment_term_id')) or global_term_id or 0
+
+            # 🚀 2. FORZAR TRANSPORTE A CONTADO
+            if str(raw_id) == '4011' and immediate_term_id:
+                item_term_id = immediate_term_id
 
             d1 = float(it.get('discount1', 0) or 0.0)
             d2 = float(it.get('discount2', 0) or 0.0)
@@ -2163,11 +2180,12 @@ def _upsert_order_logic(client, data):
             discount_eq = 100.0 * (1.0 - (1.0 - d1/100.0)*(1.0 - d2/100.0)*(1.0 - d3/100.0))
 
             try:
-                # 🚀 LEEMOS EL PRECIO DE LISTA OFICIAL DIRECTO DE ODOO (lst_price)
                 var_data = client.env['product.product'].read([variant_id], ['default_code', 'lst_price'])[0]
                 lst_price = float(var_data.get('lst_price') or 0.0)
+                sku = str(var_data.get('default_code') or "").strip()
             except: 
                 lst_price = 0.0
+                sku = ""
 
             line_vals = {
                 "product_id": variant_id,
@@ -2180,8 +2198,7 @@ def _upsert_order_logic(client, data):
             }
             if name: line_vals["name"] = str(name)
 
-            # 🚀 NUEVA LÓGICA DE CLASIFICACIÓN
-            # Es oferta si no es el flete y el precio del carrito es menor al de lista de Odoo
+            # Clasificación de Oferta (Flete NUNCA es oferta)
             is_offer = False
             if str(raw_id) != '4011':
                 is_offer = (lst_price > 0.0) and ((lst_price - price) > 0.01)
@@ -2202,7 +2219,6 @@ def _upsert_order_logic(client, data):
     for (is_offer, term_id) in sorted_keys:
         lines = groups[(is_offer, term_id)]
         term_name = terms_map.get(term_id, "Estándar")
-        # 🚀 Arma el título de la sección mágicamente
         title = f"[OFERTA] {term_name}" if is_offer else f"[LISTA DE PRECIOS] {term_name}"
 
         order_lines_cmd.append((0, 0, {'display_type': 'line_section', 'name': str(title)}))
