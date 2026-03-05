@@ -26,7 +26,7 @@ import { API_URL } from '../../config';
 import PantallaExitoPedido from './PantallaExitoPedido';
 
 const SIDE_MARGIN = 10;
-const TIPO_CAMBIO_FALLBACK = 1450;
+const TIPO_CAMBIO_FALLBACK = 1;
 const SHADOW_OFFSET = 6;  
 const BLUR_RADIUS = 4;    
 const SVG_PAD = 20;       

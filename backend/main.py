@@ -681,7 +681,57 @@ def get_facturas():
 
 # ---------------------------------------------------------------
 
-# main.py
+# --- HELPER: OFERTAS EN TIEMPO REAL ---
+def _inject_realtime_offers(client, page_slice):
+    """
+    Evalúa las reglas activas de la Tarifa 70 en Odoo en tiempo real para los productos en pantalla.
+    Soporta descuentos de Precio Fijo, Porcentajes y reglas aplicadas por Categoría.
+    """
+    tmpl_ids = [int(p['id']) for p in page_slice]
+    realtime_offers = {}
+    if not tmpl_ids:
+        return realtime_offers
+        
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    
+    def _fetch_rules():
+        return client.env['product.pricelist.item'].search_read([
+            ('pricelist_id', '=', 70),
+            '|', ('date_start', '=', False), ('date_start', '<=', now_str),
+            '|', ('date_end', '=', False), ('date_end', '>=', now_str)
+        ], ['applied_on', 'product_tmpl_id', 'categ_id', 'fixed_price', 'compute_price', 'percent_price'])
+
+    # Cache ultra-corto (2 mins) para no saturar Odoo al scrollear, pero mantener los precios vivos
+    active_rules = get_cache_or_execute("active_pricelist_70_rules_v3", ttl=120, fallback_fn=_fetch_rules) or []
+
+    rules_by_tmpl = { r['product_tmpl_id'][0]: r for r in active_rules if r.get('applied_on') == '1_product' and r.get('product_tmpl_id') }
+    rules_by_cat = { r['categ_id'][0]: r for r in active_rules if r.get('applied_on') == '2_product_category' and r.get('categ_id') }
+
+    for p in page_slice:
+        tid = int(p['id'])
+        base_price = float(p.get('list_price') or 0)
+        
+        cid = None
+        if p.get('categ_id'):
+            cid = p['categ_id'][0] if isinstance(p['categ_id'], (list, tuple)) else p['categ_id']
+            
+        rule = rules_by_tmpl.get(tid) or rules_by_cat.get(cid)
+        
+        if rule:
+            c_type = rule.get('compute_price', 'fixed')
+            off_price = 0
+            if c_type == 'fixed':
+                off_price = float(rule.get('fixed_price', 0))
+            elif c_type == 'percentage':
+                pct = float(rule.get('percent_price', 0))
+                off_price = base_price * (1 - (pct / 100.0))
+            
+            # Si el precio final es menor al de lista, ¡hay oferta!
+            if 0 < off_price < base_price:
+                realtime_offers[tid] = round(off_price, 2)
+                
+    return realtime_offers
+
 
 @app.route("/productos", methods=["GET"])
 def get_productos():
@@ -695,16 +745,6 @@ def get_productos():
         no_tag   = str(request.args.get("no_tag_filter", "false")).lower() == "true"
         marca_id = request.args.get("marca_id")
         categ_id = request.args.get("categ_id")
-
-        # 1. Obtener mapeo de ofertas desde PostgreSQL (Persistencia SKU)
-        offer_map = {}
-        pg_conn = get_pg_connection()
-        if pg_conn:
-            cur = pg_conn.cursor()
-            cur.execute("SELECT sku, price_offer FROM app_product_offers WHERE is_active = TRUE")
-            rows = cur.fetchall()
-            offer_map = {r[0]: float(r[1]) for r in rows}
-            cur.close()
 
         # 2. Detectar campo marca en Odoo
         posibles_campos = ["product_brand_id", "x_brand", "x_marca", "brand_id", "x_studio_marca"]
@@ -749,6 +789,9 @@ def get_productos():
         page_slice = productos[offset: offset + limit]
         stock_data_map = _compute_stock_states(client, page_slice)
 
+        # 🚀 5.5 INYECCIÓN DE OFERTAS EN TIEMPO REAL
+        offer_map = _inject_realtime_offers(client, page_slice)
+
         def get_fb_url(p):
             return f"https://firebasestorage.googleapis.com/v0/b/{FIREBASE_BUCKET}/o/{quote(p, safe='')}?alt=media"
 
@@ -770,13 +813,10 @@ def get_productos():
             md_path    = code_path or f"products/{pid}/md.webp"
             thumb_path = code_path or f"products/{pid}/thumb.webp"
 
-            # Lógica de Precios con persistencia de PG
             list_price = float(r.get("list_price") or 0)
-            offer_price = offer_map.get(sku, None)
             
-            # Validar que la oferta sea menor al precio de lista
-            if offer_price is not None and offer_price >= list_price: 
-                offer_price = None
+            # 🚀 Asignamos el precio de oferta mapeado directo por Odoo
+            offer_price = offer_map.get(pid, None)
 
             st_info = stock_data_map.get(pid, {'state': 'green', 'quantity': 0})
 
@@ -813,29 +853,20 @@ def get_productos():
 def get_marcas():
     client = get_odoo_client()
     try:
-        # Usamos una clave de caché distinta para diferenciarla de la lista completa anterior
         key = "marcas_filtradas_app"
 
         def query():
-            # 1. Buscar TODOS los productos con etiqueta 'APP'
-            # Solo traemos el campo 'product_brand_id' para que sea rápido
             products = client.env["product.template"].search_read(
                 [("product_tag_ids", "ilike", "APP")], 
                 ["product_brand_id"]
             )
-            
-            # 2. Extraer los IDs únicos de las marcas usadas en esos productos
             brand_ids = set()
             for p in products:
                 pb = p.get("product_brand_id")
-                # Odoo devuelve many2one como [id, "Nombre"] o False
                 if pb and isinstance(pb, (list, tuple)) and len(pb) > 0:
                     brand_ids.add(pb[0])
             
-            if not brand_ids:
-                return []
-
-            # 3. Buscar los detalles (nombre) solo de esas marcas
+            if not brand_ids: return []
             return client.env["product.brand"].search_read(
                 [("id", "in", list(brand_ids))], 
                 ["id", "name"],
@@ -846,11 +877,9 @@ def get_marcas():
 
     except Exception as e:
         handle_connection_error(e)
-        log.error(f"❌ /marcas: {str(e)}")
         return jsonify({"error": str(e)}), 500
     finally:
         release_odoo_client(client)
-
 
 @app.route("/categorias", methods=["GET"])
 def get_categorias():
@@ -859,23 +888,17 @@ def get_categorias():
         key = "categorias_filtradas_app"
 
         def query():
-            # 1. Buscar TODOS los productos con etiqueta 'APP'
             products = client.env["product.template"].search_read(
                 [("product_tag_ids", "ilike", "APP")], 
                 ["categ_id"]
             )
-            
-            # 2. Extraer IDs únicos de categorías
             categ_ids = set()
             for p in products:
                 pc = p.get("categ_id")
                 if pc and isinstance(pc, (list, tuple)) and len(pc) > 0:
                     categ_ids.add(pc[0])
             
-            if not categ_ids:
-                return []
-
-            # 3. Buscar los detalles de esas categorías
+            if not categ_ids: return []
             return client.env["product.category"].search_read(
                 [("id", "in", list(categ_ids))], 
                 ["id", "name"],
@@ -886,7 +909,6 @@ def get_categorias():
 
     except Exception as e:
         handle_connection_error(e)
-        log.error(f"❌ /categorias: {str(e)}")
         return jsonify({"error": str(e)}), 500
     finally:
         release_odoo_client(client)
@@ -1601,14 +1623,10 @@ def get_mis_facturas():
     finally:
         release_odoo_client(client)
 
-# main.py (Reemplaza solo esta función)
-
-# main.py (Fragmento actualizado para productos relacionados)
 
 @app.route("/producto/<int:producto_id>/relacionados", methods=["GET"])
 def producto_relacionados(producto_id: int):
     client = get_odoo_client()
-    pg_conn = None
     try:
         lim_arg = request.args.get("limit", "10")
         try:
@@ -1621,16 +1639,6 @@ def producto_relacionados(producto_id: int):
         if not tmpl or not tmpl.exists():
             return jsonify({"items": []}), 200
 
-        # 1. Obtener mapeo de ofertas desde PostgreSQL (Cruce por SKU)
-        offer_map = {}
-        pg_conn = get_pg_connection()
-        if pg_conn:
-            cur = pg_conn.cursor()
-            cur.execute("SELECT sku, price_offer FROM app_product_offers WHERE is_active = TRUE")
-            rows = cur.fetchall()
-            offer_map = {r[0]: float(r[1]) for r in rows}
-            cur.close()
-
         # Buscamos campos de productos relacionados en Odoo
         candidates = [
             getattr(tmpl, "optional_product_ids", None),
@@ -1642,32 +1650,37 @@ def producto_relacionados(producto_id: int):
             if not sku: return None
             return f"https://firebasestorage.googleapis.com/v0/b/{FIREBASE_BUCKET}/o/products%2F{quote(sku.strip())}%2F{quote(sku.strip())}.webp?alt=media"
 
-        items = []
+        # 🚀 Preparar diccionarios para inyectar ofertas dinámicas
+        related_dicts = []
         for t in list(related)[:limit]:
             try:
-                sku = (t.default_code or "").strip()
-                list_price = float(t.list_price or 0.0)
-                
-                # Cruce con tabla de ofertas
-                offer_price = offer_map.get(sku, None)
-                
-                # Validar que la oferta sea menor al precio de lista
-                if offer_price is not None and offer_price >= list_price:
-                    offer_price = None
-
-                items.append({
-                    "id": int(t.id),
-                    "name": t.name or "",
-                    "list_price": list_price,
-                    "price_offer": offer_price, # Enviamos el precio de oferta a la App
-                    "default_code": sku,
-                    "categ_id": [t.categ_id.id, t.categ_id.name] if t.categ_id else None,
-                    "image_md_url": get_fb_url(sku),
-                    "image_thumb_url": get_fb_url(sku),
-                    "write_date": str(t.write_date or "")
+                related_dicts.append({
+                    'id': int(t.id),
+                    'list_price': float(t.list_price or 0.0),
+                    'categ_id': [t.categ_id.id, t.categ_id.name] if t.categ_id else None,
+                    'record': t
                 })
-            except Exception:
-                continue
+            except: pass
+            
+        # 🚀 Mapeo dinámico usando la misma lógica
+        offer_map = _inject_realtime_offers(client, related_dicts)
+
+        items = []
+        for d in related_dicts:
+            t = d['record']
+            sku = (t.default_code or "").strip()
+            
+            items.append({
+                "id": d['id'],
+                "name": t.name or "",
+                "list_price": d['list_price'],
+                "price_offer": offer_map.get(d['id'], None), # Inyección perfecta
+                "default_code": sku,
+                "categ_id": d['categ_id'],
+                "image_md_url": get_fb_url(sku),
+                "image_thumb_url": get_fb_url(sku),
+                "write_date": str(t.write_date or "")
+            })
 
         return jsonify({"items": items})
     except Exception as e:
@@ -1675,7 +1688,6 @@ def producto_relacionados(producto_id: int):
         log.error(f"❌ /producto/<id>/relacionados error: {e}")
         return jsonify({"items": []}), 200
     finally:
-        if pg_conn: pg_conn.close()
         release_odoo_client(client)
 
 @app.route("/descargar_pdf")
@@ -3780,7 +3792,7 @@ def get_favoritos():
     client = get_odoo_client()
     
     try:
-        # 1. Obtener User ID (Misma corrección aplicada aquí)
+        # 1. Obtener User ID
         partner = client.env["res.partner"].search([("vat", "=", cuit)], limit=1)
         if not partner: return jsonify({"items": []}) 
         
@@ -3803,28 +3815,19 @@ def get_favoritos():
             return jsonify({"items": []})
 
         # 3. Obtener detalles de productos desde Odoo
-        
-        # A. Mapa de ofertas (PG)
-        offer_map = {}
-        cur = pg_conn.cursor()
-        cur.execute("SELECT sku, price_offer FROM app_product_offers WHERE is_active = TRUE")
-        offer_rows = cur.fetchall()
-        cur.close()
-        offer_map = {r[0]: float(r[1]) for r in offer_rows}
-
-        # B. Consulta Odoo
         prods_odoo = client.env["product.template"].search_read(
             [("id", "in", fav_ids)],
             ["id", "name", "list_price", "default_code", "write_date", "categ_id"]
         )
         
-        # C. Stock
+        # 🚀 4. Stock & Ofertas (Inyección en tiempo real)
         stock_map = _compute_stock_states(client, prods_odoo)
+        offer_map = _inject_realtime_offers(client, prods_odoo)
 
         def get_fb_url(path):
             return f"https://firebasestorage.googleapis.com/v0/b/{FIREBASE_BUCKET}/o/{quote(path, safe='')}?alt=media"
 
-        # D. Normalizar
+        # 5. Normalizar
         items = []
         for p in prods_odoo:
             pid = p["id"]
@@ -3832,10 +3835,8 @@ def get_favoritos():
             wd = str(p["write_date"] or "")
             list_price = float(p.get("list_price") or 0)
             
-            # Oferta
-            offer_price = offer_map.get(sku, None)
-            if offer_price is not None and offer_price >= list_price:
-                offer_price = None
+            # Asignar oferta traída de Odoo
+            offer_price = offer_map.get(pid, None)
 
             # Imagen
             code_path = f"products/{sku}/{sku}.webp" if sku else None
