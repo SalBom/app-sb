@@ -67,7 +67,10 @@ const SVG_PADDING = BLUR_RADIUS * 3;
 export const ITEM_HEIGHT = CARD_HEIGHT + SHADOW_OFFSET + SVG_PADDING + 12; 
 
 const fmt = (n: number) =>
-  new Intl.NumberFormat('es-AR', { maximumFractionDigits: 0 }).format(Math.max(0, Math.round(n || 0)));
+  new Intl.NumberFormat('es-AR', { 
+    minimumFractionDigits: 2, 
+    maximumFractionDigits: 2 
+  }).format(Math.max(0, n || 0));
 
 const toUpper = (s?: string | null) => (s ? String(s).toUpperCase() : '');
 

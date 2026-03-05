@@ -53,7 +53,10 @@ interface Props {
 }
 
 const fmt = (n: number) =>
-  new Intl.NumberFormat('es-AR', { maximumFractionDigits: 0 }).format(Math.max(0, Math.round(n || 0)));
+  new Intl.NumberFormat('es-AR', { 
+    minimumFractionDigits: 2, 
+    maximumFractionDigits: 2 
+  }).format(Math.max(0, n || 0));
 
 const CUT_SIZE = 20;      
 const SHADOW_OFFSET = 4;  
