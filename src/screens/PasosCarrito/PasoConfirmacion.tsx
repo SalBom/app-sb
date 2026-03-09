@@ -94,7 +94,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     envioSeleccionado, 
     clearCart, 
     consultaResumen, 
-    orderId, // 🚀 ID Maestro
+    orderId,
     direccionEntrega,
     transporte, 
     transporteAsignado,
@@ -117,10 +117,15 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const [observationText, setObservationText] = useState(notasIniciales || '');
   const [showObservationModal, setShowObservationModal] = useState(false);
 
-  const [liveTotals, setLiveTotals] = useState({ base: 0, tax: 0, total: 0 });
+  const [liveTotals, setLiveTotals] = useState({ 
+      base: toNumber(consultaResumen?.base_imponible), 
+      tax: toNumber(consultaResumen?.impuestos), 
+      total: toNumber(consultaResumen?.total) 
+  });
   const [isSyncingTotals, setIsSyncingTotals] = useState(false);
 
-  // 🚀 Utilizamos el ID Maestro para nunca perder el hilo y evitar duplicados
+  const [isTransportIgnored, setIsTransportIgnored] = useState(false);
+
   const draftOrderId = consultaResumen?.pedido_id || orderId;
   const rawNroPedido = consultaResumen?.nro_pedido || consultaResumen?.name || '---';
   const isBorrador = ['/', 'New', 'Nuevo', '* Nuevo *', 'Borrador'].includes(rawNroPedido);
@@ -169,21 +174,9 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
 
   const canEdit = ['ADMIN', 'VENDEDOR BLACK'].includes(String(userRole).toUpperCase());
 
-  const openEditModal = (item: any) => {
-      setEditingItem(item);
-      setEditValues({
-          price: String(item.price_unit || 0),
-          d1: String(item.discount1 || 0),
-          d2: String(item.discount2 || 0),
-          d3: String(item.discount3 || 0),
-      });
-      setModalVisible(true);
-  };
-
   // =====================================================================
-  // LÓGICA DE PROCESAMIENTO Y ACTUALIZACIÓN SILENCIOSA
+  // LÓGICA DE PROCESAMIENTO
   // =====================================================================
-
   const tcSeguro = tipoCambio && tipoCambio > 0 ? tipoCambio : TIPO_CAMBIO_FALLBACK;
   const objTransporte = transporteAsignado || transporte;
   let transporteNombrePuro = '';
@@ -193,7 +186,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const esEnvioADomicilio = envioSeleccionado === 'domicilio' || transporteNombrePuro.toLowerCase().includes('domicilio');
   const nombreEnvioFinal = transporteNombrePuro ? transporteNombrePuro : (esEnvioADomicilio ? 'Envío a Domicilio' : 'Retiro en Sucursal');
 
-  const processItemsForTransport = (sourceItems: any[]) => {
+  const processItemsForTransport = (sourceItems: any[], ignoreTrans: boolean = isTransportIgnored) => {
       const limpios = Array.isArray(sourceItems) ? sourceItems.filter((it: any) => !isNaN(Number(it.product_id)) && Number(it.product_id) < 2147483647) : [];
       const baseLocal = limpios
           .filter((it: any) => String(it.product_id) !== '4011')
@@ -213,7 +206,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       }
 
       let hasTrans = false;
-      const procesados = limpios.map((it: any) => {
+      let procesados = limpios.map((it: any) => {
           if (String(it.product_id) === '4011') {
               hasTrans = true;
               return { ...it, price_unit: costEnvio, name: nombreEnvioFinal, discount1: 0, discount2: 0, discount3: 0 };
@@ -221,7 +214,11 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           return it;
       });
 
-      if (esEnvioADomicilio && !hasTrans && limpios.length > 0) {
+      if (ignoreTrans) {
+          procesados = procesados.filter((it: any) => String(it.product_id) !== '4011');
+          hasTrans = true;
+          costEnvio = 0; 
+      } else if (esEnvioADomicilio && !hasTrans && limpios.length > 0) {
           procesados.push({
               product_id: 4011,
               name: nombreEnvioFinal,
@@ -233,17 +230,17 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
               payment_term_id: plazoSeleccionado?.id 
           });
       }
-      return { procesados, baseLocal, costEnvio };
+      return { procesados };
   };
 
-  const buildPayload = async (rawItems: any[]) => {
+  const buildPayload = async (rawItems: any[], ignoreTrans: boolean = isTransportIgnored) => {
       const cuitUser = await getCuitFromStorage();
       const v_name = loggedUserName || 'Vendedor App';
-      const { procesados } = processItemsForTransport(rawItems);
+      const { procesados } = processItemsForTransport(rawItems, ignoreTrans);
       
       return {
           order_id_to_update: draftOrderId || null,
-          pedido_id: draftOrderId || null, // Redundancia de seguridad para evitar crear nuevos
+          pedido_id: draftOrderId || null, 
           cliente_cuit: clienteSeleccionado?.vat || cuitUser,
           payment_term_id: plazoSeleccionado?.id,
           partner_shipping_id: direccionEntrega?.id || null,
@@ -267,7 +264,61 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       };
   };
 
-  // 🚀 EL GUARDE ACTUALIZA ODOO SILENCIOSAMENTE Y RECALCULA TOTALES
+  const handleRemoveTransport = async () => {
+      setIsTransportIgnored(true);
+      const currentItems = useCartStore.getState().items.filter((it: any) => String(it.product_id) !== '4011');
+      useCartStore.setState({ items: currentItems });
+
+      setIsSyncingTotals(true);
+
+      try {
+          const freshPayload = await buildPayload(currentItems, true);
+          const resp = await axios.post(`${API_URL}/actualizar-pedido`, freshPayload);
+          if (resp.data && resp.data.pedido_id) {
+              setLiveTotals({
+                  base: toNumber(resp.data.base_imponible),
+                  tax: toNumber(resp.data.impuestos),
+                  total: toNumber(resp.data.total)
+              });
+              useCartStore.setState({
+                  consultaResumen: {
+                      ...(useCartStore.getState() as any).consultaResumen,
+                      base_imponible: resp.data.base_imponible,
+                      impuestos: resp.data.impuestos,
+                      total: resp.data.total
+                  } as any
+              });
+          }
+      } catch (e) {
+          console.log("Error al quitar transporte", e);
+      } finally {
+          setIsSyncingTotals(false);
+      }
+  };
+
+  const openEditModal = (item: any) => {
+      if (String(item.product_id) === '4011') {
+          Alert.alert(
+              "Eliminar Transporte",
+              "¿Deseás eliminar la línea del costo de transporte de este pedido?",
+              [
+                  { text: "Cancelar", style: "cancel" },
+                  { text: "Eliminar", style: "destructive", onPress: () => handleRemoveTransport() }
+              ]
+          );
+          return;
+      }
+
+      setEditingItem(item);
+      setEditValues({
+          price: String(item.price_unit || 0),
+          d1: String(item.discount1 || 0),
+          d2: String(item.discount2 || 0),
+          d3: String(item.discount3 || 0),
+      });
+      setModalVisible(true);
+  };
+
   const handleSaveEdit = async () => {
       if (!editingItem) return;
       const newPrice = toNumber(editValues.price);
@@ -287,18 +338,24 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       setModalVisible(false);
       setEditingItem(null);
 
-      // Reseteamos totales para que la pantalla calcule el cambio matemáticamente al instante
-      setLiveTotals({ base: 0, tax: 0, total: 0 });
       setIsSyncingTotals(true);
 
       try {
-          const freshPayload = await buildPayload(newItems);
+          const freshPayload = await buildPayload(newItems, isTransportIgnored);
           const resp = await axios.post(`${API_URL}/actualizar-pedido`, freshPayload);
           if (resp.data && resp.data.pedido_id) {
               setLiveTotals({
                   base: toNumber(resp.data.base_imponible),
                   tax: toNumber(resp.data.impuestos),
                   total: toNumber(resp.data.total)
+              });
+              useCartStore.setState({
+                  consultaResumen: {
+                      ...(useCartStore.getState() as any).consultaResumen,
+                      base_imponible: resp.data.base_imponible,
+                      impuestos: resp.data.impuestos,
+                      total: resp.data.total
+                  } as any
               });
           }
       } catch (e) {
@@ -308,34 +365,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       }
   };
 
-  useEffect(() => {
-    if (!draftOrderId) return;
-    setIsSyncingTotals(true);
-    const fetchTotals = async () => {
-        try {
-            const resp = await axios.get(`${API_URL}/pedido/${draftOrderId}/totales`);
-            if (resp.data) {
-                setLiveTotals({
-                    base: toNumber(resp.data.base_imponible),
-                    tax: toNumber(resp.data.impuestos),
-                    total: toNumber(resp.data.total)
-                });
-            }
-        } catch (error) { } 
-        finally { setIsSyncingTotals(false); }
-    };
-    fetchTotals();
-  }, [draftOrderId]); 
-
-  const { procesados: itemsProcesados, baseLocal: localBaseSinTransporte, costEnvio: costoEnvioUSD } = processItemsForTransport(items);
-
-  const localBase = localBaseSinTransporte + costoEnvioUSD;
-  const localTax = localBase * 0.21;
-  const localTotal = localBase + localTax;
-
-  const mostrarBase  = liveTotals.total > 0 ? liveTotals.base : localBase;
-  const mostrarImpuestos = liveTotals.total > 0 ? liveTotals.tax : localTax;
-  const mostrarTotal = liveTotals.total > 0 ? liveTotals.total : localTotal;
+  const { procesados: itemsProcesados } = processItemsForTransport(items);
 
   const confirmarPedido = async () => {
     if (loading || isSubmittingRef.current) return;
@@ -351,9 +381,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         return;
       }
 
-      // 🚀 Siempre utilizamos /actualizar-pedido para evitar duplicados, 
-      // ya que PasoDatos se encargó de crearlo en borrador.
-      const payload = await buildPayload(useCartStore.getState().items);
+      const payload = await buildPayload(useCartStore.getState().items, isTransportIgnored);
       const resp = await axios.post(`${API_URL}/actualizar-pedido`, payload);
       const j = resp.data;
       
@@ -363,7 +391,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             finalNro = `Pedido #${j.pedido_id}`;
         }
         setFinalOrderName(finalNro);
-        setFinalTotal(j.total || mostrarTotal);
+        setFinalTotal(j.total || liveTotals.total);
         setShowSuccess(true);
         clearCart(); 
       } else {
@@ -451,12 +479,16 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                   <View style={styles.vSep} />
                   <View style={styles.colQty}><Text allowFontScaling={false} style={styles.qtyText}>x{qty}</Text></View>
                   <View style={styles.vSep} />
-                  <TouchableOpacity style={styles.colPrice} disabled={!canEdit || isTransport} onPress={() => openEditModal(it)}>
-                    <Text allowFontScaling={false} style={[styles.priceText, canEdit && !isTransport && { color: '#1C9BD8', textDecorationLine: 'underline' }]} numberOfLines={1}>{formatUsd(priceUnit)}</Text>
+                  <TouchableOpacity style={styles.colPrice} disabled={!canEdit} onPress={() => openEditModal(it)}>
+                    <Text allowFontScaling={false} style={[styles.priceText, canEdit && { color: '#1C9BD8', textDecorationLine: 'underline' }]} numberOfLines={1}>{formatUsd(priceUnit)}</Text>
                   </TouchableOpacity>
                   <View style={styles.vSep} />
-                  <TouchableOpacity style={styles.colDisc} disabled={!canEdit || isTransport} onPress={() => openEditModal(it)}>
-                    {isTransport ? <Text style={styles.dash}>-</Text> : ((d1 > 0 || d2 > 0 || d3 > 0) ? (<View style={[styles.discountBadge, canEdit && { backgroundColor: '#E3F2FD' }]}><Text allowFontScaling={false} style={styles.discountText}>{[d1, d2, d3].filter(d => d > 0).join('+')}%</Text></View>) : (<Text style={[styles.dash, canEdit && { color: '#1C9BD8' }]}>{canEdit ? 'Add' : '-'}</Text>))}
+                  <TouchableOpacity style={styles.colDisc} disabled={!canEdit} onPress={() => openEditModal(it)}>
+                    {isTransport 
+                        ? <Text style={[styles.dash, canEdit && { color: '#D32F2F', fontSize: 9, fontWeight: 'bold' }]}>{canEdit ? 'QUITAR' : '-'}</Text> 
+                        : ((d1 > 0 || d2 > 0 || d3 > 0) 
+                            ? (<View style={[styles.discountBadge, canEdit && { backgroundColor: '#E3F2FD' }]}><Text allowFontScaling={false} style={styles.discountText}>{[d1, d2, d3].filter(d => d > 0).join('+')}%</Text></View>) 
+                            : (<Text style={[styles.dash, canEdit && { color: '#1C9BD8' }]}>{canEdit ? 'Add' : '-'}</Text>))}
                   </TouchableOpacity>
                   <View style={styles.vSep} />
                   <View style={styles.colSub}><Text allowFontScaling={false} style={styles.subText} numberOfLines={1}>{formatUsd(subTotalLine)}</Text></View>
@@ -478,8 +510,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                     </>
                 ) : (
                     <>
-                        <Text style={styles.taxRightText}>{formatUsd(mostrarBase)}</Text>
-                        <Text style={styles.taxRightText}>{formatUsd(mostrarImpuestos)}</Text>
+                        <Text style={styles.taxRightText}>{formatUsd(liveTotals.base)}</Text>
+                        <Text style={styles.taxRightText}>{formatUsd(liveTotals.tax)}</Text>
                     </>
                 )}
             </View>
@@ -495,7 +527,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                 {isSyncingTotals ? (
                     <ActivityIndicator size="small" color="#1C9BD8" style={{ marginLeft: 10 }} />
                 ) : (
-                    <Text style={styles.totalValue}>{formatUsd(mostrarTotal)}</Text>
+                    <Text style={styles.totalValue}>{formatUsd(liveTotals.total)}</Text>
                 )}
               </View>
           </View>
