@@ -117,14 +117,13 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const [observationText, setObservationText] = useState(notasIniciales || '');
   const [showObservationModal, setShowObservationModal] = useState(false);
 
-  // 🚀 ESTADO INICIAL BASADO EN LA MEMORIA DEL PASO ANTERIOR
   const [liveTotals, setLiveTotals] = useState({ 
       base: toNumber(consultaResumen?.base_imponible), 
       tax: toNumber(consultaResumen?.impuestos), 
       total: toNumber(consultaResumen?.total) 
   });
+  
   const [isSyncingTotals, setIsSyncingTotals] = useState(false);
-
   const [isTransportIgnored, setIsTransportIgnored] = useState(false);
 
   const draftOrderId = consultaResumen?.pedido_id || orderId;
@@ -155,9 +154,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         if (cuit) {
             try {
                 const res = await axios.get(`${API_URL}/usuario-perfil`, { params: { cuit } });
-                const data = res.data;
-                if (data?.role) setUserRole(data.role);
-                if (data?.name) setLoggedUserName(data.name);
+                if (res.data?.role) setUserRole(res.data.role);
+                if (res.data?.name) setLoggedUserName(res.data.name);
             } catch (e) { }
         }
     };
@@ -175,19 +173,61 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
 
   const canEdit = ['ADMIN', 'VENDEDOR BLACK'].includes(String(userRole).toUpperCase());
 
-  // 🚀 ESCUCHAMOS AL ESTADO GLOBAL PARA ACTUALIZAR LOS TOTALES (En lugar de hacer fetchs fallidos)
+  // 🚀 FUNCIÓN MAESTRA: INSISTE HASTA OBTENER LOS TOTALES DE ODOO SIN IMPORTAR CORTES DE RED
+  const pollTotalsFromOdoo = useCallback(() => {
+      if (!draftOrderId) return;
+      let attempts = 0;
+      setIsSyncingTotals(true);
+
+      const fetcher = async () => {
+          attempts++;
+          try {
+              const resp = await axios.get(`${API_URL}/pedido/${draftOrderId}/totales`);
+              const t = toNumber(resp.data?.total);
+              
+              // Si Odoo ya calculó y respondió un total válido
+              if (t > 0) {
+                  setLiveTotals({
+                      base: toNumber(resp.data.base_imponible),
+                      tax: toNumber(resp.data.impuestos),
+                      total: t
+                  });
+                  useCartStore.setState({
+                      consultaResumen: {
+                          ...(useCartStore.getState() as any).consultaResumen,
+                          base_imponible: resp.data.base_imponible,
+                          impuestos: resp.data.impuestos,
+                          total: resp.data.total
+                      } as any
+                  });
+                  setIsSyncingTotals(false);
+                  return; // ¡Éxito! Frenamos el ciclo.
+              }
+          } catch (e) {
+              console.log(`[Intento ${attempts}] Error de conexión con Odoo, reintentando...`);
+          }
+
+          // Si falló o dio 0, volvemos a intentar hasta 6 veces
+          if (attempts < 6) {
+              setTimeout(fetcher, 1500); 
+          } else {
+              setIsSyncingTotals(false); // Nos rendimos para no bloquear la app infinitamente
+          }
+      };
+      
+      setTimeout(fetcher, 500); // Pequeña demora inicial para darle respiro a Odoo
+  }, [draftOrderId]);
+
+
+  // 🚀 AL ABRIR LA PANTALLA: Si Odoo nos mandó 0.00 en el paso anterior, arrancamos la insistencia.
   useEffect(() => {
-      if (consultaResumen && consultaResumen.total > 0) {
-          setLiveTotals({
-              base: toNumber(consultaResumen.base_imponible),
-              tax: toNumber(consultaResumen.impuestos),
-              total: toNumber(consultaResumen.total)
-          });
+      if (!consultaResumen || toNumber(consultaResumen.total) === 0) {
+          pollTotalsFromOdoo();
       }
-  }, [consultaResumen]);
+  }, []);
 
   // =====================================================================
-  // LÓGICA DE PROCESAMIENTO
+  // LÓGICA DE PROCESAMIENTO Y ACTUALIZACIÓN
   // =====================================================================
   const tcSeguro = tipoCambio && tipoCambio > 0 ? tipoCambio : TIPO_CAMBIO_FALLBACK;
   const objTransporte = transporteAsignado || transporte;
@@ -280,30 +320,13 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       setIsTransportIgnored(true);
       const currentItems = useCartStore.getState().items.filter((it: any) => String(it.product_id) !== '4011');
       useCartStore.setState({ items: currentItems });
-
       setIsSyncingTotals(true);
 
       try {
           const freshPayload = await buildPayload(currentItems, true);
-          const resp = await axios.post(`${API_URL}/actualizar-pedido`, freshPayload);
-          if (resp.data && resp.data.pedido_id) {
-              setLiveTotals({
-                  base: toNumber(resp.data.base_imponible),
-                  tax: toNumber(resp.data.impuestos),
-                  total: toNumber(resp.data.total)
-              });
-              useCartStore.setState({
-                  consultaResumen: {
-                      ...(useCartStore.getState() as any).consultaResumen,
-                      base_imponible: resp.data.base_imponible,
-                      impuestos: resp.data.impuestos,
-                      total: resp.data.total
-                  } as any
-              });
-          }
+          await axios.post(`${API_URL}/actualizar-pedido`, freshPayload);
+          pollTotalsFromOdoo(); // Re-calcula e insiste hasta obtener totales post-borrado
       } catch (e) {
-          console.log("Error al quitar transporte", e);
-      } finally {
           setIsSyncingTotals(false);
       }
   };
@@ -349,30 +372,13 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       useCartStore.setState({ items: newItems });
       setModalVisible(false);
       setEditingItem(null);
-
       setIsSyncingTotals(true);
 
       try {
           const freshPayload = await buildPayload(newItems, isTransportIgnored);
-          const resp = await axios.post(`${API_URL}/actualizar-pedido`, freshPayload);
-          if (resp.data && resp.data.pedido_id) {
-              setLiveTotals({
-                  base: toNumber(resp.data.base_imponible),
-                  tax: toNumber(resp.data.impuestos),
-                  total: toNumber(resp.data.total)
-              });
-              useCartStore.setState({
-                  consultaResumen: {
-                      ...(useCartStore.getState() as any).consultaResumen,
-                      base_imponible: resp.data.base_imponible,
-                      impuestos: resp.data.impuestos,
-                      total: resp.data.total
-                  } as any
-              });
-          }
+          await axios.post(`${API_URL}/actualizar-pedido`, freshPayload);
+          pollTotalsFromOdoo(); // Re-calcula e insiste tras el cambio de precio
       } catch (e) {
-          console.log("Error al sincronizar totales editados", e);
-      } finally {
           setIsSyncingTotals(false);
       }
   };
@@ -381,7 +387,6 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
 
   const confirmarPedido = async () => {
     if (loading || isSubmittingRef.current) return;
-    
     isSubmittingRef.current = true;
     setLoading(true);
     
@@ -475,14 +480,11 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             <View style={styles.headerLine} />
             {itemsProcesados.map((it: any, index: number) => {
               const isTransport = String(it.product_id) === '4011';
-              
               const referral = isTransport ? it.name : (it.default_code || it.name || 'SIN REF');
-              
               const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
               const priceUnit = toNumber(it?.price_unit);
               const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
               const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
-              
               const subTotalLine = priceUnit * qty * factor;
               
               return (
@@ -562,8 +564,8 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                   <Text style={styles.backText}>VOLVER</Text>
               </Animated.View>
           </TouchableWithoutFeedback>
-          <TouchableWithoutFeedback disabled={loading} onPressIn={() => animateBtn(confirmAnim, 1)} onPressOut={() => animateBtn(confirmAnim, 0)} onPress={handleConfirmPress}>
-              <Animated.View style={[styles.confirm, loading && { backgroundColor: '#A0A0A0' }, { transform: [{ scale: getScale(confirmAnim) }, { translateY: getTranslate(confirmAnim) }] }]}>
+          <TouchableWithoutFeedback disabled={loading || isSyncingTotals} onPressIn={() => animateBtn(confirmAnim, 1)} onPressOut={() => animateBtn(confirmAnim, 0)} onPress={handleConfirmPress}>
+              <Animated.View style={[styles.confirm, (loading || isSyncingTotals) && { backgroundColor: '#A0A0A0' }, { transform: [{ scale: getScale(confirmAnim) }, { translateY: getTranslate(confirmAnim) }] }]}>
                   {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.confirmText}>CONFIRMAR PEDIDO</Text>}
               </Animated.View>
           </TouchableWithoutFeedback>

@@ -2121,13 +2121,13 @@ def _upsert_order_logic(client, data):
             new_tag = client.env['crm.tag'].create({'name': 'Pedidos APP'})
             tag_id = int(new_tag.id)
     except Exception:
-        pass # Si falla (ej: permisos), ignora y sigue sin romper el pedido
+        pass 
 
     # 🚀 1. BUSCAR EL PLAZO "CONTADO" O "INMEDIATO" EN ODOO
     immediate_term_id = None
     try:
         t_imm = client.env['account.payment.term'].search(['|', ('name', 'ilike', 'inmediato'), ('name', 'ilike', 'contado')], limit=1)
-        if t_imm: immediate_term_id = int(t_imm[0])
+        if t_imm: immediate_term_id = int(t_imm[0].id)
     except: pass
 
     term_ids_to_fetch = set()
@@ -2242,9 +2242,8 @@ def _upsert_order_logic(client, data):
                     if carrier_id: update_vals['carrier_id'] = carrier_id
                     if partner_shipping_id: update_vals['partner_shipping_id'] = partner_shipping_id
                     
-                    # 🚀 INYECTAR ETIQUETA EN ACTUALIZACIÓN
                     if tag_id: 
-                        update_vals['tag_ids'] = [(4, tag_id)] # El comando 4 de Odoo significa "Agregar ID sin borrar el resto"
+                        update_vals['tag_ids'] = [(4, tag_id)]
                     
                     existing.write(update_vals)
                     order_obj = existing[0]
@@ -2264,7 +2263,6 @@ def _upsert_order_logic(client, data):
             }
             if carrier_id: vals["carrier_id"] = carrier_id
             
-            # 🚀 INYECTAR ETIQUETA EN CREACIÓN
             if tag_id: 
                 vals["tag_ids"] = [(4, tag_id)]
 
@@ -2286,16 +2284,23 @@ def _upsert_order_logic(client, data):
         currency = "USD"
         
         try:
-            datos = order_obj.read(['amount_total', 'amount_untaxed', 'name', 'currency_id'])[0]
-            read_name = datos.get('name')
-            if read_name and read_name not in ['/', 'New', 'Nuevo', '* Nuevo *', 'Borrador']:
-                nro_pedido = read_name
-                
-            total = float(datos.get('amount_total', 0.0))
-            base = float(datos.get('amount_untaxed', 0.0))
-            impuestos = total - base
-            if datos.get('currency_id'): currency = str(datos['currency_id'][1])
-        except Exception: pass
+            # 🚀 CORRECCIÓN: Evitar KeyError usando search_read en lugar de .read()[0]
+            datos_list = client.env['sale.order'].search_read(
+                [('id', '=', order_obj.id)], 
+                ['amount_total', 'amount_untaxed', 'name', 'currency_id']
+            )
+            if datos_list:
+                datos = datos_list[0]
+                read_name = datos.get('name')
+                if read_name and read_name not in ['/', 'New', 'Nuevo', '* Nuevo *', 'Borrador']:
+                    nro_pedido = read_name
+                    
+                total = float(datos.get('amount_total', 0.0))
+                base = float(datos.get('amount_untaxed', 0.0))
+                impuestos = total - base
+                if datos.get('currency_id'): currency = str(datos['currency_id'][1])
+        except Exception as e: 
+            log.error(f"Fallo leyendo totales en upsert: {e}")
 
         return jsonify({
             "pedido_id": order_obj.id,
@@ -2316,19 +2321,20 @@ def _upsert_order_logic(client, data):
 @app.route('/pedido/<int:pedido_id>/totales', methods=['GET'])
 def get_pedido_totales(pedido_id):
     def logic(client):
-        # 1. Buscamos el pedido
-        order = client.env['sale.order'].search([('id', '=', pedido_id)])
-        if not order: 
+        # 🚀 CORRECCIÓN: Usamos search_read para evitar el KeyError
+        orders = client.env['sale.order'].search_read(
+            [('id', '=', pedido_id)], 
+            ['amount_total', 'amount_untaxed']
+        )
+        if not orders: 
             return jsonify({"error": "Pedido no encontrado"}), 404
             
-        # 2. Leemos los totales (Odoo los calcula en el momento)
-        datos = order[0].read(['amount_total', 'amount_untaxed'])[0]
+        datos = orders[0] # Ahora sí sacamos de la lista sin que explote
         
         base = float(datos.get('amount_untaxed', 0.0))
         total = float(datos.get('amount_total', 0.0))
         impuestos = total - base
         
-        # 3. Devolvemos las 3 palabras exactas que espera tu App
         return jsonify({
             "pedido_id": pedido_id,
             "base_imponible": round(base, 2),
@@ -2337,7 +2343,6 @@ def get_pedido_totales(pedido_id):
         }), 200
 
     try:
-        # 🚀 ESTA ES LA CLAVE: El wrapper que revive la conexión si Odoo la cortó
         return execute_odoo_operation(logic)
     except Exception as e:
         log.error(f"❌ Error en /pedido/{pedido_id}/totales: {e}")
