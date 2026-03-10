@@ -371,8 +371,8 @@ def get_pg_connection():
 
 def init_roles_table():
     """
-    Inicializa la tabla de roles.
-    CORRECCIÓN: Elimina la restricción de Primary Key vieja para permitir pre-asignados.
+    Inicializa la tabla de roles y asegura las reglas de unicidad parciales
+    para que funcione el ON CONFLICT.
     """
     if not DATABASE_URL: return
     conn = get_pg_connection()
@@ -388,25 +388,28 @@ def init_roles_table():
             );
         """)
         
-        # 2. AGREGAR COLUMNAS FALTANTES
+        # 2. Agregar columnas
         for col in ['email', 'name', 'cuit']:
             cur.execute(f"ALTER TABLE app_user_roles ADD COLUMN IF NOT EXISTS {col} TEXT;")
 
-        # --- CORRECCIÓN CRÍTICA ---
-        # 3. Eliminar la restricción PRIMARY KEY vieja (si existe) que impide guardar NULLs
-        try:
-            cur.execute("ALTER TABLE app_user_roles DROP CONSTRAINT IF EXISTS app_user_roles_pkey;")
-        except Exception as e:
-            log.warning(f"Nota: No se pudo borrar PK (quizás no existía): {e}")
+        # 3. Eliminar vieja primary key sin romper nada (bloque seguro)
+        cur.execute("""
+            DO $$ 
+            BEGIN
+                IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'app_user_roles_pkey') THEN
+                    ALTER TABLE app_user_roles DROP CONSTRAINT app_user_roles_pkey;
+                END IF;
+            END $$;
+        """)
 
-        # 4. Permitir explícitamente que user_id sea NULL
+        # 4. Permitir nulos
         try:
             cur.execute("ALTER TABLE app_user_roles ALTER COLUMN user_id DROP NOT NULL;")
-        except Exception as e:
-            log.warning(f"Nota: No se pudo alterar columna user_id: {e}")
-        # --------------------------
+        except Exception:
+            pass
 
-        # 5. Índices para evitar duplicados
+        # 🚀 5. CREAR ÍNDICES ÚNICOS PARCIALES (La clave para el ON CONFLICT)
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_user_id ON app_user_roles (user_id) WHERE user_id IS NOT NULL;")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_cuit ON app_user_roles (cuit) WHERE cuit IS NOT NULL;")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_roles_email ON app_user_roles (email) WHERE email IS NOT NULL;")
 
@@ -487,32 +490,38 @@ def preasignar_rol():
         msg = ""
         
         if cuit:
-            # Lógica CUIT (Ignora email para no fallar)
+            # Primero buscamos si el usuario ya se registró en la app
             cur.execute("SELECT id FROM app_users WHERE cuit = %s", (cuit,))
             row = cur.fetchone()
             if row:
                 user_id = row[0]
+                # 🚀 Usamos la condición WHERE explícita para que el ON CONFLICT funcione
                 cur.execute("""
                     INSERT INTO app_user_roles (user_id, role_name, cuit, name) 
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (user_id) DO UPDATE SET role_name = EXCLUDED.role_name;
+                    ON CONFLICT (user_id) WHERE user_id IS NOT NULL 
+                    DO UPDATE SET role_name = EXCLUDED.role_name;
                 """, (user_id, role, cuit, name))
+                
+                # Actualizamos también la tabla principal por las dudas
                 cur.execute("UPDATE app_users SET role = %s WHERE id = %s", (role, user_id))
                 msg = "Usuario existente actualizado."
             else:
+                # 🚀 Si no existe, pre-asignamos por CUIT
                 cur.execute("""
                     INSERT INTO app_user_roles (cuit, role_name, name) 
                     VALUES (%s, %s, %s)
-                    ON CONFLICT (cuit) DO UPDATE 
-                    SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
+                    ON CONFLICT (cuit) WHERE cuit IS NOT NULL 
+                    DO UPDATE SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
                 """, (cuit, role, name))
                 msg = "Rol pre-asignado correctamente."
         elif email:
+             # 🚀 Si solo hay email, pre-asignamos por Email
              cur.execute("""
                 INSERT INTO app_user_roles (email, role_name, name) 
                 VALUES (%s, %s, %s)
-                ON CONFLICT (email) DO UPDATE 
-                SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
+                ON CONFLICT (email) WHERE email IS NOT NULL 
+                DO UPDATE SET role_name = EXCLUDED.role_name, name = EXCLUDED.name;
             """, (email, role, name))
              msg = "Rol pre-asignado por Email."
         else:
@@ -521,11 +530,11 @@ def preasignar_rol():
         conn.commit()
         return jsonify({"message": msg})
     except Exception as e:
-        conn.rollback()
+        if conn: conn.rollback() # Siempre hacer rollback en caso de error
         log.error(f"Error preasignar: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
-        conn.close()
+        if conn: conn.close()
 
 # --- INICIALIZAR TABLA DE CONFIGURACIONES GENERALES ---
 def init_config_table():
