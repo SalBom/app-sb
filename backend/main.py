@@ -2315,31 +2315,32 @@ def _upsert_order_logic(client, data):
 
 @app.route('/pedido/<int:pedido_id>/totales', methods=['GET'])
 def get_pedido_totales(pedido_id):
-    client = get_odoo_client() # Usamos tu gestor de conexiones seguro
-    if not client: 
-        return jsonify({"error": "Error de conexión con Odoo"}), 500
-    try:
-        # Buscamos el pedido en Odoo
+    def logic(client):
+        # 1. Buscamos el pedido
         order = client.env['sale.order'].search([('id', '=', pedido_id)])
         if not order: 
             return jsonify({"error": "Pedido no encontrado"}), 404
             
-        # Odoo guarda la info en amount_total (Total) y amount_untaxed (Base)
+        # 2. Leemos los totales (Odoo los calcula en el momento)
         datos = order[0].read(['amount_total', 'amount_untaxed'])[0]
         
         base = float(datos.get('amount_untaxed', 0.0))
         total = float(datos.get('amount_total', 0.0))
         impuestos = total - base
         
-        # Devolvemos EXACTAMENTE las 3 palabras que la App está esperando
+        # 3. Devolvemos las 3 palabras exactas que espera tu App
         return jsonify({
             "pedido_id": pedido_id,
             "base_imponible": round(base, 2),
             "impuestos": round(impuestos, 2),
             "total": round(total, 2)
         }), 200
-        
+
+    try:
+        # 🚀 ESTA ES LA CLAVE: El wrapper que revive la conexión si Odoo la cortó
+        return execute_odoo_operation(logic)
     except Exception as e:
+        log.error(f"❌ Error en /pedido/{pedido_id}/totales: {e}")
         return jsonify({"error": str(e)}), 500
 
 # =================================================================
