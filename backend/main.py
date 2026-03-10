@@ -2315,30 +2315,31 @@ def _upsert_order_logic(client, data):
 
 @app.route('/pedido/<int:pedido_id>/totales', methods=['GET'])
 def get_pedido_totales(pedido_id):
-    """
-    Recupera los totales de un pedido ya existente en Odoo.
-    No recalcula ni escribe nada, solo lee (para evitar lentitud).
-    """
-    client = get_odoo_client()
+    client = get_odoo_client() # Usamos tu gestor de conexiones seguro
+    if not client: 
+        return jsonify({"error": "Error de conexión con Odoo"}), 500
     try:
-        def logic(cli):
-            # Solo leemos los 3 campos necesarios del pedido
-            orden = cli.env['sale.order'].search_read(
-                [('id', '=', pedido_id)], 
-                ['amount_untaxed', 'amount_tax', 'amount_total']
-            )
-            if not orden:
-                return jsonify({"error": "Pedido no encontrado"}), 404
+        # Buscamos el pedido en Odoo
+        order = client.env['sale.order'].search([('id', '=', pedido_id)])
+        if not order: 
+            return jsonify({"error": "Pedido no encontrado"}), 404
             
-            return jsonify({
-                "base_imponible": orden[0].get('amount_untaxed', 0),
-                "impuestos": orden[0].get('amount_tax', 0),
-                "total": orden[0].get('amount_total', 0)
-            })
-            
-        return execute_odoo_operation(logic)
+        # Odoo guarda la info en amount_total (Total) y amount_untaxed (Base)
+        datos = order[0].read(['amount_total', 'amount_untaxed'])[0]
+        
+        base = float(datos.get('amount_untaxed', 0.0))
+        total = float(datos.get('amount_total', 0.0))
+        impuestos = total - base
+        
+        # Devolvemos EXACTAMENTE las 3 palabras que la App está esperando
+        return jsonify({
+            "pedido_id": pedido_id,
+            "base_imponible": round(base, 2),
+            "impuestos": round(impuestos, 2),
+            "total": round(total, 2)
+        }), 200
+        
     except Exception as e:
-        log.error(f"❌ Error leyendo totales del pedido {pedido_id}: {e}")
         return jsonify({"error": str(e)}), 500
 
 # =================================================================

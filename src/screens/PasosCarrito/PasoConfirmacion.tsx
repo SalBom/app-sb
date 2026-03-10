@@ -117,6 +117,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const [observationText, setObservationText] = useState(notasIniciales || '');
   const [showObservationModal, setShowObservationModal] = useState(false);
 
+  // 🚀 ESTADO INICIAL BASADO EN LA MEMORIA DEL PASO ANTERIOR
   const [liveTotals, setLiveTotals] = useState({ 
       base: toNumber(consultaResumen?.base_imponible), 
       tax: toNumber(consultaResumen?.impuestos), 
@@ -173,6 +174,17 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   }, []);
 
   const canEdit = ['ADMIN', 'VENDEDOR BLACK'].includes(String(userRole).toUpperCase());
+
+  // 🚀 ESCUCHAMOS AL ESTADO GLOBAL PARA ACTUALIZAR LOS TOTALES (En lugar de hacer fetchs fallidos)
+  useEffect(() => {
+      if (consultaResumen && consultaResumen.total > 0) {
+          setLiveTotals({
+              base: toNumber(consultaResumen.base_imponible),
+              tax: toNumber(consultaResumen.impuestos),
+              total: toNumber(consultaResumen.total)
+          });
+      }
+  }, [consultaResumen]);
 
   // =====================================================================
   // LÓGICA DE PROCESAMIENTO
