@@ -2043,15 +2043,23 @@ def editar_perfil():
     client = get_odoo_client()
     try:
         data = request.get_json() or {}
-        cuit = data.get('cuit')
+        
+        # 1. FORZAR CUIT A STRING (Evita el OverflowError de XML-RPC)
+        raw_cuit = data.get('cuit')
+        if not raw_cuit:
+            return jsonify({"error": "CUIT requerido"}), 400
+        cuit = str(raw_cuit).strip()
+
         new_name = data.get('name')
         new_email = data.get('email')
-        new_phone = data.get('phone')
+        
+        # 2. FORZAR TELÉFONO A STRING
+        raw_phone = data.get('phone')
+        new_phone = str(raw_phone).strip() if raw_phone else None
+        
         new_image = data.get('image_128')
 
-        if not cuit:
-            return jsonify({"error": "CUIT requerido"}), 400
-
+        # Ahora el search no va a explotar porque cuit es un string garantizado
         partner_rs = client.env["res.partner"].search([("vat", "=", cuit)], limit=1)
         if not partner_rs:
             return jsonify({"error": "Partner no encontrado"}), 404

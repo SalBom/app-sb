@@ -3,7 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { View, StyleSheet } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types/navigation';
-import { getUserRoleFromStorage } from '../utils/authStorage';
+import { getUserRoleFromStorage, getRememberMe, clearAuth } from '../utils/authStorage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import Login from '../screens/Login';
@@ -28,8 +28,6 @@ import AdminNuevaPromo from '../screens/AdminNuevaPromo';
 import DashboardAdministrador from '../screens/DashboardAdministrador';
 import AdminBanners from '../screens/AdminBanners';
 import AdminPlazos from '../screens/AdminPlazos';
-// 1. ELIMINAR IMPORTACIÓN DE FAVORITOS AQUÍ
-// import Favoritos from '../screens/Favoritos'; 
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -50,8 +48,15 @@ const AppNavigator = () => {
 
   useEffect(() => {
     const fetchUserRole = async () => {
-      const role = await getUserRoleFromStorage();
-      setUserRole(role || '');
+      const isRemembered = await getRememberMe();
+      
+      if (isRemembered) {
+        const role = await getUserRoleFromStorage();
+        setUserRole(role || '');
+      } else {
+        await clearAuth();
+        setUserRole('');
+      }
       setLoading(false);
     };
 
@@ -64,7 +69,7 @@ const AppNavigator = () => {
 
   return (
     <Stack.Navigator
-      initialRouteName="Login"
+      initialRouteName={userRole ? "MainTabs" : "Login"}
       screenOptions={{
         header: () => <SalBomHeader />, 
       }}

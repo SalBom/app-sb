@@ -1,10 +1,10 @@
 {
   "expo": {
-    "name": "app-pedidos",
+    "name": "Sal-Bom",
     "slug": "app-pedidos",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/icon-app.png",
     "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "splash": {
@@ -19,10 +19,11 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
-      }
+      },
+      "package": "com.martinestevez003.apppedidos"
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/icon-app.png"
     },
     "plugins": [
       "expo-web-browser",

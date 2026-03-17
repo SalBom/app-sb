@@ -11,7 +11,8 @@ const KEYS = {
   CUIT_ALT: 'user_cuit',  
   ROLE: 'user_role',      
   TOKEN: 'token',         
-  PROFILE: 'user_profile' 
+  PROFILE: 'user_profile',
+  REMEMBER_ME: 'remember_me'
 } as const;
 
 /* =========================================================================
@@ -58,8 +59,18 @@ export async function getAuth() {
 
 export async function clearAuth() {
   try {
-    await AsyncStorage.multiRemove([KEYS.AUTH, KEYS.CUIT, KEYS.CUIT_ALT, KEYS.ROLE, KEYS.TOKEN]);
+    await AsyncStorage.multiRemove([KEYS.AUTH, KEYS.CUIT, KEYS.CUIT_ALT, KEYS.ROLE, KEYS.TOKEN, KEYS.REMEMBER_ME]);
   } catch {}
+}
+
+// --- CHECKBOX RECORDARME ---
+export async function saveRememberMe(value: boolean) {
+  await setItem(KEYS.REMEMBER_ME, value);
+}
+
+export async function getRememberMe(): Promise<boolean> {
+  const val = await getItem<boolean>(KEYS.REMEMBER_ME);
+  return val === true; 
 }
 
 // --- CUIT ---
@@ -167,7 +178,9 @@ const authStorage = {
   getUserRoleFromStorage,
   saveUserProfile,
   getUserProfile,
-  syncPushToken, // <--- Exportado aquí
+  syncPushToken,
+  saveRememberMe,
+  getRememberMe,
   // Alias legacy
   getCUIT: getCuitFromStorage,
   getCuit: getCuitFromStorage,

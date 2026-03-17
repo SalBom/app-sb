@@ -15,8 +15,9 @@ import {
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import axios from 'axios';
+import { Feather } from '@expo/vector-icons'; // <--- IMPORTAMOS LOS ÍCONOS
 import { RootStackParamList } from '../types/navigation';
-import { saveUserSession, syncPushToken } from '../utils/authStorage';
+import { saveUserSession, syncPushToken, saveRememberMe } from '../utils/authStorage';
 import { registerForPushNotificationsAsync } from '../utils/pushNotifications';
 import { useCartStore } from '../store/cartStore';
 import { API_URL } from '../config'; 
@@ -31,6 +32,11 @@ const Login: React.FC<Props> = ({ navigation }) => {
   const [cuit, setCuit] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [rememberMe, setRememberMe] = useState(false);
+  
+  // --- NUEVOS ESTADOS PARA MOSTRAR/OCULTAR CONTRASEÑA ---
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   
   const [userNameForLoading, setUserNameForLoading] = useState('');
   const [loading, setLoading] = useState(false);
@@ -77,6 +83,9 @@ const Login: React.FC<Props> = ({ navigation }) => {
           name: name
         });
 
+        // Guardamos la preferencia de recordar inicio de sesión
+        await saveRememberMe(rememberMe);
+
         // --- RECUPERAR CARRITO SILENCIOSAMENTE ---
         try {
             const resCart = await axios.get(`${API_URL}/cart/load`, { 
@@ -86,13 +95,13 @@ const Login: React.FC<Props> = ({ navigation }) => {
                 if (setItems) setItems(resCart.data.items);
             }
         } catch (errCart) {
-            // Fallo silencioso si no hay carrito o no hay red, no es critico bloquear el login
+            // Fallo silencioso si no hay carrito
         }
 
         // --- PUSH NOTIFICATIONS ---
         registerForPushNotificationsAsync().then(token => {
             if (token) syncPushToken(token);
-        }).catch(() => {}); // Fallo silencioso
+        }).catch(() => {});
 
         // --- ANIMACIÓN ---
         Animated.timing(formOpacity, {
@@ -168,6 +177,8 @@ const Login: React.FC<Props> = ({ navigation }) => {
     setMode(prev => prev === 'login' ? 'register' : 'login');
     setPassword('');
     setConfirmPassword('');
+    setShowPassword(false);
+    setShowConfirmPassword(false);
   };
 
   return (
@@ -188,6 +199,8 @@ const Login: React.FC<Props> = ({ navigation }) => {
       </Animated.View>
 
       <Animated.View style={{ opacity: formOpacity, width: '100%' }}>
+        
+        {/* CUIT */}
         <View style={styles.fieldContainer}>
           <Text style={styles.label}>CUIT</Text>
           <View style={styles.inputWrapper}>
@@ -203,6 +216,7 @@ const Login: React.FC<Props> = ({ navigation }) => {
           </View>
         </View>
 
+        {/* CONTRASEÑA */}
         <View style={styles.fieldContainer}>
           <Text style={styles.label}>Contraseña</Text>
           <View style={styles.inputWrapper}>
@@ -210,14 +224,27 @@ const Login: React.FC<Props> = ({ navigation }) => {
               style={styles.input}
               placeholder="Ingrese la contraseña"
               placeholderTextColor="#545454"
-              secureTextEntry
+              secureTextEntry={!showPassword} // Depende del estado
               value={password}
               onChangeText={setPassword}
               editable={!loading}
             />
+            {/* ÍCONO DEL OJITO */}
+            <TouchableOpacity 
+              style={styles.eyeIconContainer} 
+              onPress={() => setShowPassword(!showPassword)}
+              disabled={loading}
+            >
+              <Feather 
+                name={showPassword ? "eye" : "eye-off"} 
+                size={20} 
+                color="#545454" 
+              />
+            </TouchableOpacity>
           </View>
         </View>
 
+        {/* CONFIRMAR CONTRASEÑA (SOLO REGISTRO) */}
         {mode === 'register' && (
           <View style={styles.fieldContainer}>
             <Text style={styles.label}>Confirmar Contraseña</Text>
@@ -226,15 +253,43 @@ const Login: React.FC<Props> = ({ navigation }) => {
                 style={styles.input}
                 placeholder="Repita la contraseña"
                 placeholderTextColor="#545454"
-                secureTextEntry
+                secureTextEntry={!showConfirmPassword} // Depende del estado
                 value={confirmPassword}
                 onChangeText={setConfirmPassword}
                 editable={!loading}
               />
+              {/* ÍCONO DEL OJITO */}
+              <TouchableOpacity 
+                style={styles.eyeIconContainer} 
+                onPress={() => setShowConfirmPassword(!showConfirmPassword)}
+                disabled={loading}
+              >
+                <Feather 
+                  name={showConfirmPassword ? "eye" : "eye-off"} 
+                  size={20} 
+                  color="#545454" 
+                />
+              </TouchableOpacity>
             </View>
           </View>
         )}
 
+        {/* CHECKBOX RECORDARME */}
+        {mode === 'login' && (
+          <TouchableOpacity 
+            style={styles.checkboxContainer} 
+            onPress={() => setRememberMe(!rememberMe)}
+            disabled={loading}
+            activeOpacity={0.8}
+          >
+            <View style={[styles.checkbox, rememberMe && styles.checkboxChecked]}>
+              {rememberMe && <Text style={styles.checkMark}>✓</Text>}
+            </View>
+            <Text style={styles.checkboxLabel}>Recordar mis datos de inicio de sesión</Text>
+          </TouchableOpacity>
+        )}
+
+        {/* BOTÓN PRINCIPAL */}
         <TouchableOpacity 
           style={styles.button} 
           onPress={handleAction}
@@ -310,14 +365,52 @@ const styles = StyleSheet.create({
     backgroundColor: '#F2F2F2',
     borderRadius: 10,
     height: 48,
-    justifyContent: 'center',
+    flexDirection: 'row', // Para que el input y el ícono estén uno al lado del otro
+    alignItems: 'center', // Para centrarlos verticalmente
   },
   input: {
+    flex: 1, // Para que ocupe todo el espacio disponible antes del ícono
     fontFamily: 'Rubik-Light',
     fontSize: 14,
     paddingHorizontal: 12,
     color: '#545454',
     opacity: 0.85,
+  },
+  eyeIconContainer: {
+    paddingHorizontal: 15, // Espacio para que el dedo toque cómodamente el ícono
+    height: '100%',
+    justifyContent: 'center',
+  },
+  checkboxContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 24,
+    width: '100%',
+  },
+  checkbox: {
+    width: 22,
+    height: 22,
+    borderWidth: 1.5,
+    borderColor: '#545454',
+    borderRadius: 5,
+    marginRight: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#FFF',
+  },
+  checkboxChecked: {
+    backgroundColor: '#1C9BD8',
+    borderColor: '#1C9BD8',
+  },
+  checkMark: {
+    color: '#FFF',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  checkboxLabel: {
+    fontFamily: 'Rubik-Light',
+    fontSize: 14,
+    color: '#545454',
   },
   button: {
     backgroundColor: '#1C9BD8',
