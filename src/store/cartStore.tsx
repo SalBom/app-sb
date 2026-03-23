@@ -23,7 +23,20 @@ export type DireccionEntrega = {
   source?: 'partner' | 'delivery_child';
 };
 
-export type ClienteSel = { id: number; name: string; display_name?: string; vat?: string | null };
+// AMPLIAMOS EL TIPO CLIENTE PARA GUARDAR TODOS SUS DATOS
+export type ClienteSel = { 
+  id: number; 
+  name: string; 
+  display_name?: string; 
+  vat?: string | null;
+  street?: string;
+  city?: string;
+  state?: string;
+  zip?: string;
+  transport_data?: { id: number; name: string } | null;
+  is_self?: boolean;
+};
+
 export type PlazoSel   = { id: number; nombre?: string; name?: string };
 export type MetodoEnvio = 'sucursal' | 'domicilio';
 

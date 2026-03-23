@@ -1,34 +1,18 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, Modal, FlatList, Pressable, ImageBackground,
-  Image as RNImage, Dimensions, Animated, Easing, ActivityIndicator, Alert, TouchableWithoutFeedback,
-  TextInput,
-  TouchableOpacity
+  Image as RNImage, Dimensions, Animated, Easing, Alert, TouchableOpacity
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getCuitFromStorage } from '../../utils/authStorage';
 import CarritoHeader from '../../components/CarritoHeader';
 import { useCartStore } from '../../store/cartStore';
 import LayoutRefresh from '../../components/LayoutRefresh'; 
 
 import PlaceIcon from '../../../assets/place.svg';
 import RetiroIcon from '../../../assets/retiro.svg';
-import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../../config';
 
 interface Props { onNext: () => void; onBack: () => void; }
-
-type Cliente = { 
-    id: number; 
-    name: string; 
-    vat?: string | null; 
-    street?: string; 
-    city?: string; 
-    state?: string; 
-    zip?: string; 
-    is_self?: boolean; 
-    transport_data?: { id: number; name: string } | null; 
-};
 
 type Plazo = { id: number; nombre: string };
 type MetodoEnvio = 'domicilio' | 'sucursal' | null;
@@ -43,10 +27,8 @@ const ENVIO_RATIO = E_W / E_H;
 const BG_DIRECCION = require('../../../assets/contenedorDireccion.png');
 
 const SIDE_MARGIN = 10;
-const CARD_HSCALE = 1.45; 
+const CARD_HSCALE = 0.85; // Recorte de tamaño porque ya no está el Dropdown del cliente
 const ENV_CARD_HSCALE = 1.18;
-const PICKER_HEIGHT = 46;
-const PICKER_RADIUS = 14;
 
 async function safeFetch(url: string) {
   try {
@@ -59,63 +41,25 @@ async function safeFetch(url: string) {
   } catch (e) { return { ok: false, data: null }; }
 }
 
-function normalizeClientes(lista: any[]): Cliente[] {
-  if (!Array.isArray(lista)) return [];
-  return lista.map((c: any) => {
-    let tData = c.app_transport_data || null;
-    if (!tData && Array.isArray(c.property_delivery_carrier_id) && c.property_delivery_carrier_id.length === 2) {
-        tData = { id: c.property_delivery_carrier_id[0], name: c.property_delivery_carrier_id[1] };
-    }
-    return {
-      id: c.id ?? c.partner_id ?? c.partnerId,
-      name: c.name ?? c.display_name ?? c.razon_social ?? c.nombre,
-      vat: c.vat ?? c.cuit ?? null,
-      street: c.street ?? c.calle ?? '',
-      city: c.city ?? c.ciudad ?? '',
-      state: (Array.isArray(c.state_id) ? c.state_id[1] : c.state) ?? '',
-      zip: c.zip ?? c.codigo_postal ?? '',
-      transport_data: tData 
-    };
-  }).filter(x => x.id && x.name);
-}
-
 const toNum = (v:any)=> (typeof v==='number'? v : Number(String(v).replace(/\./g,'').replace(',','.'))||0);
 
 const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
   const insets = useSafeAreaInsets();
-  const { items, plazoSeleccionado } = useCartStore(); 
+  
+  // LEEMOS EL CLIENTE DIRECTO DEL PASO 1
+  const { items, plazoSeleccionado, clienteSeleccionado } = useCartStore(); 
   const setStore = (useCartStore as any).setState;
   const getStore = (useCartStore as any).getState;
 
-  const [clientes, setClientes] = useState<Cliente[]>([]);
   const [plazosData, setPlazosData] = useState<Plazo[]>([]);
-  const [loadingClientes, setLoadingClientes] = useState(false);
   const [loadingAddress, setLoadingAddress] = useState(false);
-  const [clienteId, setClienteId] = useState<number | null>(null);
   const [metodoEnvio, setMetodoEnvio] = useState<MetodoEnvio>(null);
-  const [modal, setModal] = useState<{ open: boolean; type: 'cliente' | 'direccion' | null }>({ open: false, type: null });
+  const [modal, setModal] = useState<{ open: boolean; type: 'direccion' | null }>({ open: false, type: null });
   const [addresses, setAddresses] = useState<Address[]>([]);
   const [addrSelected, setAddrSelected] = useState<Address | null>(null);
   const [tipoCambio, setTipoCambio] = useState<number | null>(null);
-  const [clientSearch, setClientSearch] = useState('');
 
-  const filteredClients = useMemo(() => {
-    if (!clientSearch.trim()) return clientes;
-    const text = clientSearch.toLowerCase().trim();
-    return clientes.filter(c => (c.name && c.name.toLowerCase().includes(text)) || (c.vat && String(c.vat).includes(text)));
-  }, [clientes, clientSearch]);
-
-  const clienteSel = useMemo(() => clientes.find(c => c.id === clienteId) ?? null, [clientes, clienteId]);
-
-  useEffect(() => {
-    if (clienteSel) {
-        if (clienteSel.transport_data) {
-            setStore({ transporte: clienteSel.transport_data, transporteAsignado: clienteSel.transport_data.name });
-        } else {
-            setStore({ transporte: null, transporteAsignado: null });
-        }
-    }
-  }, [clienteSel, setStore]);
+  const clienteSel = clienteSeleccionado; // Alias de lo que seleccionó el usuario en PasoProductos
 
   const nombrePlazoMaximo = useMemo(() => {
     if (!plazoSeleccionado || !plazosData.length) return 'Calculando...';
@@ -129,44 +73,27 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
 
   const cargarDatos = useCallback(async () => {
     try {
-      const cuit = await getCuitFromStorage();
-      if (!cuit) return;
-
-      let selfAsCliente: Cliente | null = null;
-      const resPerfil = await safeFetch(`${API_URL}/usuario-perfil?cuit=${encodeURIComponent(cuit)}`);
-      if (resPerfil.ok && resPerfil.data && resPerfil.data.partner_id) {
-          selfAsCliente = { id: resPerfil.data.partner_id, name: `YO: ${resPerfil.data.name}`.toUpperCase(), vat: cuit, is_self: true };
-      }
-
       const resTC = await safeFetch(`${API_URL}/tipo-cambio`);
       setTipoCambio(resTC.ok ? (resTC.data?.inverse_rate || 1450) : 1450);
 
       const resP = await safeFetch(`${API_URL}/plazos-pago`);
       if (resP.ok) setPlazosData(resP.data || []);
-
-      setLoadingClientes(true);
-      const resCli = await safeFetch(`${API_URL}/clientes-del-vendedor?cuit=${encodeURIComponent(cuit)}`);
-      let normList = normalizeClientes(resCli.ok ? resCli.data.items : []);
-      if (selfAsCliente) {
-          const yaEsta = normList.some(c => c.id === selfAsCliente!.id);
-          if (!yaEsta) normList = [selfAsCliente, ...normList];
-      }
-      setClientes(normList);
-      if (normList.length > 0 && !clienteId) setClienteId(normList[0].id);
-      setLoadingClientes(false);
-    } catch (e) { setLoadingClientes(false); }
-  }, [clienteId]);
+    } catch (e) {}
+  }, []);
 
   useEffect(() => { cargarDatos(); }, []);
 
+  // CARGAR DIRECCIONES BASADO EN EL CLIENTE QUE YA ESTÁ EN ZUSTAND
   useEffect(() => {
     let active = true;
-    if (!clienteId || metodoEnvio !== 'domicilio') { setAddresses([]); setAddrSelected(null); return; }
+    if (!clienteSel?.id || metodoEnvio !== 'domicilio') { setAddresses([]); setAddrSelected(null); return; }
+    
     const timer = setTimeout(async () => {
         if(!active) return;
         setLoadingAddress(true); 
-        const res = await safeFetch(`${API_URL}/cliente-direcciones?cliente_id=${clienteId}`);
+        const res = await safeFetch(`${API_URL}/cliente-direcciones?cliente_id=${clienteSel.id}`);
         if (!active) return;
+        
         let lista: Address[] = [];
         if (res.ok && Array.isArray(res.data)) {
             lista = res.data.map((d:any) => ({
@@ -174,23 +101,32 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
                 source: d.source === 'partner' ? 'partner' : 'delivery_child'
             }));
         } else if (clienteSel) {
-            lista.push({ id: 'partner', name: 'DIRECCIÓN PRINCIPAL', street: clienteSel.street || '', city: clienteSel.city || '', state: clienteSel.state || '', zip: clienteSel.zip || '' });
+            // Usa los datos que ya vienen desde el store como fallback
+            lista.push({ 
+                id: 'partner', 
+                name: 'DIRECCIÓN PRINCIPAL', 
+                street: clienteSel.street || '', 
+                city: clienteSel.city || '', 
+                state: clienteSel.state || '', 
+                zip: clienteSel.zip || '' 
+            });
         }
         setAddresses(lista);
         setAddrSelected(lista[0] || null);
         setLoadingAddress(false);
     }, 100); 
+    
     return () => { active = false; clearTimeout(timer); };
-  }, [clienteId, metodoEnvio, clienteSel]); 
+  }, [clienteSel, metodoEnvio]); 
 
-  const ready = !!clienteId && !!plazoSeleccionado && !!metodoEnvio;
+  const ready = !!clienteSel?.id && !!plazoSeleccionado && !!metodoEnvio;
   const deliveryName = (addrSelected?.name || 'DOMICILIO DE ENTREGA').trim();
   const deliveryAddress = [addrSelected?.street, addrSelected?.city, addrSelected?.state, addrSelected?.zip].filter(Boolean).join(', ');
 
   const handleContinuar = async () => {
     const clienteObj = clienteSel ? { id: clienteSel.id, name: clienteSel.name, vat: clienteSel.vat } : null;
     const plazoIdFinal = (plazoSeleccionado as any)?.id;
-    if (!clienteObj?.id || !plazoIdFinal) { Alert.alert('Faltan datos', 'Seleccioná un cliente válido.'); return; }
+    if (!clienteObj?.id || !plazoIdFinal) { Alert.alert('Error', 'Faltan datos del cliente o plazo.'); return; }
 
     const st = getStore();
     const objTransporte = st.transporte;
@@ -204,7 +140,6 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
         return !isNaN(pid) && pid < 2147483647;
     });
 
-    // 1. Calculamos la Base Imponible sin Descuentos (para verificar si alcanza el mínimo de la regla)
     const baseParaValidarRegla = itemsLimpios
         .filter((it:any) => String(it.product_id) !== '4011')
         .reduce((acc:number, it:any) => {
@@ -213,7 +148,6 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
             return acc + (p * q);
         }, 0);
 
-    // 2. Traer regla de descuentos del backend
     let desc1 = 0, desc2 = 0, desc3 = 0, allowOffer = false, appliedRule = false;
     try {
         const resDesc = await fetch(`${API_URL}/calcular-descuentos`, {
@@ -234,9 +168,7 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
         console.log("Error consultando regla de descuentos", e);
     }
 
-    // 3. Aplicar regla ítem por ítem
     const itemsConDescuentosAplicados = itemsLimpios.filter((it:any) => String(it.product_id) !== '4011').map((it: any) => {
-        // Es oferta si el precio de lista existe y el precio unitario es menor
         const isOffer = it.list_price && (it.list_price - it.price_unit > 0.01);
 
         let finalD1 = it.discount1 || 0;
@@ -245,15 +177,10 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
 
         if (appliedRule) {
             if (isOffer) {
-                // 🚀 TRUCO DE OFERTA: 
-                // Mandamos el descuento de contado (Ej: 5%) a la COLUMNA 1.
-                // Así en Odoo no queda la primera columna en 0 y la segunda en 5.
                 finalD1 = allowOffer ? desc2 : 0; 
                 finalD2 = 0; 
                 finalD3 = 0;
             } else {
-                // 🚀 REGLA DE LISTA DE PRECIOS:
-                // Llenamos las columnas completas (Ej: D1: 25% y D2: 5%)
                 finalD1 = desc1; 
                 finalD2 = desc2; 
                 finalD3 = desc3;
@@ -274,7 +201,6 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
         };
     });
 
-    // 4. Calcular costo del envío
     const baseParaEnvioUSD = itemsConDescuentosAplicados.reduce((acc:number, it:any) => {
         const q = it.product_uom_qty;
         const p = it.price_unit;
@@ -290,7 +216,6 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
         else costoEnvioUSD = 0;
     }
 
-    // 5. Inyectar en Zustand para que PasoConfirmacion lo renderice exactamente como quedó
     const itemsParaZustand: any[] = [...itemsConDescuentosAplicados];
     itemsParaZustand.push({
         product_id: 4011,
@@ -304,13 +229,11 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
     });
 
     setStore({ 
-        clienteSeleccionado: clienteObj, 
         envioSeleccionado: metodoEnvio, 
         direccionEntrega: metodoEnvio === 'domicilio' && addrSelected ? { ...addrSelected } : null,
         items: itemsParaZustand 
     });
 
-    // 6. Enviar a Odoo
     const odooItems = itemsConDescuentosAplicados.map((it: any) => ({
         product_id: it.product_id, 
         product_uom_qty: it.product_uom_qty, 
@@ -371,11 +294,10 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
     <View style={styles.container}>
       <LayoutRefresh onRecargar={cargarDatos} contentContainerStyle={[styles.scrollContent, { paddingBottom: 10 + insets.bottom }]}>
         <CarritoHeader step={2} onBack={onBack} />
+        
         <View style={[styles.cardWrap, { width: cardW }]}>
           <ImageBackground source={BG_PICKERS} style={[styles.cardBg, { width: cardW, height: pickersH }]} resizeMode="stretch">
             <View style={styles.cardContent}>
-              <DropdownField valueText={clienteSel?.name ?? 'Seleccionar Cliente'} onPress={() => { setClientSearch(''); setModal({ open: true, type: 'cliente' }); }} />
-              <View style={{ height: 16 }} />
               <View style={styles.plazoInfoBox}>
                   <Text style={styles.plazoLabel}>PLAZO GENERAL DEL PEDIDO (MÁXIMO):</Text>
                   <Text style={styles.plazoValue}>{nombrePlazoMaximo}</Text>
@@ -430,15 +352,10 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
       <Modal visible={modal.open} animationType="slide" transparent>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{modal.type === 'cliente' ? 'Seleccionar cliente' : 'Seleccionar dirección'}</Text>
-            {modal.type === 'cliente' && (
-              <View style={styles.searchContainer}>
-                <Ionicons name="search" size={20} color="#999" /><TextInput style={styles.searchInput} placeholder="Buscar cliente..." value={clientSearch} onChangeText={setClientSearch} />
-              </View>
-            )}
-            <FlatList data={(modal.type === 'cliente' ? filteredClients : addresses) as any[]} keyExtractor={(item: any, idx) => String(item.id ?? idx)} renderItem={({ item }: any) => (
-                <Pressable style={styles.modalItem} onPress={() => { if (modal.type === 'cliente') { setClienteId(item.id); setAddresses([]); setAddrSelected(null); } else setAddrSelected(item); setModal({ open: false, type: null }); }}>
-                  <Text style={[styles.modalItemText, item.is_self && { color: '#139EDB', fontWeight: 'bold' }]}>{item.name}</Text>
+            <Text style={styles.modalTitle}>Seleccionar dirección</Text>
+            <FlatList data={addresses} keyExtractor={(item: any, idx) => String(item.id ?? idx)} renderItem={({ item }: any) => (
+                <Pressable style={styles.modalItem} onPress={() => { setAddrSelected(item); setModal({ open: false, type: null }); }}>
+                  <Text style={styles.modalItemText}>{item.name}</Text>
                 </Pressable>
               )} />
             <Pressable style={styles.modalClose} onPress={() => setModal({ open: false, type: null })}><Text style={styles.modalCloseText}>CERRAR</Text></Pressable>
@@ -448,15 +365,6 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
     </View>
   );
 };
-
-const DropdownField: React.FC<{ valueText: string; onPress: () => void }> = ({ valueText, onPress }) => (
-  <View style={{ width: '100%' }}>
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.select, pressed && { opacity: 0.9 }]}>
-      <Text style={styles.selectText} numberOfLines={1} ellipsizeMode="tail">{valueText}</Text>
-      <Text style={styles.chevron}>▾</Text>
-    </Pressable>
-  </View>
-);
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 const OptionPill: React.FC<{ label: string; selected: boolean; dimmed?: boolean; onPress: () => void }> = ({ label, selected, dimmed = false, onPress }) => {
@@ -476,9 +384,6 @@ const styles = StyleSheet.create({
   cardBg: { paddingHorizontal: 18, paddingTop: 20, paddingBottom: 25 }, 
   envioBg: { paddingTop: 18, paddingBottom: 18 },
   cardContent: { flex: 1, justifyContent: 'center' },
-  select: { height: PICKER_HEIGHT, borderRadius: PICKER_RADIUS, paddingHorizontal: 10, backgroundColor: '#EEF0F2', borderWidth: 1, borderColor: '#E7EAED', flexDirection: 'row', alignItems: 'center' },
-  selectText: { flex: 1, fontSize: 14, color: '#121212', fontWeight: '700' },
-  chevron: { fontSize: 16, opacity: 0.6 },
   plazoInfoBox: { backgroundColor: '#F3F4F6', borderRadius: 12, padding: 12, borderWidth: 1, borderColor: '#E5E7EB' },
   plazoLabel: { fontSize: 9, fontFamily: 'BarlowCondensed-Bold', color: '#6B7280', marginBottom: 2 },
   plazoValue: { fontSize: 16, fontFamily: 'BarlowCondensed-Bold', color: '#1C9BD8' },
@@ -503,8 +408,6 @@ const styles = StyleSheet.create({
   btnTextVolver: { color: '#2B2B2B', fontWeight: '800' },
   btnContinuar: { flex: 1, height: 46, borderRadius: 999, backgroundColor: '#1C9BD8', alignItems: 'center', justifyContent: 'center' },
   btnTextContinuar: { color: '#fff', fontWeight: '800' },
-  loadingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
-  loadingText: { marginLeft: 8, color: '#333', fontSize: 12 },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   modalCard: { backgroundColor: '#fff', maxHeight: '70%', borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingTop: 12 },
   modalTitle: { fontSize: 16, fontWeight: '700', paddingHorizontal: 16, paddingBottom: 8 },
@@ -512,8 +415,6 @@ const styles = StyleSheet.create({
   modalItemText: { fontSize: 16 },
   modalClose: { alignSelf: 'center', marginVertical: 12, paddingHorizontal: 16, paddingVertical: 10 },
   modalCloseText: { fontWeight: '700', color: '#1C9BD8' },
-  searchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F5F5F5', marginHorizontal: 16, marginBottom: 10, paddingHorizontal: 12, borderRadius: 8, height: 45, borderWidth: 1, borderColor: '#E0E0E0' },
-  searchInput: { flex: 1, marginLeft: 8, fontSize: 16, color: '#333', fontWeight: '500' },
 });
 
 export default PasoDatos;

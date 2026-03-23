@@ -9,13 +9,13 @@ import {
   KeyboardAvoidingView,
   Platform,
   Alert,
-  Dimensions,
   Animated,
-  Easing
+  Easing,
+  ScrollView // <--- NUEVA IMPORTACIÓN
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import axios from 'axios';
-import { Feather } from '@expo/vector-icons'; // <--- IMPORTAMOS LOS ÍCONOS
+import { Feather } from '@expo/vector-icons';
 import { RootStackParamList } from '../types/navigation';
 import { saveUserSession, syncPushToken, saveRememberMe } from '../utils/authStorage';
 import { registerForPushNotificationsAsync } from '../utils/pushNotifications';
@@ -34,7 +34,7 @@ const Login: React.FC<Props> = ({ navigation }) => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
   
-  // --- NUEVOS ESTADOS PARA MOSTRAR/OCULTAR CONTRASEÑA ---
+  // --- ESTADOS PARA MOSTRAR/OCULTAR CONTRASEÑA ---
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   
@@ -184,148 +184,154 @@ const Login: React.FC<Props> = ({ navigation }) => {
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={styles.container}
+      style={{ flex: 1, backgroundColor: '#FFF' }} // <--- ESTILO APLICADO DIRECTO
     >
-      <Animated.View style={[styles.logoContainer, { transform: [{ translateY: logoTranslateY }] }]}>
-        <SBLOGO width={180} height={180} />
-      </Animated.View>
-
-      <Animated.View 
-        style={[styles.loadingContainer, { opacity: loadingElementsOpacity }]}
-        pointerEvents={loading ? 'auto' : 'none'} 
+      {/* --- NUEVO SCROLLVIEW ENVOLVIENDO TODO --- */}
+      <ScrollView 
+        contentContainerStyle={styles.container} 
+        keyboardShouldPersistTaps="handled"
+        bounces={false}
+        showsVerticalScrollIndicator={false}
       >
-        <Text style={styles.welcomeText}>¡Bienvenido, {userNameForLoading}!</Text>
-        <ActivityIndicator size="large" color="#333" style={{ marginTop: 20 }} />
-      </Animated.View>
+        <Animated.View style={[styles.logoContainer, { transform: [{ translateY: logoTranslateY }] }]}>
+          <SBLOGO width={180} height={180} />
+        </Animated.View>
 
-      <Animated.View style={{ opacity: formOpacity, width: '100%' }}>
-        
-        {/* CUIT */}
-        <View style={styles.fieldContainer}>
-          <Text style={styles.label}>CUIT</Text>
-          <View style={styles.inputWrapper}>
-            <TextInput
-              style={styles.input}
-              placeholder="Ingrese su CUIT"
-              placeholderTextColor="#545454"
-              keyboardType="numeric"
-              value={cuit}
-              onChangeText={setCuit}
-              editable={!loading}
-            />
-          </View>
-        </View>
+        <Animated.View 
+          style={[styles.loadingContainer, { opacity: loadingElementsOpacity }]}
+          pointerEvents={loading ? 'auto' : 'none'} 
+        >
+          <Text style={styles.welcomeText}>¡Bienvenido, {userNameForLoading}!</Text>
+          <ActivityIndicator size="large" color="#333" style={{ marginTop: 20 }} />
+        </Animated.View>
 
-        {/* CONTRASEÑA */}
-        <View style={styles.fieldContainer}>
-          <Text style={styles.label}>Contraseña</Text>
-          <View style={styles.inputWrapper}>
-            <TextInput
-              style={styles.input}
-              placeholder="Ingrese la contraseña"
-              placeholderTextColor="#545454"
-              secureTextEntry={!showPassword} // Depende del estado
-              value={password}
-              onChangeText={setPassword}
-              editable={!loading}
-            />
-            {/* ÍCONO DEL OJITO */}
-            <TouchableOpacity 
-              style={styles.eyeIconContainer} 
-              onPress={() => setShowPassword(!showPassword)}
-              disabled={loading}
-            >
-              <Feather 
-                name={showPassword ? "eye" : "eye-off"} 
-                size={20} 
-                color="#545454" 
-              />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/* CONFIRMAR CONTRASEÑA (SOLO REGISTRO) */}
-        {mode === 'register' && (
+        <Animated.View style={{ opacity: formOpacity, width: '100%' }}>
+          
+          {/* CUIT */}
           <View style={styles.fieldContainer}>
-            <Text style={styles.label}>Confirmar Contraseña</Text>
+            <Text style={styles.label}>CUIT</Text>
             <View style={styles.inputWrapper}>
               <TextInput
                 style={styles.input}
-                placeholder="Repita la contraseña"
+                placeholder="Ingrese su CUIT"
                 placeholderTextColor="#545454"
-                secureTextEntry={!showConfirmPassword} // Depende del estado
-                value={confirmPassword}
-                onChangeText={setConfirmPassword}
+                keyboardType="numeric"
+                value={cuit}
+                onChangeText={setCuit}
                 editable={!loading}
               />
-              {/* ÍCONO DEL OJITO */}
+            </View>
+          </View>
+
+          {/* CONTRASEÑA */}
+          <View style={styles.fieldContainer}>
+            <Text style={styles.label}>Contraseña</Text>
+            <View style={styles.inputWrapper}>
+              <TextInput
+                style={styles.input}
+                placeholder="Ingrese la contraseña"
+                placeholderTextColor="#545454"
+                secureTextEntry={!showPassword}
+                value={password}
+                onChangeText={setPassword}
+                editable={!loading}
+              />
               <TouchableOpacity 
                 style={styles.eyeIconContainer} 
-                onPress={() => setShowConfirmPassword(!showConfirmPassword)}
+                onPress={() => setShowPassword(!showPassword)}
                 disabled={loading}
               >
                 <Feather 
-                  name={showConfirmPassword ? "eye" : "eye-off"} 
+                  name={showPassword ? "eye" : "eye-off"} 
                   size={20} 
                   color="#545454" 
                 />
               </TouchableOpacity>
             </View>
           </View>
-        )}
 
-        {/* CHECKBOX RECORDARME */}
-        {mode === 'login' && (
+          {/* CONFIRMAR CONTRASEÑA (SOLO REGISTRO) */}
+          {mode === 'register' && (
+            <View style={styles.fieldContainer}>
+              <Text style={styles.label}>Confirmar Contraseña</Text>
+              <View style={styles.inputWrapper}>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Repita la contraseña"
+                  placeholderTextColor="#545454"
+                  secureTextEntry={!showConfirmPassword}
+                  value={confirmPassword}
+                  onChangeText={setConfirmPassword}
+                  editable={!loading}
+                />
+                <TouchableOpacity 
+                  style={styles.eyeIconContainer} 
+                  onPress={() => setShowConfirmPassword(!showConfirmPassword)}
+                  disabled={loading}
+                >
+                  <Feather 
+                    name={showConfirmPassword ? "eye" : "eye-off"} 
+                    size={20} 
+                    color="#545454" 
+                  />
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {/* CHECKBOX RECORDARME */}
+          {mode === 'login' && (
+            <TouchableOpacity 
+              style={styles.checkboxContainer} 
+              onPress={() => setRememberMe(!rememberMe)}
+              disabled={loading}
+              activeOpacity={0.8}
+            >
+              <View style={[styles.checkbox, rememberMe && styles.checkboxChecked]}>
+                {rememberMe && <Text style={styles.checkMark}>✓</Text>}
+              </View>
+              <Text style={styles.checkboxLabel}>Recordar mis datos de inicio de sesión</Text>
+            </TouchableOpacity>
+          )}
+
+          {/* BOTÓN PRINCIPAL */}
           <TouchableOpacity 
-            style={styles.checkboxContainer} 
-            onPress={() => setRememberMe(!rememberMe)}
+            style={styles.button} 
+            onPress={handleAction}
             disabled={loading}
             activeOpacity={0.8}
           >
-            <View style={[styles.checkbox, rememberMe && styles.checkboxChecked]}>
-              {rememberMe && <Text style={styles.checkMark}>✓</Text>}
-            </View>
-            <Text style={styles.checkboxLabel}>Recordar mis datos de inicio de sesión</Text>
-          </TouchableOpacity>
-        )}
-
-        {/* BOTÓN PRINCIPAL */}
-        <TouchableOpacity 
-          style={styles.button} 
-          onPress={handleAction}
-          disabled={loading}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.buttonText}>
-            {mode === 'login' ? 'INGRESAR' : 'SOLICITAR CUENTA'}
-          </Text>
-        </TouchableOpacity>
-
-        {mode === 'login' && (
-          <TouchableOpacity disabled={loading} onPress={() => Alert.alert("Recuperar", "Por favor contacte a administración.")}>
-            <Text style={styles.forgot}>¿Olvidaste tu contraseña?</Text>
-          </TouchableOpacity>
-        )}
-
-        <TouchableOpacity onPress={toggleMode} disabled={loading}>
-          <Text style={styles.footer}>
-            <Text style={styles.footerText}>
-              {mode === 'login' ? "¿No tienes una cuenta? " : "¿Ya tienes cuenta? "}
+            <Text style={styles.buttonText}>
+              {mode === 'login' ? 'INGRESAR' : 'SOLICITAR CUENTA'}
             </Text>
-            <Text style={styles.footerLink}>
-              {mode === 'login' ? "Crea una" : "Inicia sesión"}
-            </Text>
-          </Text>
-        </TouchableOpacity>
+          </TouchableOpacity>
 
-      </Animated.View>
+          {mode === 'login' && (
+            <TouchableOpacity disabled={loading} onPress={() => Alert.alert("Recuperar", "Por favor contacte a administración.")}>
+              <Text style={styles.forgot}>¿Olvidaste tu contraseña?</Text>
+            </TouchableOpacity>
+          )}
+
+          <TouchableOpacity onPress={toggleMode} disabled={loading}>
+            <Text style={styles.footer}>
+              <Text style={styles.footerText}>
+                {mode === 'login' ? "¿No tienes una cuenta? " : "¿Ya tienes cuenta? "}
+              </Text>
+              <Text style={styles.footerLink}>
+                {mode === 'login' ? "Crea una" : "Inicia sesión"}
+              </Text>
+            </Text>
+          </TouchableOpacity>
+
+        </Animated.View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 };
 
 const styles = StyleSheet.create({
   container: {
-    flex: 1,
+    flexGrow: 1, // <--- CAMBIO CLAVE AQUÍ PARA EL SCROLLVIEW
     backgroundColor: '#FFF',
     paddingHorizontal: 32,
     justifyContent: 'center',
@@ -365,11 +371,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#F2F2F2',
     borderRadius: 10,
     height: 48,
-    flexDirection: 'row', // Para que el input y el ícono estén uno al lado del otro
-    alignItems: 'center', // Para centrarlos verticalmente
+    flexDirection: 'row', 
+    alignItems: 'center', 
   },
   input: {
-    flex: 1, // Para que ocupe todo el espacio disponible antes del ícono
+    flex: 1, 
     fontFamily: 'Rubik-Light',
     fontSize: 14,
     paddingHorizontal: 12,
@@ -377,7 +383,7 @@ const styles = StyleSheet.create({
     opacity: 0.85,
   },
   eyeIconContainer: {
-    paddingHorizontal: 15, // Espacio para que el dedo toque cómodamente el ícono
+    paddingHorizontal: 15, 
     height: '100%',
     justifyContent: 'center',
   },

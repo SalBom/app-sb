@@ -17,10 +17,11 @@
     },
     "android": {
       "adaptiveIcon": {
-        "foregroundImage": "./assets/adaptive-icon.png",
+        "foregroundImage": "./assets/icon-app.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.martinestevez003.apppedidos"
+      "package": "com.martinestevez003.apppedidos",
+      "softwareKeyboardLayoutMode": "pan"      
     },
     "web": {
       "favicon": "./assets/icon-app.png"

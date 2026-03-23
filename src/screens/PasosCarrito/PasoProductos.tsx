@@ -1,4 +1,4 @@
-import React, { useRef, useState, useCallback, useEffect } from 'react';
+import React, { useRef, useState, useCallback, useEffect, useMemo } from 'react';
 import { 
   View, 
   Text, 
@@ -9,17 +9,53 @@ import {
   RefreshControl,
   Alert,
   ActivityIndicator,
-  Dimensions
+  Dimensions,
+  Modal,
+  TextInput,
+  Pressable
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useCartStore } from '../../store/cartStore';
+import { useCartStore, ClienteSel } from '../../store/cartStore';
 import TarjetaProducto from '../../components/TarjetaProducto';
 import CarritoHeader from '../../components/CarritoHeader';
 import axios from 'axios';
-import { Feather } from '@expo/vector-icons'; 
+import { Feather, Ionicons } from '@expo/vector-icons'; 
 import Svg, { Path } from 'react-native-svg';
 
+import { getCuitFromStorage } from '../../utils/authStorage';
 import { API_URL } from '../../config';
+
+// --- HELPERS PARA CLIENTES ---
+async function safeFetch(url: string) {
+  try {
+    const res = await fetch(url);
+    const text = await res.text();
+    try {
+      const json = JSON.parse(text);
+      return { ok: res.ok, data: json };
+    } catch (err) { return { ok: false, data: null }; }
+  } catch (e) { return { ok: false, data: null }; }
+}
+
+function normalizeClientes(lista: any[]): ClienteSel[] {
+  if (!Array.isArray(lista)) return [];
+  return lista.map((c: any) => {
+    let tData = c.app_transport_data || null;
+    if (!tData && Array.isArray(c.property_delivery_carrier_id) && c.property_delivery_carrier_id.length === 2) {
+        tData = { id: c.property_delivery_carrier_id[0], name: c.property_delivery_carrier_id[1] };
+    }
+    return {
+      id: c.id ?? c.partner_id ?? c.partnerId,
+      name: c.name ?? c.display_name ?? c.razon_social ?? c.nombre,
+      vat: c.vat ?? c.cuit ?? null,
+      street: c.street ?? c.calle ?? '',
+      city: c.city ?? c.ciudad ?? '',
+      state: (Array.isArray(c.state_id) ? c.state_id[1] : c.state) ?? '',
+      zip: c.zip ?? c.codigo_postal ?? '',
+      transport_data: tData 
+    };
+  }).filter(x => x.id && x.name);
+}
 
 // --- GEOMETRÍA EXACTA ---
 const SCREEN_W = Dimensions.get('window').width;
@@ -27,12 +63,10 @@ const PADDING_RIGHT = 15;
 const CARD_WIDTH = SCREEN_W - PADDING_RIGHT; 
 const CARD_CUT_SIZE = 30; 
 
-// La alerta termina EXACTAMENTE donde empieza el corte de la tarjeta
 const ALERT_WIDTH = CARD_WIDTH - CARD_CUT_SIZE; 
 const ALERT_HEIGHT = 34; 
 const ALERT_INTERNAL_CUT = 12; 
 
-// Path SVG: Rectángulo que llega hasta el corte
 const alertPath = `
   M 0,0 
   H ${ALERT_WIDTH} 
@@ -47,21 +81,80 @@ interface Props {
 }
 
 const PasoProductos: React.FC<Props> = ({ onNext }) => {
-  const { items, updateQuantity, removeFromCart, updateItemPaymentTerm, updateDiscount } = useCartStore();
+  const { 
+      items, updateQuantity, removeFromCart, updateItemPaymentTerm, updateDiscount,
+      clienteSeleccionado, setCliente, setTransporteObj, setTransporte
+  } = useCartStore();
+  
   const insets = useSafeAreaInsets();
 
   const [discountRules, setDiscountRules] = useState<any>({});
   const [stockMap, setStockMap] = useState<Record<number, string>>({});
   const [checkingStock, setCheckingStock] = useState(false);
 
+  // --- ESTADOS DE CLIENTES ---
+  const [clientes, setClientes] = useState<ClienteSel[]>([]);
+  const [loadingClientes, setLoadingClientes] = useState(false);
+  const [modalCliente, setModalCliente] = useState(false);
+  const [clientSearch, setClientSearch] = useState('');
+
+  const filteredClients = useMemo(() => {
+    if (!clientSearch.trim()) return clientes;
+    const text = clientSearch.toLowerCase().trim();
+    return clientes.filter(c => (c.name && c.name.toLowerCase().includes(text)) || (c.vat && String(c.vat).includes(text)));
+  }, [clientes, clientSearch]);
+
+  const cargarClientes = useCallback(async () => {
+    try {
+      setLoadingClientes(true);
+      const cuit = await getCuitFromStorage();
+      if (!cuit) return;
+
+      let selfAsCliente: ClienteSel | null = null;
+      const resPerfil = await safeFetch(`${API_URL}/usuario-perfil?cuit=${encodeURIComponent(cuit)}`);
+      if (resPerfil.ok && resPerfil.data && resPerfil.data.partner_id) {
+          selfAsCliente = { id: resPerfil.data.partner_id, name: `YO: ${resPerfil.data.name}`.toUpperCase(), vat: cuit, is_self: true };
+      }
+
+      const resCli = await safeFetch(`${API_URL}/clientes-del-vendedor?cuit=${encodeURIComponent(cuit)}`);
+      let normList = normalizeClientes(resCli.ok ? resCli.data.items : []);
+      if (selfAsCliente) {
+          const yaEsta = normList.some(c => c.id === selfAsCliente!.id);
+          if (!yaEsta) normList = [selfAsCliente, ...normList];
+      }
+      setClientes(normList);
+      
+      // Autoseleccionar el primero si no hay ninguno
+      if (normList.length > 0 && !clienteSeleccionado) {
+          handleSelectCliente(normList[0]);
+      }
+      setLoadingClientes(false);
+    } catch (e) {
+      setLoadingClientes(false);
+    }
+  }, [clienteSeleccionado]);
+
   useEffect(() => { 
       fetchRules(); 
       checkStock(); 
+      cargarClientes();
   }, []);
 
   useEffect(() => {
       if (items.length > 0) checkStock();
   }, [items.length]);
+
+  const handleSelectCliente = (item: ClienteSel) => {
+    setCliente(item);
+    if (item.transport_data) {
+        setTransporteObj(item.transport_data);
+        setTransporte(item.transport_data.name);
+    } else {
+        setTransporteObj(null);
+        setTransporte(null);
+    }
+    setModalCliente(false);
+  };
 
   const fetchRules = () => {
     axios.get(`${API_URL}/admin/plazos-descuentos`)
@@ -126,6 +219,11 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
   }, 0);
 
   const handleContinue = () => {
+      if (!clienteSeleccionado) {
+          Alert.alert("Atención", "Por favor seleccioná un cliente para el pedido.", [{ text: "Entendido" }]);
+          return;
+      }
+
       const sinStock = items.filter(item => stockMap[item.product_id] === 'red');
       if (sinStock.length > 0) {
           Alert.alert("Stock Insuficiente", "Por favor elimina los productos marcados en rojo para continuar.", [{ text: "Entendido" }]);
@@ -143,6 +241,7 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
     setRefreshing(true);
     fetchRules();
     checkStock(); 
+    cargarClientes();
     setTimeout(() => setRefreshing(false), 1000);
   }, []);
   
@@ -180,7 +279,6 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
                 />
             </View>
 
-            {/* AVISO SIN STOCK CON TEXTO ANIDADO (BOLD/REGULAR) */}
             {isOutOfStock && (
                 <View style={styles.alertWrapper}>
                     <View style={StyleSheet.absoluteFill}>
@@ -200,13 +298,33 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
     );
   };
 
+  const listHeader = (
+    <View style={styles.headerContainerWrapper}>
+        <CarritoHeader step={1} />
+        
+        {/* SELECTOR DE CLIENTE INYECTADO AQUÍ */}
+        <View style={styles.clientSelectorWrapper}>
+            <Text style={styles.clientLabel}>CLIENTE SELECCIONADO</Text>
+            <Pressable 
+                onPress={() => { setClientSearch(''); setModalCliente(true); }} 
+                style={({ pressed }) => [styles.select, pressed && { opacity: 0.9 }]}
+            >
+              <Text style={styles.selectText} numberOfLines={1} ellipsizeMode="tail">
+                  {clienteSeleccionado?.name ?? (loadingClientes ? 'Cargando...' : 'Seleccionar Cliente')}
+              </Text>
+              <Text style={styles.chevron}>▾</Text>
+            </Pressable>
+        </View>
+    </View>
+  );
+
   return (
     <View style={styles.container}>
       <FlatList
         data={items}
         renderItem={renderItem}
         keyExtractor={(item) => item.product_id.toString()}
-        ListHeaderComponent={<CarritoHeader step={1} />}
+        ListHeaderComponent={listHeader}
         contentContainerStyle={{ paddingBottom: 20 }}
         style={{ flex: 1 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#1C9BD8']} tintColor="#1C9BD8" />}
@@ -233,6 +351,39 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
           </Animated.View>
         </TouchableWithoutFeedback>
       </View>
+
+      {/* MODAL DEL BUSCADOR DE CLIENTES */}
+      <Modal visible={modalCliente} animationType="slide" transparent>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>Seleccionar cliente</Text>
+            <View style={styles.searchContainer}>
+                <Ionicons name="search" size={20} color="#999" />
+                <TextInput 
+                    style={styles.searchInput} 
+                    placeholder="Buscar cliente..." 
+                    value={clientSearch} 
+                    onChangeText={setClientSearch} 
+                />
+            </View>
+            <FlatList 
+                data={filteredClients} 
+                keyExtractor={(item: any, idx) => String(item.id ?? idx)} 
+                renderItem={({ item }: any) => (
+                    <Pressable style={styles.modalItem} onPress={() => handleSelectCliente(item)}>
+                        <Text style={[styles.modalItemText, item.is_self && { color: '#139EDB', fontWeight: 'bold' }]}>
+                            {item.name}
+                        </Text>
+                    </Pressable>
+                )} 
+            />
+            <Pressable style={styles.modalClose} onPress={() => setModalCliente(false)}>
+                <Text style={styles.modalCloseText}>CERRAR</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 };
@@ -240,10 +391,36 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
   
+  headerContainerWrapper: {
+      paddingBottom: 15,
+  },
+  clientSelectorWrapper: {
+      paddingHorizontal: 20,
+      marginTop: 10,
+  },
+  clientLabel: {
+      fontSize: 12,
+      fontFamily: 'BarlowCondensed-SemiBold',
+      color: '#6B7280',
+      marginBottom: 6,
+      marginLeft: 4
+  },
+  select: { 
+      height: 46, 
+      borderRadius: 14, 
+      paddingHorizontal: 15, 
+      backgroundColor: '#F9FAFB', 
+      borderWidth: 1, 
+      borderColor: '#E7EAED', 
+      flexDirection: 'row', 
+      alignItems: 'center' 
+  },
+  selectText: { flex: 1, fontSize: 14, color: '#121212', fontWeight: '700' },
+  chevron: { fontSize: 16, opacity: 0.6 },
+
   itemContainer: {
       marginBottom: 2, 
   },
-
   alertWrapper: {
       width: ALERT_WIDTH, 
       height: ALERT_HEIGHT,
@@ -254,7 +431,6 @@ const styles = StyleSheet.create({
       paddingBottom: 6,
       alignSelf: 'flex-start', 
   },
-  
   alertContent: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -262,19 +438,16 @@ const styles = StyleSheet.create({
       width: '100%',
       paddingLeft: 0
   },
-
   stockAlertText: {
       color: '#FFF',
-      fontFamily: 'BarlowCondensed-Regular', // Regular por defecto
+      fontFamily: 'BarlowCondensed-Regular',
       fontSize: 13,
       letterSpacing: 0.5,
       marginTop: 2 
   },
-  
   boldText: {
-      fontFamily: 'BarlowCondensed-Bold', // Negrita solo para "ELIMINAR"
+      fontFamily: 'BarlowCondensed-Bold',
   },
-
   footerContainer: {
     backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#f0f0f0',
     paddingHorizontal: 20, paddingTop: 15, shadowColor: '#000',
@@ -285,6 +458,17 @@ const styles = StyleSheet.create({
   subtotalAmount: { color: '#313131', fontSize: 28, fontFamily: 'BarlowCondensed-SemiBold', fontWeight: '600' },
   botonContinuar: { backgroundColor: '#1C9BD8', height: 48, borderRadius: 999, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 3 },
   botonContinuarTexto: { color: '#fff', fontSize: 16, fontFamily: 'BarlowCondensed-Bold', fontWeight: '700', letterSpacing: 1 },
+
+  // Estilos del Modal
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  modalCard: { backgroundColor: '#fff', maxHeight: '70%', borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingTop: 12 },
+  modalTitle: { fontSize: 16, fontWeight: '700', paddingHorizontal: 16, paddingBottom: 8 },
+  searchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F5F5F5', marginHorizontal: 16, marginBottom: 10, paddingHorizontal: 12, borderRadius: 8, height: 45, borderWidth: 1, borderColor: '#E0E0E0' },
+  searchInput: { flex: 1, marginLeft: 8, fontSize: 16, color: '#333', fontWeight: '500' },
+  modalItem: { paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#E7EAED' },
+  modalItemText: { fontSize: 16 },
+  modalClose: { alignSelf: 'center', marginVertical: 12, paddingHorizontal: 16, paddingVertical: 10 },
+  modalCloseText: { fontWeight: '700', color: '#1C9BD8' },
 });
 
 export default PasoProductos;
