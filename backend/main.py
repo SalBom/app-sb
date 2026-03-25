@@ -4187,13 +4187,21 @@ def get_users_unified():
     if not conn: return jsonify([]), 500
     try:
         cur = conn.cursor()
-        # Mantenemos la consulta sin 'email' para evitar el error anterior
+        # Se agrega NOT EXISTS para ignorar la pre-asignación si el usuario ya se registró
         cur.execute("""
-            SELECT name, cuit, role, id FROM app_users WHERE is_active = TRUE
+            SELECT name, cuit, role, id 
+            FROM app_users 
+            WHERE is_active = TRUE
+            
             UNION ALL
-            SELECT name, cuit, role_name as role, -1 as id 
-            FROM app_user_roles 
-            WHERE user_id IS NULL
+            
+            SELECT r.name, r.cuit, r.role_name as role, -1 as id 
+            FROM app_user_roles r
+            WHERE r.user_id IS NULL 
+              AND NOT EXISTS (
+                  SELECT 1 FROM app_users u 
+                  WHERE u.cuit = r.cuit
+              )
         """)
         rows = cur.fetchall()
         

@@ -58,7 +58,21 @@ const GestionUsuarios = () => {
         res = await axios.get(`${API_URL}/odoo-users`);
       }
       
-      if (res.data) setDataList(res.data);
+      if (res.data) {
+        if (activeTab === 'usuarios') {
+          // Filtrar duplicados priorizando a los usuarios ya registrados (IDs positivos)
+          const registrados = res.data.filter((u: User) => (u.id || 0) > 0);
+          const cuitsRegistrados = new Set(registrados.map((u: User) => u.cuit));
+          
+          const preAsignadosValidos = res.data.filter((u: User) => 
+            (u.id || 0) < 0 && !cuitsRegistrados.has(u.cuit)
+          );
+          
+          setDataList([...registrados, ...preAsignadosValidos]);
+        } else {
+          setDataList(res.data);
+        }
+      }
     } catch (e) {
       console.error(e);
       if (activeTab !== 'usuarios') Alert.alert('Aviso', 'No se pudieron cargar los datos de esta sección.');
@@ -88,7 +102,6 @@ const GestionUsuarios = () => {
     try {
       if (isImporting) {
         // CASO 1: Pre-asignar desde Odoo
-        // Enviamos CUIT y Email. El backend priorizará CUIT y si existe, ignorará el email.
         await axios.post(`${API_URL}/admin/preasignar`, {
           email: selectedUser.email,
           cuit: selectedUser.cuit,
@@ -123,7 +136,8 @@ const GestionUsuarios = () => {
                     <Text style={styles.name}>{item.name}</Text>
                     <Text style={styles.cuit}>{item.cuit || '---'}</Text>
                     <Text style={styles.role}>Rol: <Text style={{fontWeight:'bold'}}>{item.role || 'Cliente'}</Text></Text>
-                    {item.id === -1 && (
+                    {/* Los preasignados tienen IDs generados negativos (-1, -2, etc) */}
+                    {(item.id || 0) < 0 && (
                         <Text style={{fontSize:10, color:'#E67E22', marginTop:2}}>* Pre-asignado (No registrado)</Text>
                     )}
                 </View>
