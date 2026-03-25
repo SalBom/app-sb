@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,8 @@ import {
   Alert,
   Animated,
   Easing,
-  ScrollView // <--- NUEVA IMPORTACIÓN
+  ScrollView,
+  Keyboard
 } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import axios from 'axios';
@@ -34,18 +35,52 @@ const Login: React.FC<Props> = ({ navigation }) => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
   
-  // --- ESTADOS PARA MOSTRAR/OCULTAR CONTRASEÑA ---
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+  
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   
   const [userNameForLoading, setUserNameForLoading] = useState('');
   const [loading, setLoading] = useState(false);
 
   const setItems = useCartStore((state: any) => state.setItems);
 
+  // --- ANIMACIONES DE ÉXITO ---
   const formOpacity = useRef(new Animated.Value(1)).current;
   const logoTranslateY = useRef(new Animated.Value(0)).current;
   const loadingElementsOpacity = useRef(new Animated.Value(0)).current;
+
+  // --- ANIMACIÓN DEL TECLADO (ESCALA Y TAMAÑO) ---
+  // 0 = Teclado cerrado, 1 = Teclado abierto
+  const keyboardAnim = useRef(new Animated.Value(0)).current; 
+
+  useEffect(() => {
+    const kbdShow = Keyboard.addListener('keyboardDidShow', () => {
+      setIsKeyboardVisible(true);
+      Animated.timing(keyboardAnim, {
+        toValue: 1, 
+        duration: 250, 
+        // IMPORTANTE: useNativeDriver debe ser false porque animamos 'height' y 'marginBottom'
+        useNativeDriver: false, 
+        easing: Easing.out(Easing.ease),
+      }).start();
+    });
+
+    const kbdHide = Keyboard.addListener('keyboardDidHide', () => {
+      setIsKeyboardVisible(false);
+      Animated.timing(keyboardAnim, {
+        toValue: 0, 
+        duration: 300, 
+        useNativeDriver: false,
+        easing: Easing.out(Easing.ease),
+      }).start();
+    });
+    
+    return () => {
+      kbdShow.remove();
+      kbdHide.remove();
+    };
+  }, []);
 
   const handleAction = async () => {
     if (!cuit.trim() || !password.trim()) {
@@ -66,6 +101,7 @@ const Login: React.FC<Props> = ({ navigation }) => {
 
   const doLogin = async () => {
     setLoading(true);
+    Keyboard.dismiss(); 
 
     try {
       const res = await axios.post(`${API_URL}/auth/login`, {
@@ -83,10 +119,8 @@ const Login: React.FC<Props> = ({ navigation }) => {
           name: name
         });
 
-        // Guardamos la preferencia de recordar inicio de sesión
         await saveRememberMe(rememberMe);
 
-        // --- RECUPERAR CARRITO SILENCIOSAMENTE ---
         try {
             const resCart = await axios.get(`${API_URL}/cart/load`, { 
                 params: { cuit: res.data.cuit } 
@@ -94,16 +128,12 @@ const Login: React.FC<Props> = ({ navigation }) => {
             if (resCart.data && Array.isArray(resCart.data.items) && resCart.data.items.length > 0) {
                 if (setItems) setItems(resCart.data.items);
             }
-        } catch (errCart) {
-            // Fallo silencioso si no hay carrito
-        }
+        } catch (errCart) {}
 
-        // --- PUSH NOTIFICATIONS ---
         registerForPushNotificationsAsync().then(token => {
             if (token) syncPushToken(token);
         }).catch(() => {});
 
-        // --- ANIMACIÓN ---
         Animated.timing(formOpacity, {
           toValue: 0,
           duration: 300,
@@ -114,7 +144,7 @@ const Login: React.FC<Props> = ({ navigation }) => {
         Animated.parallel([
           Animated.spring(logoTranslateY, {
             toValue: 100,
-            useNativeDriver: true,
+            useNativeDriver: false, // <--- CORRECCIÓN APLICADA AQUÍ
             bounciness: 8,
             speed: 10,
           }),
@@ -146,6 +176,7 @@ const Login: React.FC<Props> = ({ navigation }) => {
 
   const doRegister = async () => {
     setLoading(true);
+    Keyboard.dismiss();
     try {
       const res = await axios.post(`${API_URL}/auth/register`, {
         cuit: cuit.trim(),
@@ -184,16 +215,39 @@ const Login: React.FC<Props> = ({ navigation }) => {
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={{ flex: 1, backgroundColor: '#FFF' }} // <--- ESTILO APLICADO DIRECTO
+      style={{ flex: 1, backgroundColor: '#FFF' }} 
     >
-      {/* --- NUEVO SCROLLVIEW ENVOLVIENDO TODO --- */}
       <ScrollView 
-        contentContainerStyle={styles.container} 
+        contentContainerStyle={[
+          styles.container,
+          isKeyboardVisible && { justifyContent: 'flex-start', paddingTop: Platform.OS === 'android' ? 40 : 30 }
+        ]} 
         keyboardShouldPersistTaps="handled"
         bounces={false}
         showsVerticalScrollIndicator={false}
       >
-        <Animated.View style={[styles.logoContainer, { transform: [{ translateY: logoTranslateY }] }]}>
+        
+        {/* --- LOGO ANIMADO --- */}
+        <Animated.View style={[
+          styles.logoContainer, 
+          { 
+            height: keyboardAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [180, 90]
+            }),
+            marginBottom: keyboardAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [48, 15]
+            }),
+            transform: [
+              { translateY: logoTranslateY }, 
+              { scale: keyboardAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [1, 0.55] 
+              })}
+            ]
+          }
+        ]}>
           <SBLOGO width={180} height={180} />
         </Animated.View>
 
@@ -207,7 +261,6 @@ const Login: React.FC<Props> = ({ navigation }) => {
 
         <Animated.View style={{ opacity: formOpacity, width: '100%' }}>
           
-          {/* CUIT */}
           <View style={styles.fieldContainer}>
             <Text style={styles.label}>CUIT</Text>
             <View style={styles.inputWrapper}>
@@ -223,7 +276,6 @@ const Login: React.FC<Props> = ({ navigation }) => {
             </View>
           </View>
 
-          {/* CONTRASEÑA */}
           <View style={styles.fieldContainer}>
             <Text style={styles.label}>Contraseña</Text>
             <View style={styles.inputWrapper}>
@@ -250,7 +302,6 @@ const Login: React.FC<Props> = ({ navigation }) => {
             </View>
           </View>
 
-          {/* CONFIRMAR CONTRASEÑA (SOLO REGISTRO) */}
           {mode === 'register' && (
             <View style={styles.fieldContainer}>
               <Text style={styles.label}>Confirmar Contraseña</Text>
@@ -273,13 +324,12 @@ const Login: React.FC<Props> = ({ navigation }) => {
                     name={showConfirmPassword ? "eye" : "eye-off"} 
                     size={20} 
                     color="#545454" 
-                  />
+                />
                 </TouchableOpacity>
               </View>
             </View>
           )}
 
-          {/* CHECKBOX RECORDARME */}
           {mode === 'login' && (
             <TouchableOpacity 
               style={styles.checkboxContainer} 
@@ -294,7 +344,6 @@ const Login: React.FC<Props> = ({ navigation }) => {
             </TouchableOpacity>
           )}
 
-          {/* BOTÓN PRINCIPAL */}
           <TouchableOpacity 
             style={styles.button} 
             onPress={handleAction}
@@ -312,16 +361,18 @@ const Login: React.FC<Props> = ({ navigation }) => {
             </TouchableOpacity>
           )}
 
-          <TouchableOpacity onPress={toggleMode} disabled={loading}>
-            <Text style={styles.footer}>
-              <Text style={styles.footerText}>
-                {mode === 'login' ? "¿No tienes una cuenta? " : "¿Ya tienes cuenta? "}
+          {!isKeyboardVisible && (
+            <TouchableOpacity onPress={toggleMode} disabled={loading}>
+              <Text style={styles.footer}>
+                <Text style={styles.footerText}>
+                  {mode === 'login' ? "¿No tienes una cuenta? " : "¿Ya tienes cuenta? "}
+                </Text>
+                <Text style={styles.footerLink}>
+                  {mode === 'login' ? "Crea una" : "Inicia sesión"}
+                </Text>
               </Text>
-              <Text style={styles.footerLink}>
-                {mode === 'login' ? "Crea una" : "Inicia sesión"}
-              </Text>
-            </Text>
-          </TouchableOpacity>
+            </TouchableOpacity>
+          )}
 
         </Animated.View>
       </ScrollView>
@@ -331,16 +382,17 @@ const Login: React.FC<Props> = ({ navigation }) => {
 
 const styles = StyleSheet.create({
   container: {
-    flexGrow: 1, // <--- CAMBIO CLAVE AQUÍ PARA EL SCROLLVIEW
+    flexGrow: 1, 
     backgroundColor: '#FFF',
     paddingHorizontal: 32,
     justifyContent: 'center',
     alignItems: 'center',
   },
   logoContainer: {
-    marginBottom: 48,
     alignItems: 'center',
+    justifyContent: 'center',
     zIndex: 10,
+    overflow: 'visible',
   },
   loadingContainer: {
     position: 'absolute',

@@ -1409,6 +1409,9 @@ def get_mis_pedidos():
         q = request.args.get("q", "").strip() 
         date_filter = request.args.get("date", "") 
         status_filter = request.args.get("state", "").strip() 
+        
+        # 1. CAPTURAMOS EL NUEVO FILTRO DE FACTURACIÓN DE LA APP
+        invoice_status_filter = request.args.get("invoice_status", "").strip()
 
         try:
             limit = int(request.args.get("limit", 20))
@@ -1438,6 +1441,10 @@ def get_mis_pedidos():
         if status_filter:
             domain.append(("state", "ilike", status_filter))
 
+        # 2. LO AGREGAMOS AL DOMINIO PARA QUE FILTRE EN ODOO
+        if invoice_status_filter:
+            domain.append(("invoice_status", "=", invoice_status_filter))
+
         if q:
             domain.append("|")
             domain.append(("name", "ilike", q))
@@ -1445,7 +1452,8 @@ def get_mis_pedidos():
 
         pedidos = client.env["sale.order"].search_read(
             domain,
-            ["name", "partner_id", "date_order", "amount_total", "state"],
+            # 3. LE PEDIMOS A ODOO QUE NOS TRAIGA ESE CAMPO
+            ["name", "partner_id", "date_order", "amount_total", "state", "invoice_status"],
             order="date_order desc",
             limit=limit,
             offset=offset
@@ -1457,6 +1465,8 @@ def get_mis_pedidos():
             "fecha": p["date_order"] or "Sin fecha",
             "total": p["amount_total"] or 0,
             "estado": p["state"],
+            # 4. LO MANDAMOS DE VUELTA A LA APP
+            "estado_facturacion": p.get("invoice_status")
         } for p in pedidos]
 
         return jsonify({"items": items})

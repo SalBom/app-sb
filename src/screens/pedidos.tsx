@@ -11,6 +11,8 @@ import {
   Linking,
   Alert,
   Platform,
+  Modal,
+  Pressable
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
@@ -29,14 +31,31 @@ type PedidoItem = {
   fecha: string;
   total: number;
   estado: string; 
+  estado_facturacion?: string; 
+  invoice_status?: string; 
 };
 
 const PAGE_SIZE = 20;
 
+// Opciones para los filtros
+const ESTADOS_OPCIONES = [
+  { label: 'TODOS LOS ESTADOS', value: '' },
+  { label: 'PRESUPUESTO', value: 'draft' },
+  { label: 'CONFIRMADO', value: 'sale' },
+  { label: 'CANCELADO', value: 'cancel' }
+];
+
+const FACTURACION_OPCIONES = [
+  { label: 'FACTURACIÓN: TODAS', value: '' },
+  { label: 'FACTURADO', value: 'invoiced' },
+  { label: 'A FACTURAR', value: 'to invoice' },
+  { label: 'NADA A FACTURAR', value: 'no' }
+];
+
 const Pedidos: React.FC = () => {
   const navigation = useNavigation<any>();
-  const route = useRoute<any>(); // Hook para recibir parámetros
-  const { cuitOverride } = route.params || {}; // CUIT opcional desde Admin
+  const route = useRoute<any>(); 
+  const { cuitOverride } = route.params || {}; 
 
   const [pedidos, setPedidos] = useState<PedidoItem[]>([]);
   const [loadingInitial, setLoadingInitial] = useState(true);
@@ -47,7 +66,16 @@ const Pedidos: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   const [search, setSearch] = useState('');
+  
+  // Filtro Estado
   const [statusFilter, setStatusFilter] = useState('');
+  const [showStatusModal, setShowStatusModal] = useState(false); 
+
+  // Filtro Facturación (NUEVO)
+  const [invoiceFilter, setInvoiceFilter] = useState('');
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+
+  // Filtro Fecha
   const [dateFilter, setDateFilter] = useState<Date | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
 
@@ -80,7 +108,6 @@ const Pedidos: React.FC = () => {
 
   const fetchPedidos = async (currentOffset: number, isRefresh = false) => {
     try {
-      // CAMBIO: Priorizar override
       const cuit = cuitOverride || await authStorage.getCuitFromStorage();
       if (!cuit) {
         setError('No se encontró CUIT.');
@@ -96,6 +123,9 @@ const Pedidos: React.FC = () => {
       if (search.trim()) url += `&q=${encodeURIComponent(search.trim())}`;
       if (dateFilter) url += `&date=${formatDateForBackend(dateFilter)}`;
       if (statusFilter.trim()) url += `&state=${encodeURIComponent(statusFilter.trim())}`;
+      
+      // NUEVO PARÁMETRO EN LA URL
+      if (invoiceFilter.trim()) url += `&invoice_status=${encodeURIComponent(invoiceFilter.trim())}`;
 
       const res = await fetch(url);
       const json = await res.json();
@@ -124,6 +154,7 @@ const Pedidos: React.FC = () => {
 
   useEffect(() => { fetchPedidos(0, true); }, []);
 
+  // Agregamos invoiceFilter al arreglo de dependencias
   useEffect(() => {
       if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
       typingTimeoutRef.current = setTimeout(() => {
@@ -133,7 +164,7 @@ const Pedidos: React.FC = () => {
           fetchPedidos(0, true); 
       }, 500);
       return () => { if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current); };
-  }, [search, dateFilter, statusFilter]); 
+  }, [search, dateFilter, statusFilter, invoiceFilter]); 
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -143,7 +174,7 @@ const Pedidos: React.FC = () => {
   };
 
   const loadMore = () => {
-    const isFiltering = (search.trim() !== '') || (dateFilter !== null) || (statusFilter.trim() !== '');
+    const isFiltering = (search.trim() !== '') || (dateFilter !== null) || (statusFilter.trim() !== '') || (invoiceFilter.trim() !== '');
     if (isFiltering) return; 
     if (!hasMore || loadingMore || loadingInitial || refreshing) return;
     setLoadingMore(true);
@@ -175,10 +206,24 @@ const Pedidos: React.FC = () => {
     }
   };
 
+  const getFacturacionInfo = (estadoFact?: string) => {
+    const estado = estadoFact ? estadoFact.toLowerCase() : 'no';
+    switch (estado) {
+        case 'invoiced': case 'facturado': return { label: 'FACTURADO', color: '#1C9BD8' }; // Azul
+        case 'to invoice': case 'a_facturar': return { label: 'A FACTURAR', color: '#F59E0B' }; // Naranja
+        case 'no': return { label: 'NADA A FACTURAR', color: '#757575' }; // Gris
+        default: return { label: estado.toUpperCase(), color: '#757575' };
+    }
+  };
+
   const formatFecha = (f: string) => (!f || f === 'Sin fecha' ? '---' : f.split(' ')[0]);
 
   const renderItem = ({ item }: { item: PedidoItem }) => {
     const estadoInfo = getEstadoInfo(item.estado);
+    // Ahora forzamos que si no viene nada, tome valor por defecto, así SIEMPRE renderiza la etiqueta
+    const rawInvStatus = item.estado_facturacion || item.invoice_status || 'no'; 
+    const facturacionInfo = getFacturacionInfo(rawInvStatus);
+
     return (
       <View style={s.cardContainer}>
           <ContenedorFacturaSvg style={StyleSheet.absoluteFill} width="100%" height="100%" preserveAspectRatio="none"/>
@@ -196,7 +241,16 @@ const Pedidos: React.FC = () => {
                       <Text style={s.infoRow}><Text style={s.label}>TOTAL: </Text><Text style={s.value}>$ {formatCurrency(item.total)}</Text></Text>
                   </View>
                   <View style={s.statusColumn}>
-                      <View style={[s.badge, { backgroundColor: estadoInfo.color }]}><Text style={s.badgeText}>{estadoInfo.label}</Text></View>
+                      {/* Estado del Pedido */}
+                      <View style={[s.badge, { backgroundColor: estadoInfo.color }]}>
+                          <Text style={s.badgeText}>{estadoInfo.label}</Text>
+                      </View>
+                      
+                      {/* Estado de Facturación (Aparece siempre) */}
+                      <View style={[s.badge, { backgroundColor: facturacionInfo.color, marginTop: 4 }]}>
+                          <Text style={s.badgeText}>{facturacionInfo.label}</Text>
+                      </View>
+
                       <View style={s.actionsRow}>
                           <TouchableOpacity style={s.iconButton} onPress={() => handleDownloadPdf(item.numero_pedido)}><Feather name="download" size={20} color="#2B2B2B" /></TouchableOpacity>
                           <TouchableOpacity style={s.iconButton}><Feather name="info" size={20} color="#2B2B2B" /></TouchableOpacity>
@@ -209,7 +263,7 @@ const Pedidos: React.FC = () => {
   };
 
   const renderFooter = () => {
-    const isFiltering = (search.trim() !== '') || (dateFilter !== null) || (statusFilter.trim() !== '');
+    const isFiltering = (search.trim() !== '') || (dateFilter !== null) || (statusFilter.trim() !== '') || (invoiceFilter.trim() !== '');
     if (isFiltering || !loadingMore) return <View style={{ height: 20 }} />;
     return <View style={{ paddingVertical: 20 }}><ActivityIndicator size="small" color="#0088CC" /></View>;
   };
@@ -231,17 +285,105 @@ const Pedidos: React.FC = () => {
            </View>
         </View>
         <View style={s.filtersRow}>
-            <TouchableOpacity style={[s.filterInputWrap, { marginRight: 10, flexDirection: 'row', alignItems: 'center' }]} onPress={() => setShowDatePicker(true)}>
-                <Text style={[s.filterInput, !dateFilter && { color: '#999' }]}>{dateFilter ? displayDate : "FECHA"}</Text>
-                {dateFilter && <TouchableOpacity onPress={clearDateFilter} style={{ padding: 4 }}><Ionicons name="close-circle" size={16} color="#999" /></TouchableOpacity>}
+            {/* Filtro Fecha */}
+            <TouchableOpacity style={[s.filterInputWrap, { marginRight: 6, flexDirection: 'row', alignItems: 'center' }]} onPress={() => setShowDatePicker(true)}>
+                <Text style={[s.filterInput, !dateFilter && { color: '#999' }]} numberOfLines={1}>{dateFilter ? displayDate : "FECHA"}</Text>
+                {dateFilter && <TouchableOpacity onPress={clearDateFilter} style={{ padding: 2 }}><Ionicons name="close-circle" size={16} color="#999" /></TouchableOpacity>}
             </TouchableOpacity>
-            <View style={s.filterInputWrap}>
-                <TextInput style={s.filterInput} placeholder="ESTADO" placeholderTextColor="#999" value={statusFilter} onChangeText={setStatusFilter}/>
-            </View>
+            
+            {/* Filtro Estado */}
+            <TouchableOpacity 
+                style={[s.filterInputWrap, { marginRight: 6, flexDirection: 'row', alignItems: 'center' }]} 
+                onPress={() => setShowStatusModal(true)}
+            >
+                <Text style={[s.filterInput, !statusFilter && { color: '#999' }]} numberOfLines={1}>
+                    {ESTADOS_OPCIONES.find(e => e.value === statusFilter)?.label || "ESTADO"}
+                </Text>
+                {statusFilter !== '' && (
+                    <TouchableOpacity onPress={() => setStatusFilter('')} style={{ padding: 2 }}>
+                        <Ionicons name="close-circle" size={16} color="#999" />
+                    </TouchableOpacity>
+                )}
+            </TouchableOpacity>
+
+            {/* Filtro Facturación (NUEVO) */}
+            <TouchableOpacity 
+                style={[s.filterInputWrap, { flexDirection: 'row', alignItems: 'center' }]} 
+                onPress={() => setShowInvoiceModal(true)}
+            >
+                <Text style={[s.filterInput, !invoiceFilter && { color: '#999' }]} numberOfLines={1}>
+                    {FACTURACION_OPCIONES.find(e => e.value === invoiceFilter)?.label || "FACTURA"}
+                </Text>
+                {invoiceFilter !== '' && (
+                    <TouchableOpacity onPress={() => setInvoiceFilter('')} style={{ padding: 2 }}>
+                        <Ionicons name="close-circle" size={16} color="#999" />
+                    </TouchableOpacity>
+                )}
+            </TouchableOpacity>
         </View>
       </View>
 
       {showDatePicker && <DateTimePicker value={dateFilter || new Date()} mode="date" display="default" onChange={onChangeDate} maximumDate={new Date()} />}
+
+      {/* MODAL DE ESTADOS */}
+      <Modal visible={showStatusModal} animationType="slide" transparent>
+        <View style={s.modalBackdrop}>
+          <View style={s.modalCard}>
+            <Text style={s.modalTitle}>Filtrar por Estado</Text>
+            <FlatList 
+                data={ESTADOS_OPCIONES} 
+                keyExtractor={(item) => item.value} 
+                renderItem={({ item }) => (
+                    <Pressable 
+                        style={[s.modalItem, statusFilter === item.value && s.modalItemSelected]} 
+                        onPress={() => { 
+                            setStatusFilter(item.value); 
+                            setShowStatusModal(false); 
+                        }}
+                    >
+                        <Text style={[s.modalItemText, statusFilter === item.value && s.modalItemTextSelected]}>
+                            {item.label}
+                        </Text>
+                        {statusFilter === item.value && <Ionicons name="checkmark-circle" size={20} color="#1C9BD8" />}
+                    </Pressable>
+                )} 
+            />
+            <Pressable style={s.modalClose} onPress={() => setShowStatusModal(false)}>
+                <Text style={s.modalCloseText}>CERRAR</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL DE FACTURACIÓN */}
+      <Modal visible={showInvoiceModal} animationType="slide" transparent>
+        <View style={s.modalBackdrop}>
+          <View style={s.modalCard}>
+            <Text style={s.modalTitle}>Filtrar por Facturación</Text>
+            <FlatList 
+                data={FACTURACION_OPCIONES} 
+                keyExtractor={(item) => item.value} 
+                renderItem={({ item }) => (
+                    <Pressable 
+                        style={[s.modalItem, invoiceFilter === item.value && s.modalItemSelected]} 
+                        onPress={() => { 
+                            setInvoiceFilter(item.value); 
+                            setShowInvoiceModal(false); 
+                        }}
+                    >
+                        <Text style={[s.modalItemText, invoiceFilter === item.value && s.modalItemTextSelected]}>
+                            {item.label}
+                        </Text>
+                        {invoiceFilter === item.value && <Ionicons name="checkmark-circle" size={20} color="#1C9BD8" />}
+                    </Pressable>
+                )} 
+            />
+            <Pressable style={s.modalClose} onPress={() => setShowInvoiceModal(false)}>
+                <Text style={s.modalCloseText}>CERRAR</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       {loadingInitial ? (
           <ActivityIndicator size="large" color="#0088CC" style={{ marginTop: 40 }} />
@@ -274,11 +416,14 @@ const s = StyleSheet.create({
   searchInput: { flex: 1, fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#2B2B2B' },
   searchIcon: { marginLeft: 8 },
   filtersRow: { flexDirection: 'row' },
-  filterInputWrap: { flex: 1, backgroundColor: '#FAFAFA', borderRadius: 20, height: 40, justifyContent: 'center', paddingHorizontal: 15, borderWidth: 1, borderColor: '#E0E0E0' },
-  filterInput: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#2B2B2B', flex: 1, textAlignVertical: 'center' },
+  // Ajustamos los estilos de los filtros para que entren 3
+  filterInputWrap: { flex: 1, backgroundColor: '#FAFAFA', borderRadius: 20, height: 40, justifyContent: 'center', paddingHorizontal: 10, borderWidth: 1, borderColor: '#E0E0E0' },
+  filterInput: { fontFamily: 'BarlowCondensed-Bold', fontSize: 14, color: '#2B2B2B', flex: 1, textAlignVertical: 'center' },
   listContent: { paddingRight: 16, paddingBottom: 20 },
   errorText: { color: 'red', textAlign: 'center', marginTop: 20, fontFamily: 'BarlowCondensed-Bold', position: 'absolute', bottom: 20, alignSelf: 'center' },
   emptyText: { textAlign: 'center', marginTop: 40, color: '#999', fontFamily: 'BarlowCondensed-Bold', fontSize: 16 },
+  
+  // Tarjetas
   cardContainer: { height: 140, borderRadius: 12, marginLeft: -7, overflow: 'hidden', position: 'relative', backgroundColor: 'transparent', marginBottom: 8 },
   cardContent: { flex: 1 },
   cardHeaderRow: { alignItems: 'flex-start' },
@@ -294,6 +439,17 @@ const s = StyleSheet.create({
   badgeText: { color: '#FFFFFF', fontSize: 12, fontFamily: 'BarlowCondensed-Bold', textAlign: 'center' },
   actionsRow: { flexDirection: 'row', marginTop: 8, justifyContent: 'flex-end', width: '100%' },
   iconButton: { marginLeft: 15, padding: 8 },
+
+  // Estilos del Modal de Filtros
+  modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
+  modalCard: { backgroundColor: '#fff', maxHeight: '50%', borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingTop: 16 },
+  modalTitle: { fontSize: 18, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B', paddingHorizontal: 16, paddingBottom: 12 },
+  modalItem: { paddingVertical: 14, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#E7EAED', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  modalItemSelected: { backgroundColor: '#F0F9FF' },
+  modalItemText: { fontSize: 16, fontFamily: 'BarlowCondensed-SemiBold', color: '#545454' },
+  modalItemTextSelected: { color: '#1C9BD8' },
+  modalClose: { alignSelf: 'center', marginVertical: 16, paddingHorizontal: 16, paddingVertical: 10 },
+  modalCloseText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#1C9BD8' },
 });
 
 export default Pedidos;
