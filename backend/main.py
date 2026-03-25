@@ -2860,8 +2860,7 @@ def clientes_del_vendedor():
     finally:
         release_odoo_client(client)
 
-# 2. ACTUALIZAR LISTADO PARA SOPORTAR 'atendidos'
-# 2. ACTUALIZAR LISTADO PARA SOPORTAR 'atendidos' Y 'vendor_name' PARA CUITs VACÍOS
+# 2. ACTUALIZAR LISTADO PARA SOPORTAR 'atendidos', 'vendor_name' PARA CUITs VACÍOS Y FIX BOOLEAN
 @app.route("/clientes-por-estado", methods=["GET"])
 def clientes_por_estado():
     cuit_vendedor = request.args.get("cuit", "").strip()
@@ -2893,7 +2892,7 @@ def clientes_por_estado():
                 if user_recs:
                     user_id = user_recs[0].id
                     
-        # 2. Si no hay CUIT o falló la búsqueda, intentar por NOMBRE (Fallback para cuentas internas)
+        # 2. Si no hay CUIT o falló la búsqueda, intentar por NOMBRE (Fallback para HOUSE ACCOUNT)
         if not user_id and vendor_name:
             user_recs = client.env["res.users"].search([("name", "=", vendor_name)], limit=1)
             if user_recs:
@@ -2916,7 +2915,6 @@ def clientes_por_estado():
 
         if estado == 'atendidos':
             # --- NUEVA LÓGICA: ATENDIDOS ---
-            # Buscar pedidos en el rango de fechas exacto
             s_str = start_date.strftime("%Y-%m-%d")
             e_str = end_date.strftime("%Y-%m-%d")
             
@@ -2935,7 +2933,6 @@ def clientes_por_estado():
                     
         else:
             # --- LÓGICA ORIGINAL (Riesgo/Perdidos) ---
-            # Usan fecha ancla futura para calcular riesgo relativo a hoy/fin de mes
             anchor = end_date # Fin del mes consultado
             d_90  = (anchor - timedelta(days=90)).strftime("%Y-%m-%d")
             d_150 = (anchor - timedelta(days=150)).strftime("%Y-%m-%d")
@@ -2953,11 +2950,19 @@ def clientes_por_estado():
                 ["partner_id", "invoice_date"]
             )
             
+            # --- PROTECCIÓN PARA FECHAS VACÍAS (FALSE) ---
             ids_90, ids_150, ids_180 = set(), set(), set()
             for m in moves:
                 if not m.get("partner_id"): continue
+                
+                # Si por algún motivo la factura no tiene fecha (Odoo manda False), la ignoramos
+                inv_date = m.get("invoice_date")
+                if not inv_date or isinstance(inv_date, bool): 
+                    continue
+                    
                 pid = m["partner_id"][0]
-                inv = str(m["invoice_date"])
+                inv = str(inv_date)
+                
                 if inv >= d_90: ids_90.add(pid)
                 if inv >= d_150: ids_150.add(pid)
                 if inv >= d_180: ids_180.add(pid)
@@ -2982,7 +2987,16 @@ def clientes_por_estado():
                 partners_map[p["id"]] = p
 
         result = [partners_map[pid] for pid in target_ids if pid in partners_map]
-        result.sort(key=lambda x: x["name"])
+        
+        # --- PROTECCIÓN ABSOLUTA PARA EL ORDENAMIENTO ---
+        def safe_sort_key(partner):
+            name = partner.get("name")
+            # Si el nombre es False, None, o está vacío, devolvemos un string vacío
+            if not name or isinstance(name, bool):
+                return ""
+            return str(name).lower()
+            
+        result.sort(key=safe_sort_key)
         
         return jsonify({"items": result, "total": len(result)})
 
