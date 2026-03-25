@@ -27,7 +27,6 @@ import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 
 import authStorage from '../utils/authStorage';
-
 import { API_URL } from '../config';
 
 // Alias para FileSystem
@@ -102,12 +101,13 @@ const ListadoClientes = () => {
   const route = useRoute<any>();
   const insets = useSafeAreaInsets();
 
-  // CAMBIO: Recibimos cuitOverride
+  // CAMBIO 1: Recibimos vendorNameOverride
   const { 
     estadoId = 'perdidos', 
     month = new Date().getMonth() + 1, 
     year = new Date().getFullYear(),
-    cuitOverride 
+    cuitOverride,
+    vendorNameOverride 
   } = route.params || {};
 
   const config = CONFIG_ESTADOS[estadoId] || { title: 'CLIENTES', color: '#333' };
@@ -128,14 +128,23 @@ const ListadoClientes = () => {
       if (!isRefresh) setLoading(true);
       setError(null);
       
-      // CAMBIO: Usamos el override si existe, si no el del auth
-      const cuit = cuitOverride || await authStorage.getCuitFromStorage();
-      if (!cuit) throw new Error('No se encontró CUIT');
-
       const rawBaseUrl = API_URL;
       const baseUrl = rawBaseUrl.replace(/\/+$/, '');
 
-      const res = await fetch(`${baseUrl}/clientes-por-estado?cuit=${cuit}&estado=${estadoId}&month=${month}&year=${year}`);
+      // CAMBIO 2: Armar URL inteligente según si hay CUIT o Nombre
+      let url = `${baseUrl}/clientes-por-estado?estado=${estadoId}&month=${month}&year=${year}`;
+      
+      if (cuitOverride) {
+          url += `&cuit=${encodeURIComponent(cuitOverride)}`;
+      } else if (vendorNameOverride) {
+          url += `&vendor_name=${encodeURIComponent(vendorNameOverride)}`;
+      } else {
+          // Si no pasaron override, asume el CUIT del usuario logueado
+          const cuitStorage = await authStorage.getCuitFromStorage();
+          if (cuitStorage) url += `&cuit=${encodeURIComponent(cuitStorage)}`;
+      }
+
+      const res = await fetch(url);
       const json = await res.json();
 
       if (!res.ok) throw new Error(json.error || 'Error al cargar clientes');
@@ -146,7 +155,7 @@ const ListadoClientes = () => {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [estadoId, month, year, cuitOverride]);
+  }, [estadoId, month, year, cuitOverride, vendorNameOverride]);
 
   useEffect(() => { fetchClientes(); }, [fetchClientes]);
 
@@ -154,7 +163,7 @@ const ListadoClientes = () => {
 
   const filteredClientes = useMemo(() => {
     return clientes.filter(c => {
-      const matchSearch = search ? (c.name.toLowerCase().includes(search.toLowerCase()) || c.vat.includes(search)) : true;
+      const matchSearch = search ? (c.name.toLowerCase().includes(search.toLowerCase()) || (c.vat && c.vat.includes(search))) : true;
       const matchCity = selectedCity ? (c.city && c.city.toLowerCase() === selectedCity.toLowerCase()) : true;
       const matchState = selectedState ? (c.state && c.state.toLowerCase() === selectedState.toLowerCase()) : true;
       return matchSearch && matchCity && matchState;

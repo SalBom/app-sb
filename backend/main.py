@@ -2861,9 +2861,11 @@ def clientes_del_vendedor():
         release_odoo_client(client)
 
 # 2. ACTUALIZAR LISTADO PARA SOPORTAR 'atendidos'
+# 2. ACTUALIZAR LISTADO PARA SOPORTAR 'atendidos' Y 'vendor_name' PARA CUITs VACÍOS
 @app.route("/clientes-por-estado", methods=["GET"])
 def clientes_por_estado():
-    cuit = request.args.get("cuit")
+    cuit_vendedor = request.args.get("cuit", "").strip()
+    vendor_name = request.args.get("vendor_name", "").strip()
     estado = request.args.get("estado")
     
     # Calcular fechas
@@ -2877,16 +2879,28 @@ def clientes_por_estado():
         start_date = now.replace(day=1)
         end_date = (start_date + timedelta(days=32)).replace(day=1)
 
-    if not cuit: return jsonify({"error": "CUIT requerido"}), 400
+    if not cuit_vendedor and not vendor_name: 
+        return jsonify({"error": "CUIT o Nombre de vendedor requerido"}), 400
 
     def logic(client):
-        partner_recs = client.env["res.partner"].search([("vat", "=", cuit)], limit=1)
-        if not partner_recs: return jsonify({"error": "CUIT inválido"}), 404
-        partner_id = partner_recs[0].id
+        user_id = None
         
-        user_recs = client.env["res.users"].search([("partner_id", "=", partner_id)], limit=1)
-        if not user_recs: return jsonify({"error": "Usuario no encontrado"}), 404
-        user_id = user_recs[0].id
+        # 1. Intentar buscar por CUIT primero
+        if cuit_vendedor:
+            partner_recs = client.env["res.partner"].search([("vat", "=", cuit_vendedor)], limit=1)
+            if partner_recs:
+                user_recs = client.env["res.users"].search([("partner_id", "=", partner_recs[0].id)], limit=1)
+                if user_recs:
+                    user_id = user_recs[0].id
+                    
+        # 2. Si no hay CUIT o falló la búsqueda, intentar por NOMBRE (Fallback para cuentas internas)
+        if not user_id and vendor_name:
+            user_recs = client.env["res.users"].search([("name", "=", vendor_name)], limit=1)
+            if user_recs:
+                user_id = user_recs[0].id
+
+        if not user_id:
+            return jsonify({"error": "Usuario vendedor no encontrado"}), 404
 
         # Clientes del vendedor (base)
         all_partners = client.env["res.partner"].search_read(

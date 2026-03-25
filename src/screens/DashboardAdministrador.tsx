@@ -124,17 +124,34 @@ const DashboardAdministrador: React.FC = () => {
 
   const getBaseUrl = () => API_URL;
 
-  // 1. Cargar Vendedores
+  // 1. Cargar Vendedores (Con lógica para pre-asignados y registrados sin CUIT)
   useEffect(() => {
     fetch(`${getBaseUrl()}/users`)
       .then(r => r.json())
       .then((data: Vendor[]) => {
-        const sellers = data.filter(u => 
-          (u.role === 'Vendedor' || u.role === 'Vendedor Black') && u.cuit
+        // Filtramos todos los que tengan rol de vendedor (quitamos la restricción estricta de CUIT)
+        const sellersRaw = data.filter(u => 
+          (u.role === 'Vendedor' || u.role === 'Vendedor Black')
         );
-        setVendors(sellers);
-        if (sellers.length > 0) {
-          setSelectedVendor(sellers[0]);
+
+        // Separamos registrados (id positivo)
+        const registrados = sellersRaw.filter(u => u.id > 0);
+        
+        // Guardamos los CUITs de los registrados (ignorando los vacíos) para no duplicar
+        const cuitsRegistrados = new Set(
+            registrados.filter(u => u.cuit).map(u => u.cuit)
+        );
+        
+        // Filtramos los pre-asignados (id negativo) asegurando que su CUIT no esté en los registrados
+        const preAsignadosValidos = sellersRaw.filter(u => 
+          u.id < 0 && (!u.cuit || !cuitsRegistrados.has(u.cuit))
+        );
+        
+        const unifiedSellers = [...registrados, ...preAsignadosValidos];
+
+        setVendors(unifiedSellers);
+        if (unifiedSellers.length > 0) {
+          setSelectedVendor(unifiedSellers[0]);
         }
       })
       .catch(e => console.error("Error vendors", e));
@@ -143,8 +160,10 @@ const DashboardAdministrador: React.FC = () => {
   // 2. Recargar datos
   useEffect(() => {
     if (selectedVendor) {
-        fetchKpiData(selectedVendor.cuit);
-        cargarFacturas(selectedVendor.cuit);
+        // Si el vendedor es interno y no tiene CUIT, enviamos un string vacío
+        const vendorCuit = selectedVendor.cuit || '';
+        fetchKpiData(vendorCuit);
+        cargarFacturas(vendorCuit);
     }
   }, [selectedVendor, selectedMonth, selectedYear]);
 
@@ -153,7 +172,8 @@ const DashboardAdministrador: React.FC = () => {
       estadoId: id,
       month: selectedMonth,
       year: selectedYear,
-      cuitOverride: selectedVendor?.cuit
+      cuitOverride: selectedVendor?.cuit || '',
+      vendorNameOverride: selectedVendor?.name // Enviamos el nombre por si falla el CUIT
     });
   };
 
@@ -391,8 +411,18 @@ const DashboardAdministrador: React.FC = () => {
                     renderItem={({ item }) => (
                         <TouchableOpacity style={{ paddingVertical: 15, borderBottomWidth: 1, borderColor: '#eee' }}
                             onPress={() => { setSelectedVendor(item); setVendorPickerVisible(false); }}>
-                            <Text style={{ fontSize: 16, fontFamily: 'BarlowCondensed-Bold', color: '#333' }}>{item.name}</Text>
-                            <Text style={{ fontSize: 12, color: '#999' }}>{item.role}</Text>
+                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <Text style={{ fontSize: 16, fontFamily: 'BarlowCondensed-Bold', color: '#333' }}>
+                                    {item.name}
+                                </Text>
+                                {/* Etiqueta visual para los pre-asignados (IDs negativos) */}
+                                {item.id < 0 && (
+                                    <Text style={{ fontSize: 10, color: '#E67E22', fontWeight: 'bold' }}>PRE-ASIGNADO</Text>
+                                )}
+                            </View>
+                            <Text style={{ fontSize: 12, color: '#999' }}>
+                                {item.role} {item.cuit ? `- CUIT: ${item.cuit}` : '- Sin CUIT asignado'}
+                            </Text>
                         </TouchableOpacity>
                     )}
                 />
