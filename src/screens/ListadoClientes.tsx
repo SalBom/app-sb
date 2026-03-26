@@ -14,6 +14,10 @@ import {
   ScrollView,
   Pressable,
   Alert,
+  KeyboardAvoidingView,
+  Platform,
+  Keyboard,
+  TouchableWithoutFeedback
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -25,7 +29,7 @@ import * as XLSX from 'xlsx';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as DocumentPicker from 'expo-document-picker'; // IMPORT NUEVO
+import * as DocumentPicker from 'expo-document-picker'; 
 
 import authStorage from '../utils/authStorage';
 import { API_URL } from '../config';
@@ -209,6 +213,7 @@ const ListadoClientes = () => {
 
   // Seleccionar archivo
   const pickFile = async () => {
+    Keyboard.dismiss(); // Cerramos teclado al abrir el explorador de archivos
     try {
         const result = await DocumentPicker.getDocumentAsync({
             type: '*/*',
@@ -227,6 +232,7 @@ const ListadoClientes = () => {
   const handleSaveNote = async () => {
     if (!noteText.trim() || !selectedClientForNote) return;
     setIsSavingNote(true);
+    Keyboard.dismiss();
     try {
       const res = await fetch(`${API_URL}/cliente/nota`, {
         method: 'POST',
@@ -425,49 +431,53 @@ const ListadoClientes = () => {
         </Pressable>
       </Modal>
 
-      {/* MODAL NOTA INTERNA */}
+      {/* MODAL NOTA INTERNA MEJORADO CON KEYBOARD AVOIDING VIEW */}
       <Modal visible={noteModalVisible} transparent animationType="fade" onRequestClose={() => setNoteModalVisible(false)}>
-        <Pressable style={s.modalOverlay} onPress={() => setNoteModalVisible(false)}>
-          <Pressable style={[s.modalContent, { width: '90%' }]} onPress={e => e.stopPropagation()}>
-            <Text style={s.modalTitle}>Agregar Nota Interna</Text>
-            <Text style={{textAlign:'center', marginBottom:15, color:'#666', fontFamily: 'BarlowCondensed-Regular'}}>
-                Cliente: {selectedClientForNote?.name}
-            </Text>
-            
-            <TextInput
-              style={s.noteInput}
-              placeholder="Escribe algún comentario o recordatorio..."
-              placeholderTextColor="#999"
-              multiline
-              numberOfLines={4}
-              value={noteText}
-              onChangeText={setNoteText}
-              textAlignVertical="top"
-            />
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+          <Pressable style={s.modalOverlay} onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); }}>
+            <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+              <View style={[s.modalContent, { width: '90%' }]}>
+                <Text style={s.modalTitle}>Agregar Nota Interna</Text>
+                <Text style={{textAlign:'center', marginBottom:15, color:'#666', fontFamily: 'BarlowCondensed-Regular'}}>
+                    Cliente: {selectedClientForNote?.name}
+                </Text>
+                
+                <TextInput
+                  style={s.noteInput}
+                  placeholder="Escribe algún comentario o recordatorio..."
+                  placeholderTextColor="#999"
+                  multiline
+                  numberOfLines={4}
+                  value={noteText}
+                  onChangeText={setNoteText}
+                  textAlignVertical="top"
+                />
 
-            {/* SECCIÓN ADJUNTAR ARCHIVO */}
-            <TouchableOpacity style={s.attachBtn} onPress={pickFile}>
-               <Ionicons name="attach" size={20} color="#666" />
-               <Text style={s.attachText} numberOfLines={1}>
-                 {selectedFile ? selectedFile.name : 'Adjuntar foto o archivo'}
-               </Text>
-            </TouchableOpacity>
-            {selectedFile && (
-                <TouchableOpacity onPress={() => setSelectedFile(null)} style={{alignSelf: 'flex-end', marginBottom: 10}}>
-                   <Text style={{color: '#D32F2F', fontSize: 12, fontFamily: 'BarlowCondensed-Bold'}}>Quitar archivo</Text>
+                {/* SECCIÓN ADJUNTAR ARCHIVO */}
+                <TouchableOpacity style={s.attachBtn} onPress={pickFile}>
+                  <Ionicons name="attach" size={20} color="#666" />
+                  <Text style={s.attachText} numberOfLines={1}>
+                    {selectedFile ? selectedFile.name : 'Adjuntar foto o archivo'}
+                  </Text>
                 </TouchableOpacity>
-            )}
-            
-            <View style={s.noteButtonsRow}>
-                <TouchableOpacity style={s.noteCancelBtn} onPress={() => setNoteModalVisible(false)} disabled={isSavingNote}>
-                    <Text style={s.noteCancelText}>Cancelar</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={[s.noteSaveBtn, { backgroundColor: config.color }]} onPress={handleSaveNote} disabled={isSavingNote || !noteText.trim()}>
-                    {isSavingNote ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={s.noteSaveText}>Guardar</Text>}
-                </TouchableOpacity>
-            </View>
+                {selectedFile && (
+                    <TouchableOpacity onPress={() => setSelectedFile(null)} style={{alignSelf: 'flex-end', marginBottom: 10}}>
+                      <Text style={{color: '#D32F2F', fontSize: 12, fontFamily: 'BarlowCondensed-Bold'}}>Quitar archivo</Text>
+                    </TouchableOpacity>
+                )}
+                
+                <View style={s.noteButtonsRow}>
+                    <TouchableOpacity style={s.noteCancelBtn} onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); }} disabled={isSavingNote}>
+                        <Text style={s.noteCancelText}>Cancelar</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={[s.noteSaveBtn, { backgroundColor: config.color }]} onPress={handleSaveNote} disabled={isSavingNote || !noteText.trim()}>
+                        {isSavingNote ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={s.noteSaveText}>Guardar</Text>}
+                    </TouchableOpacity>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
           </Pressable>
-        </Pressable>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* MODAL HISTORIAL DE NOTAS */}

@@ -3024,52 +3024,81 @@ def historial_notas_cliente():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     
-# --- NUEVO ENDPOINT PARA AGREGAR NOTA INTERNA AL CLIENTE ---
 @app.route("/cliente/nota", methods=["POST"])
 def agregar_nota_cliente():
     data = request.json or {}
-    partner_id = data.get("partner_id")
+    
+    # 1. FORZAMOS el ID a entero (Cura el 90% de los errores de Odoo)
+    try:
+        partner_id = int(data.get("partner_id", 0))
+    except (ValueError, TypeError):
+        return jsonify({"error": "El ID del cliente es inválido."}), 400
+        
     nota = data.get("nota", "").strip()
+    file_b64 = data.get("file_b64")
+    file_name = data.get("file_name", "Archivo_Adjunto") 
 
     if not partner_id or not nota:
-        return jsonify({"error": "Faltan datos (partner_id o nota)"}), 400
+        return jsonify({"error": "Faltan datos obligatorios."}), 400
 
     def logic(client):
-        # 1. Buscamos al cliente (partner) para obtener sus notas actuales
+        # 2. Buscar al cliente
         partner_recs = client.env["res.partner"].search_read([("id", "=", partner_id)], ["comment"], limit=1)
         if not partner_recs:
-            return jsonify({"error": "Cliente no encontrado"}), 404
+            return jsonify({"error": "Cliente no encontrado en Odoo"}), 404
             
         current_comment = partner_recs[0].get("comment") or ""
         
-        # 2. Formateamos con fecha para no pisar notas viejas
+        # 3. Formatear la nota interna
         timestamp = datetime.now().strftime("%d/%m/%Y %H:%M")
-        nueva_entrada = f"[{timestamp}] Nota App:\n{nota}"
-        
-        # 3. Concatenamos la nueva nota al final del texto existente
+        adjunto_texto = f" [Archivo Adjunto: {file_name}]" if file_b64 else ""
+        nueva_entrada = f"[{timestamp}] Nota App{adjunto_texto}:\n{nota}"
         nuevo_comment = f"{current_comment}\n\n{nueva_entrada}" if current_comment else nueva_entrada
         
-        # 4. Escribimos en el campo oficial 'comment' (Notas Internas en Odoo)
+        # Escribir en la ficha
         client.env["res.partner"].write([partner_id], {"comment": nuevo_comment})
         
-        # 5. Publicamos en el historial (chatter) de Odoo para mayor visibilidad
+        # 4. Manejo SEGURO del adjunto
+        attachment_ids = []
+        if file_b64:
+            # Limpiamos el prefijo 'data:image/...;base64,' si es que vino de la app
+            clean_b64 = file_b64
+            if "," in file_b64:
+                clean_b64 = file_b64.split(",")[1]
+                
+            try:
+                attach_id = client.env["ir.attachment"].create({
+                    "name": file_name,
+                    "type": "binary",
+                    "datas": clean_b64,
+                    "res_model": "res.partner",
+                    "res_id": partner_id
+                })
+                attachment_ids.append(attach_id)
+            except Exception as e:
+                log.error(f"Error creando adjunto en Odoo: {e}")
+                # No detenemos el proceso, la nota ya se guardó
+        
+        # 5. Publicar en el chatter (Manejo de saltos de línea para el HTML)
         try:
+            body_html = f"<b>Nota agregada desde la App:</b><br/>{nota.replace(chr(10), '<br/>')}"
             client.env["mail.message"].create({
                 "model": "res.partner",
                 "res_id": partner_id,
-                "body": f"<b>Nota agregada desde la App:</b><br/>{nota}",
-                "message_type": "comment"
+                "body": body_html,
+                "message_type": "comment",
+                "attachment_ids": [(6, 0, attachment_ids)] if attachment_ids else []
             })
-        except Exception:
-            pass # Si el chatter falla (por permisos), lo ignoramos porque la nota ya se guardó
+        except Exception as e:
+            log.warning(f"Aviso: No se pudo escribir en el chatter de Odoo: {e}")
             
-        return jsonify({"ok": True, "message": "Nota agregada correctamente"})
+        return jsonify({"ok": True, "message": "Nota guardada correctamente"})
 
     try:
         return execute_odoo_operation(logic)
     except Exception as e:
-        log.error(f"❌ Error al agregar nota: {e}")
-        return jsonify({"error": str(e)}), 500
+        log.error(f"❌ Error crítico al agregar nota: {e}")
+        return jsonify({"error": f"Odoo devolvió un error: {str(e)}"}), 500
 
 @app.route("/mis_comprobantes_propios", methods=["GET"])
 def get_mis_comprobantes_propios():
