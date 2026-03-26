@@ -25,6 +25,7 @@ import * as XLSX from 'xlsx';
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
+import * as DocumentPicker from 'expo-document-picker'; // IMPORT NUEVO
 
 import authStorage from '../utils/authStorage';
 import { API_URL } from '../config';
@@ -49,6 +50,16 @@ const IconPdf = () => (
     <Path d="M10 13H8v5h2" />
     <Path d="M16 13h2a2 2 0 0 1 2 2v1a2 2 0 0 1-2 2h-2" />
     <Path d="M12 13v5" />
+  </Svg>
+);
+
+const IconNote = () => (
+  <Svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#F57C00" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <Path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+    <Path d="M14 2v6h6" />
+    <Path d="M16 13H8" />
+    <Path d="M16 17H8" />
+    <Path d="M10 9H8" />
   </Svg>
 );
 
@@ -101,7 +112,6 @@ const ListadoClientes = () => {
   const route = useRoute<any>();
   const insets = useSafeAreaInsets();
 
-  // CAMBIO 1: Recibimos vendorNameOverride
   const { 
     estadoId = 'perdidos', 
     month = new Date().getMonth() + 1, 
@@ -123,6 +133,20 @@ const ListadoClientes = () => {
   const [selectedState, setSelectedState] = useState<string | null>(null);
   const [modalType, setModalType] = useState<'city' | 'state' | null>(null);
 
+  // Modal Notas
+  const [noteModalVisible, setNoteModalVisible] = useState(false);
+  const [selectedClientForNote, setSelectedClientForNote] = useState<Cliente | null>(null);
+  const [noteText, setNoteText] = useState('');
+  const [isSavingNote, setIsSavingNote] = useState(false);
+  
+  // Archivo adjunto
+  const [selectedFile, setSelectedFile] = useState<{ name: string, b64: string } | null>(null);
+
+  // Modal Historial
+  const [historyModalVisible, setHistoryModalVisible] = useState(false);
+  const [historyText, setHistoryText] = useState('');
+  const [loadingHistory, setLoadingHistory] = useState(false);
+
   const fetchClientes = useCallback(async (isRefresh = false) => {
     try {
       if (!isRefresh) setLoading(true);
@@ -131,7 +155,6 @@ const ListadoClientes = () => {
       const rawBaseUrl = API_URL;
       const baseUrl = rawBaseUrl.replace(/\/+$/, '');
 
-      // CAMBIO 2: Armar URL inteligente según si hay CUIT o Nombre
       let url = `${baseUrl}/clientes-por-estado?estado=${estadoId}&month=${month}&year=${year}`;
       
       if (cuitOverride) {
@@ -139,7 +162,6 @@ const ListadoClientes = () => {
       } else if (vendorNameOverride) {
           url += `&vendor_name=${encodeURIComponent(vendorNameOverride)}`;
       } else {
-          // Si no pasaron override, asume el CUIT del usuario logueado
           const cuitStorage = await authStorage.getCuitFromStorage();
           if (cuitStorage) url += `&cuit=${encodeURIComponent(cuitStorage)}`;
       }
@@ -176,6 +198,77 @@ const ListadoClientes = () => {
   const handleCall = (phone: string) => Linking.openURL(`tel:${phone}`);
   const handleEmail = (email: string) => Linking.openURL(`mailto:${email}`);
   const handleWhatsApp = (phone: string) => Linking.openURL(`https://wa.me/${phone.replace(/\D/g, '')}`);
+
+  // Acción de Nota Interna
+  const handleOpenNoteModal = (client: Cliente) => {
+    setSelectedClientForNote(client);
+    setNoteText('');
+    setSelectedFile(null); // Limpiamos si quedó un archivo anterior
+    setNoteModalVisible(true);
+  };
+
+  // Seleccionar archivo
+  const pickFile = async () => {
+    try {
+        const result = await DocumentPicker.getDocumentAsync({
+            type: '*/*',
+            copyToCacheDirectory: true,
+        });
+        if (!result.canceled && result.assets.length > 0) {
+            const asset = result.assets[0];
+            const base64 = await FS.readAsStringAsync(asset.uri, { encoding: FS.EncodingType.Base64 });
+            setSelectedFile({ name: asset.name, b64: base64 });
+        }
+    } catch (e) {
+        Alert.alert('Error', 'No se pudo procesar el archivo seleccionado.');
+    }
+  };
+
+  const handleSaveNote = async () => {
+    if (!noteText.trim() || !selectedClientForNote) return;
+    setIsSavingNote(true);
+    try {
+      const res = await fetch(`${API_URL}/cliente/nota`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          partner_id: selectedClientForNote.id,
+          nota: noteText.trim(),
+          file_b64: selectedFile?.b64,
+          file_name: selectedFile?.name
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'No se pudo guardar la nota en el servidor');
+      Alert.alert('Éxito', 'Nota y/o archivo guardados en Odoo.');
+      setNoteModalVisible(false);
+    } catch (e: any) {
+      Alert.alert('Error', e.message);
+    } finally {
+      setIsSavingNote(false);
+    }
+  };
+
+  // Abrir historial al tocar la tarjeta del cliente
+  const handleOpenHistoryModal = async (client: Cliente) => {
+    setSelectedClientForNote(client);
+    setHistoryModalVisible(true);
+    setLoadingHistory(true);
+    setHistoryText('');
+    try {
+      const res = await fetch(`${API_URL}/cliente/historial-notas?partner_id=${client.id}`);
+      const data = await res.json();
+      if (res.ok) {
+        setHistoryText(data.comment || 'No hay notas registradas para este cliente.');
+      } else {
+        setHistoryText('Error al cargar historial desde Odoo.');
+      }
+    } catch (e) {
+      setHistoryText('Error de conexión al buscar el historial.');
+    } finally {
+      setLoadingHistory(false);
+    }
+  };
 
   const handleDownloadPdf = async () => {
     try {
@@ -221,7 +314,7 @@ const ListadoClientes = () => {
   };
 
   const renderItem = ({ item }: { item: Cliente }) => (
-    <View style={s.rowContainer}>
+    <TouchableOpacity style={s.rowContainer} onPress={() => handleOpenHistoryModal(item)} activeOpacity={0.7}>
       <View style={s.dataCol}>
         <Text style={s.clientName} numberOfLines={1}>{item.name}</Text>
         <Text style={s.clientMeta}>CUIT: {item.vat || '—'}</Text>
@@ -233,6 +326,10 @@ const ListadoClientes = () => {
         </View>
       </View>
       <View style={s.actionsCol}>
+        <TouchableOpacity style={[s.iconBtn, { backgroundColor: '#FFF3E0', marginRight: 10 }]} onPress={() => handleOpenNoteModal(item)}>
+            <IconNote />
+        </TouchableOpacity>
+
         {item.phone && (
             <>
               <TouchableOpacity style={s.iconBtn} onPress={() => handleCall(item.phone!)}><IconPhone /></TouchableOpacity>
@@ -243,7 +340,7 @@ const ListadoClientes = () => {
             <TouchableOpacity style={[s.iconBtn, { marginLeft: 10 }]} onPress={() => handleEmail(item.email!)}><IconMail /></TouchableOpacity>
         )}
       </View>
-    </View>
+    </TouchableOpacity>
   );
 
   return (
@@ -310,6 +407,7 @@ const ListadoClientes = () => {
         />
       )}
 
+      {/* MODAL FILTROS */}
       <Modal visible={!!modalType} transparent animationType="fade" onRequestClose={() => setModalType(null)}>
         <Pressable style={s.modalOverlay} onPress={() => setModalType(null)}>
             <View style={s.modalContent}>
@@ -326,6 +424,76 @@ const ListadoClientes = () => {
             </View>
         </Pressable>
       </Modal>
+
+      {/* MODAL NOTA INTERNA */}
+      <Modal visible={noteModalVisible} transparent animationType="fade" onRequestClose={() => setNoteModalVisible(false)}>
+        <Pressable style={s.modalOverlay} onPress={() => setNoteModalVisible(false)}>
+          <Pressable style={[s.modalContent, { width: '90%' }]} onPress={e => e.stopPropagation()}>
+            <Text style={s.modalTitle}>Agregar Nota Interna</Text>
+            <Text style={{textAlign:'center', marginBottom:15, color:'#666', fontFamily: 'BarlowCondensed-Regular'}}>
+                Cliente: {selectedClientForNote?.name}
+            </Text>
+            
+            <TextInput
+              style={s.noteInput}
+              placeholder="Escribe algún comentario o recordatorio..."
+              placeholderTextColor="#999"
+              multiline
+              numberOfLines={4}
+              value={noteText}
+              onChangeText={setNoteText}
+              textAlignVertical="top"
+            />
+
+            {/* SECCIÓN ADJUNTAR ARCHIVO */}
+            <TouchableOpacity style={s.attachBtn} onPress={pickFile}>
+               <Ionicons name="attach" size={20} color="#666" />
+               <Text style={s.attachText} numberOfLines={1}>
+                 {selectedFile ? selectedFile.name : 'Adjuntar foto o archivo'}
+               </Text>
+            </TouchableOpacity>
+            {selectedFile && (
+                <TouchableOpacity onPress={() => setSelectedFile(null)} style={{alignSelf: 'flex-end', marginBottom: 10}}>
+                   <Text style={{color: '#D32F2F', fontSize: 12, fontFamily: 'BarlowCondensed-Bold'}}>Quitar archivo</Text>
+                </TouchableOpacity>
+            )}
+            
+            <View style={s.noteButtonsRow}>
+                <TouchableOpacity style={s.noteCancelBtn} onPress={() => setNoteModalVisible(false)} disabled={isSavingNote}>
+                    <Text style={s.noteCancelText}>Cancelar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[s.noteSaveBtn, { backgroundColor: config.color }]} onPress={handleSaveNote} disabled={isSavingNote || !noteText.trim()}>
+                    {isSavingNote ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={s.noteSaveText}>Guardar</Text>}
+                </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* MODAL HISTORIAL DE NOTAS */}
+      <Modal visible={historyModalVisible} transparent animationType="fade" onRequestClose={() => setHistoryModalVisible(false)}>
+        <Pressable style={s.modalOverlay} onPress={() => setHistoryModalVisible(false)}>
+          <Pressable style={[s.modalContent, { width: '90%', maxHeight: '80%' }]} onPress={e => e.stopPropagation()}>
+            <Text style={s.modalTitle}>Historial de Notas</Text>
+            <Text style={{textAlign:'center', marginBottom:15, color:'#666', fontFamily: 'BarlowCondensed-Regular'}}>
+                {selectedClientForNote?.name}
+            </Text>
+
+            {loadingHistory ? (
+               <ActivityIndicator size="large" color={config.color} style={{ marginVertical: 30 }} />
+            ) : (
+               <ScrollView style={s.historyContainer}>
+                 <Text style={s.historyText}>{historyText}</Text>
+               </ScrollView>
+            )}
+
+            <TouchableOpacity style={s.modalCloseBtn} onPress={() => setHistoryModalVisible(false)}>
+                <Text style={s.modalCloseText}>Cerrar</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
     </View>
   );
 };
@@ -334,50 +502,15 @@ const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
   headerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingTop: 0, 
-    marginTop: -10, 
-    paddingBottom: 4,
-    backgroundColor: '#fff',
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: 16, paddingTop: 0, marginTop: -10, paddingBottom: 4, backgroundColor: '#fff',
   },
-  titleContainer: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    flex: 1,
-    marginRight: 10,
-  },
-  title: {
-    fontSize: 22,
-    fontFamily: 'BarlowCondensed-Bold',
-    letterSpacing: 0.5,
-  },
-  countText: {
-    color: '#999',
-    fontSize: 18,
-    marginLeft: 6,
-    fontFamily: 'BarlowCondensed-Regular'
-  },
-  exportButtonsRow: {
-    flexDirection: 'row',
-  },
-  exportBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    borderWidth: 1,
-  },
-  exportText: {
-    marginLeft: 3,
-    fontSize: 10,
-    fontFamily: 'BarlowCondensed-Bold',
-    fontWeight: '700',
-  },
+  titleContainer: { flexDirection: 'row', alignItems: 'baseline', flex: 1, marginRight: 10 },
+  title: { fontSize: 22, fontFamily: 'BarlowCondensed-Bold', letterSpacing: 0.5 },
+  countText: { color: '#999', fontSize: 18, marginLeft: 6, fontFamily: 'BarlowCondensed-Regular' },
+  exportButtonsRow: { flexDirection: 'row' },
+  exportBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1 },
+  exportText: { marginLeft: 3, fontSize: 10, fontFamily: 'BarlowCondensed-Bold', fontWeight: '700' },
   filtersContainer: { paddingHorizontal: 16, paddingBottom: 10, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#F0F0F0', paddingTop: 8 },
   searchRow: { marginBottom: 10 },
   searchInputWrap: { backgroundColor: '#F5F5F5', borderRadius: 20, height: 40, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, borderWidth: 1, borderColor: '#E0E0E0' },
@@ -406,13 +539,47 @@ const s = StyleSheet.create({
   retryText: { color: '#fff', fontWeight: 'bold' },
   emptyContainer: { marginTop: 60, alignItems: 'center' },
   emptyText: { fontSize: 16, color: '#999', fontStyle: 'italic' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)', justifyContent: 'center', padding: 20 },
-  modalContent: { backgroundColor: '#fff', borderRadius: 12, padding: 20, maxHeight: '60%' },
-  modalTitle: { fontSize: 18, fontFamily: 'BarlowCondensed-Bold', marginBottom: 15, textAlign: 'center' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  modalContent: { backgroundColor: '#fff', borderRadius: 12, padding: 20, maxHeight: '80%', width: '100%' },
+  modalTitle: { fontSize: 18, fontFamily: 'BarlowCondensed-Bold', marginBottom: 15, textAlign: 'center', color: '#333' },
   modalItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   modalItemText: { fontSize: 16, color: '#333' },
   modalCloseBtn: { marginTop: 15, alignSelf: 'center', padding: 10 },
   modalCloseText: { color: '#D32F2F', fontWeight: 'bold' },
+  
+  // Estilos del modal de Notas
+  noteInput: {
+    borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 8, padding: 12, fontSize: 16, backgroundColor: '#F9F9F9', minHeight: 100, marginBottom: 10, fontFamily: 'BarlowCondensed-Regular'
+  },
+  attachBtn: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0F0F0', padding: 12, borderRadius: 8, marginBottom: 10
+  },
+  attachText: {
+    marginLeft: 8, color: '#555', flex: 1, fontFamily: 'BarlowCondensed-SemiBold'
+  },
+  noteButtonsRow: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'
+  },
+  noteCancelBtn: {
+    paddingVertical: 12, paddingHorizontal: 15, borderRadius: 8, backgroundColor: '#F5F5F5', flex: 1, marginRight: 10, alignItems: 'center'
+  },
+  noteCancelText: {
+    color: '#555', fontFamily: 'BarlowCondensed-Bold', fontSize: 16
+  },
+  noteSaveBtn: {
+    paddingVertical: 12, paddingHorizontal: 15, borderRadius: 8, flex: 1, alignItems: 'center'
+  },
+  noteSaveText: {
+    color: '#FFF', fontFamily: 'BarlowCondensed-Bold', fontSize: 16
+  },
+  
+  // Estilos del modal de Historial
+  historyContainer: {
+    backgroundColor: '#F9F9F9', padding: 15, borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0'
+  },
+  historyText: {
+    color: '#444', fontSize: 14, lineHeight: 22, fontFamily: 'BarlowCondensed-Regular'
+  }
 });
 
 export default ListadoClientes;

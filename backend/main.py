@@ -3005,7 +3005,85 @@ def clientes_por_estado():
     except Exception as e:
         log.error(f"❌ /clientes-por-estado Error: {e}")
         return jsonify({"error": str(e)}), 500
+    
+# --- NUEVOS ENDPOINTS DE NOTAS Y ARCHIVOS ---
+@app.route("/cliente/historial-notas", methods=["GET"])
+def historial_notas_cliente():
+    partner_id = request.args.get("partner_id")
+    if not partner_id:
+        return jsonify({"error": "Falta partner_id"}), 400
+        
+    def logic(client):
+        # Buscamos el comentario de notas internas crudo en Odoo
+        partner_recs = client.env["res.partner"].search_read([("id", "=", int(partner_id))], ["comment"], limit=1)
+        comment = partner_recs[0].get("comment") if partner_recs else "No hay historial registrado."
+        return jsonify({"comment": comment or "No hay historial registrado."})
+        
+    try:
+        return execute_odoo_operation(logic)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
+@app.route("/cliente/nota", methods=["POST"])
+def agregar_nota_cliente():
+    data = request.json or {}
+    partner_id = data.get("partner_id")
+    nota = data.get("nota", "").strip()
+    file_b64 = data.get("file_b64") # Recibe el archivo en base64
+    file_name = data.get("file_name") 
+
+    if not partner_id or not nota:
+        return jsonify({"error": "Faltan datos (partner_id o nota)"}), 400
+
+    def logic(client):
+        # 1. Traer notas actuales
+        partner_recs = client.env["res.partner"].search_read([("id", "=", partner_id)], ["comment"], limit=1)
+        if not partner_recs:
+            return jsonify({"error": "Cliente no encontrado"}), 404
+            
+        current_comment = partner_recs[0].get("comment") or ""
+        
+        # 2. Formatear y actualizar el campo de Notas Internas
+        timestamp = datetime.now().strftime("%d/%m/%Y %H:%M")
+        adjunto_texto = f" [Archivo Adjunto: {file_name}]" if file_b64 else ""
+        nueva_entrada = f"[{timestamp}] Nota App{adjunto_texto}:\n{nota}"
+        nuevo_comment = f"{current_comment}\n\n{nueva_entrada}" if current_comment else nueva_entrada
+        
+        client.env["res.partner"].write([partner_id], {"comment": nuevo_comment})
+        
+        # 3. Guardar el archivo en Odoo si enviaron uno
+        attachment_ids = []
+        if file_b64 and file_name:
+            attach_id = client.env["ir.attachment"].create({
+                "name": file_name,
+                "type": "binary",
+                "datas": file_b64,
+                "res_model": "res.partner", # Lo asociamos al cliente
+                "res_id": partner_id
+            })
+            attachment_ids.append(attach_id)
+        
+        # 4. Publicar en el chatter del cliente con o sin el archivo adjunto
+        try:
+            client.env["mail.message"].create({
+                "model": "res.partner",
+                "res_id": partner_id,
+                "body": f"<b>Nota agregada desde la App:</b><br/>{nota}",
+                "message_type": "comment",
+                "attachment_ids": [(6, 0, attachment_ids)] if attachment_ids else []
+            })
+        except Exception as e:
+            log.error(f"Error al escribir en chatter: {e}")
+            pass 
+            
+        return jsonify({"ok": True, "message": "Nota agregada correctamente"})
+
+    try:
+        return execute_odoo_operation(logic)
+    except Exception as e:
+        log.error(f"❌ Error al agregar nota: {e}")
+        return jsonify({"error": str(e)}), 500
+    
 # --- NUEVO ENDPOINT PARA AGREGAR NOTA INTERNA AL CLIENTE ---
 @app.route("/cliente/nota", methods=["POST"])
 def agregar_nota_cliente():
