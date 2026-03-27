@@ -3006,62 +3006,11 @@ def clientes_por_estado():
         log.error(f"❌ /clientes-por-estado Error: {e}")
         return jsonify({"error": str(e)}), 500
     
-# --- NUEVO ENDPOINT DE HISTORIAL (ESTILO CHAT) ---
-@app.route("/cliente/historial-notas", methods=["GET"])
-def historial_notas_cliente():
-    partner_id = request.args.get("partner_id")
-    if not partner_id:
-        return jsonify({"error": "Falta partner_id"}), 400
-        
-    def logic(client):
-        pid = int(partner_id)
-        
-        # 1. Traer la nota del campo principal por si hay anotaciones viejas allí
-        partner_recs = client.env["res.partner"].search_read([("id", "=", pid)], ["comment"], limit=1)
-        comment_general = partner_recs[0].get("comment") if partner_recs else ""
-
-        # 2. Traer el historial real del chatter (mail.message)
-        messages = client.env["mail.message"].search_read(
-            [("model", "=", "res.partner"), ("res_id", "=", pid)],
-            ["body", "date", "author_id", "message_type"],
-            order="id desc", # Del más nuevo al más viejo
-            limit=40
-        )
-
-        formatted_msgs = []
-        for m in messages:
-            # Evitamos las notificaciones automáticas del sistema de Odoo para no ensuciar el chat
-            if m.get("message_type") == "user_notification":
-                continue
-                
-            author = m.get("author_id")
-            # Si tiene autor guardamos el nombre, si no, asumimos que fue Odoo
-            author_name = author[1] if isinstance(author, (list, tuple)) and len(author) > 1 else "Sistema Odoo"
-            
-            body = m.get("body") or ""
-            if body:
-                formatted_msgs.append({
-                    "id": m["id"],
-                    "body": body,
-                    "date": str(m.get("date", "")),
-                    "author": author_name
-                })
-
-        return jsonify({
-            "comment_general": comment_general or "",
-            "messages": formatted_msgs
-        })
-        
-    try:
-        return execute_odoo_operation(logic)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    
+# 1. ENDPOINT PARA GUARDAR NOTA (SOLO EN EL HISTORIAL/CHATTER)
 @app.route("/cliente/nota", methods=["POST"])
 def agregar_nota_cliente():
     data = request.json or {}
     
-    # 1. FORZAMOS el ID a entero (Cura el 90% de los errores de Odoo)
     try:
         partner_id = int(data.get("partner_id", 0))
     except (ValueError, TypeError):
@@ -3071,30 +3020,17 @@ def agregar_nota_cliente():
     file_b64 = data.get("file_b64")
     file_name = data.get("file_name", "Archivo_Adjunto") 
 
-    if not partner_id or not nota:
-        return jsonify({"error": "Faltan datos obligatorios."}), 400
+    if not partner_id or (not nota and not file_b64):
+        return jsonify({"error": "Faltan datos obligatorios (Nota o Archivo)."}), 400
 
     def logic(client):
-        # 2. Buscar al cliente
-        partner_recs = client.env["res.partner"].search_read([("id", "=", partner_id)], ["comment"], limit=1)
-        if not partner_recs:
+        # 1. Validar que el cliente existe
+        if not client.env["res.partner"].search_count([("id", "=", partner_id)]):
             return jsonify({"error": "Cliente no encontrado en Odoo"}), 404
             
-        current_comment = partner_recs[0].get("comment") or ""
-        
-        # 3. Formatear la nota interna (Campo general de la ficha)
-        timestamp = datetime.now().strftime("%d/%m/%Y %H:%M")
-        adjunto_texto = f" [Archivo Adjunto: {file_name}]" if file_b64 else ""
-        nueva_entrada = f"[{timestamp}] Nota App{adjunto_texto}:\n{nota}"
-        nuevo_comment = f"{current_comment}\n\n{nueva_entrada}" if current_comment else nueva_entrada
-        
-        # Escribir en la ficha principal
-        client.env["res.partner"].write([partner_id], {"comment": nuevo_comment})
-        
-        # 4. Manejo SEGURO del adjunto
+        # 2. Guardar el archivo adjunto si enviaron uno
         attachment_ids = []
         if file_b64:
-            # Limpiamos el prefijo 'data:image/...;base64,' si es que vino de la app
             clean_b64 = file_b64
             if "," in file_b64:
                 clean_b64 = file_b64.split(",")[1]
@@ -3110,13 +3046,14 @@ def agregar_nota_cliente():
                 attachment_ids.append(attach_id)
             except Exception as e:
                 log.error(f"Error creando adjunto en Odoo: {e}")
-                # No detenemos el proceso, la nota ya se guardó
         
-        # 5. Publicar en el chatter usando el método oficial de Odoo (message_post)
+        # 3. Publicar directamente en el historial (Chatter)
         try:
-            body_html = f"<b>Nota agregada desde la App:</b><br/>{nota.replace(chr(10), '<br/>')}"
-            
-            # message_post renderiza el HTML correctamente y lo marca como nota interna (mail.mt_note)
+            if nota:
+                body_html = f"<b>Nota agregada desde la App:</b><br/>{nota.replace(chr(10), '<br/>')}"
+            else:
+                body_html = "<b>Archivo adjunto enviado desde la App</b>"
+                
             client.env["res.partner"].message_post(
                 [partner_id],
                 body=body_html,
@@ -3125,26 +3062,113 @@ def agregar_nota_cliente():
                 attachment_ids=attachment_ids
             )
         except Exception as e:
-            log.warning(f"Aviso: No se pudo escribir en el chatter de Odoo con message_post: {e}")
-            # Fallback en caso de que la versión de Odoo sea antigua o la API lo rechace
+            log.warning(f"Error con message_post: {e}")
             try:
+                # Fallback de seguridad
                 client.env["mail.message"].create({
                     "model": "res.partner",
                     "res_id": partner_id,
-                    "body": f"Nota desde la App: {nota}", # Enviamos texto plano puro sin HTML por las dudas
+                    "body": f"Nota desde la App: {nota}" if nota else "Archivo adjunto desde la App",
                     "message_type": "comment",
                     "attachment_ids": [(6, 0, attachment_ids)] if attachment_ids else []
                 })
             except Exception:
                 pass
             
-        return jsonify({"ok": True, "message": "Nota guardada correctamente"})
+        return jsonify({"ok": True, "message": "Nota guardada en el historial"})
 
     try:
         return execute_odoo_operation(logic)
     except Exception as e:
-        log.error(f"❌ Error crítico al agregar nota: {e}")
-        return jsonify({"error": f"Odoo devolvió un error: {str(e)}"}), 500
+        return jsonify({"error": str(e)}), 500
+
+
+# 2. ENDPOINT DE LECTURA DEL HISTORIAL (CON ADJUNTOS)
+@app.route("/cliente/historial-notas", methods=["GET"])
+def historial_notas_cliente():
+    partner_id = request.args.get("partner_id")
+    if not partner_id:
+        return jsonify({"error": "Falta partner_id"}), 400
+        
+    def logic(client):
+        pid = int(partner_id)
+        
+        # Leemos el chatter
+        messages = client.env["mail.message"].search_read(
+            [("model", "=", "res.partner"), ("res_id", "=", pid)],
+            ["body", "date", "author_id", "message_type", "attachment_ids"],
+            order="id desc",
+            limit=50
+        )
+
+        formatted_msgs = []
+        for m in messages:
+            if m.get("message_type") == "user_notification":
+                continue
+                
+            author = m.get("author_id")
+            author_name = author[1] if isinstance(author, (list, tuple)) and len(author) > 1 else "Sistema Odoo"
+            
+            body = m.get("body") or ""
+            
+            # Buscar información de los archivos adjuntos
+            attachments = []
+            att_ids = m.get("attachment_ids", [])
+            if att_ids:
+                atts = client.env["ir.attachment"].search_read(
+                    [("id", "in", att_ids)],
+                    ["id", "name", "mimetype"]
+                )
+                for att in atts:
+                    attachments.append({
+                        "id": att["id"],
+                        "name": att["name"],
+                        "mimetype": att.get("mimetype", "")
+                    })
+
+            if body or attachments:
+                formatted_msgs.append({
+                    "id": m["id"],
+                    "body": body,
+                    "date": str(m.get("date", "")),
+                    "author": author_name,
+                    "attachments": attachments
+                })
+
+        return jsonify({"messages": formatted_msgs})
+        
+    try:
+        return execute_odoo_operation(logic)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# 3. ENDPOINT PARA DESCARGAR O ABRIR UN ADJUNTO DESDE LA APP
+@app.route("/adjunto/<int:attachment_id>", methods=["GET"])
+def descargar_adjunto(attachment_id):
+    def logic(client):
+        att = client.env["ir.attachment"].search_read(
+            [("id", "=", attachment_id)],
+            ["name", "datas", "mimetype"],
+            limit=1
+        )
+        if not att or not att[0].get("datas"):
+            return jsonify({"error": "Adjunto no encontrado o vacío"}), 404
+            
+        file_data = base64.b64decode(att[0]["datas"])
+        mimetype = att[0].get("mimetype", "application/octet-stream")
+        filename = att[0].get("name", "adjunto")
+        
+        return Response(
+            file_data,
+            mimetype=mimetype,
+            headers={"Content-Disposition": f'inline; filename="{filename}"'}
+        )
+    
+    try:
+        return execute_odoo_operation(logic)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/mis_comprobantes_propios", methods=["GET"])
 def get_mis_comprobantes_propios():
