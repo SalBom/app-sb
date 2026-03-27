@@ -30,6 +30,7 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker'; 
+import * as ImagePicker from 'expo-image-picker';
 
 import authStorage from '../utils/authStorage';
 import { API_URL } from '../config';
@@ -142,13 +143,11 @@ const ListadoClientes = () => {
   const [selectedClientForNote, setSelectedClientForNote] = useState<Cliente | null>(null);
   const [noteText, setNoteText] = useState('');
   const [isSavingNote, setIsSavingNote] = useState(false);
-  
-  // Archivo adjunto
   const [selectedFile, setSelectedFile] = useState<{ name: string, b64: string } | null>(null);
 
-  // Modal Historial
+  // Modal Historial (Estética Chat)
   const [historyModalVisible, setHistoryModalVisible] = useState(false);
-  const [historyText, setHistoryText] = useState('');
+  const [historyData, setHistoryData] = useState<{comment_general: string, messages: any[]}>({comment_general: '', messages: []});
   const [loadingHistory, setLoadingHistory] = useState(false);
 
   const fetchClientes = useCallback(async (isRefresh = false) => {
@@ -203,30 +202,61 @@ const ListadoClientes = () => {
   const handleEmail = (email: string) => Linking.openURL(`mailto:${email}`);
   const handleWhatsApp = (phone: string) => Linking.openURL(`https://wa.me/${phone.replace(/\D/g, '')}`);
 
-  // Acción de Nota Interna
   const handleOpenNoteModal = (client: Cliente) => {
     setSelectedClientForNote(client);
     setNoteText('');
-    setSelectedFile(null); // Limpiamos si quedó un archivo anterior
+    setSelectedFile(null); 
     setNoteModalVisible(true);
   };
 
-  // Seleccionar archivo
-  const pickFile = async () => {
-    Keyboard.dismiss(); // Cerramos teclado al abrir el explorador de archivos
-    try {
-        const result = await DocumentPicker.getDocumentAsync({
-            type: '*/*',
-            copyToCacheDirectory: true,
-        });
-        if (!result.canceled && result.assets.length > 0) {
-            const asset = result.assets[0];
-            const base64 = await FS.readAsStringAsync(asset.uri, { encoding: FS.EncodingType.Base64 });
-            setSelectedFile({ name: asset.name, b64: base64 });
-        }
-    } catch (e) {
-        Alert.alert('Error', 'No se pudo procesar el archivo seleccionado.');
-    }
+  const pickFile = () => {
+    Keyboard.dismiss(); 
+    Alert.alert('Adjuntar Archivo', '¿Qué deseas adjuntar?', [
+        {
+          text: 'Tomar Foto',
+          onPress: async () => {
+            const { status } = await ImagePicker.requestCameraPermissionsAsync();
+            if (status !== 'granted') return Alert.alert('Aviso', 'Se requiere permiso para la cámara.');
+            
+            const result = await ImagePicker.launchCameraAsync({
+              mediaTypes: ImagePicker.MediaTypeOptions.Images, base64: true, quality: 0.5,
+            });
+            if (!result.canceled && result.assets.length > 0) {
+              const asset = result.assets[0];
+              setSelectedFile({ name: asset.uri.split('/').pop() || `foto.jpg`, b64: asset.base64 || '' });
+            }
+          }
+        },
+        {
+          text: 'Galería',
+          onPress: async () => {
+            const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+            if (status !== 'granted') return Alert.alert('Aviso', 'Se requiere permiso para las fotos.');
+
+            const result = await ImagePicker.launchImageLibraryAsync({
+              mediaTypes: ImagePicker.MediaTypeOptions.All, base64: true, quality: 0.5,
+            });
+            if (!result.canceled && result.assets.length > 0) {
+              const asset = result.assets[0];
+              setSelectedFile({ name: asset.uri.split('/').pop() || `galeria.jpg`, b64: asset.base64 || '' });
+            }
+          }
+        },
+        {
+          text: 'Documento',
+          onPress: async () => {
+            try {
+              const result = await DocumentPicker.getDocumentAsync({ type: '*/*', copyToCacheDirectory: true });
+              if (!result.canceled && result.assets.length > 0) {
+                  const asset = result.assets[0];
+                  const base64 = await FS.readAsStringAsync(asset.uri, { encoding: FS.EncodingType.Base64 });
+                  setSelectedFile({ name: asset.name, b64: base64 });
+              }
+            } catch (e) {}
+          }
+        },
+        { text: 'Cancelar', style: 'cancel' }
+    ]);
   };
 
   const handleSaveNote = async () => {
@@ -235,18 +265,14 @@ const ListadoClientes = () => {
     Keyboard.dismiss();
     try {
       const res = await fetch(`${API_URL}/cliente/nota`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          partner_id: selectedClientForNote.id,
-          nota: noteText.trim(),
-          file_b64: selectedFile?.b64,
-          file_name: selectedFile?.name
+          partner_id: selectedClientForNote.id, nota: noteText.trim(), file_b64: selectedFile?.b64, file_name: selectedFile?.name
         })
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'No se pudo guardar la nota en el servidor');
-      Alert.alert('Éxito', 'Nota y/o archivo guardados en Odoo.');
+      if (!res.ok) throw new Error(data.error || 'No se pudo guardar la nota.');
+      Alert.alert('Éxito', 'Nota adjuntada en la ficha de Odoo.');
       setNoteModalVisible(false);
     } catch (e: any) {
       Alert.alert('Error', e.message);
@@ -255,68 +281,46 @@ const ListadoClientes = () => {
     }
   };
 
-  // Abrir historial al tocar la tarjeta del cliente
+  // --- LÓGICA PARA RENDERIZAR CHAT ---
   const handleOpenHistoryModal = async (client: Cliente) => {
     setSelectedClientForNote(client);
     setHistoryModalVisible(true);
     setLoadingHistory(true);
-    setHistoryText('');
+    setHistoryData({comment_general: '', messages: []});
     try {
       const res = await fetch(`${API_URL}/cliente/historial-notas?partner_id=${client.id}`);
       const data = await res.json();
       if (res.ok) {
-        setHistoryText(data.comment || 'No hay notas registradas para este cliente.');
+        setHistoryData({
+            comment_general: data.comment_general || '',
+            messages: data.messages || []
+        });
       } else {
-        setHistoryText('Error al cargar historial desde Odoo.');
+        setHistoryData({comment_general: 'Error cargando historial', messages: []});
       }
     } catch (e) {
-      setHistoryText('Error de conexión al buscar el historial.');
+      setHistoryData({comment_general: 'Error de conexión', messages: []});
     } finally {
       setLoadingHistory(false);
     }
   };
 
-  const handleDownloadPdf = async () => {
-    try {
-      if (filteredClientes.length === 0) return Alert.alert("Aviso", "No hay clientes para exportar.");
-      const rows = filteredClientes.map(c => `
-        <tr>
-          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${c.name}</td>
-          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${c.vat || ''}</td>
-          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${c.phone || ''}</td>
-          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${c.email || ''}</td>
-          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${c.city || ''}, ${c.state || ''}</td>
-        </tr>
-      `).join('');
-      const html = `<html><head><style>body{font-family:'Helvetica';padding:20px}h1{color:${config.color};font-size:18px;margin-bottom:20px}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;padding:8px;background-color:#f2f2f2;border-bottom:2px solid #ccc}</style></head><body><h1>Reporte - ${config.title} (${filteredClientes.length})</h1><table><thead><tr><th>Nombre</th><th>CUIT</th><th>Teléfono</th><th>Email</th><th>Ubicación</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
-      const { uri } = await Print.printToFileAsync({ html });
-      await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf' });
-    } catch (error) { Alert.alert("Error", "No se pudo generar el PDF."); }
+  const cleanHtml = (str: string) => {
+    if (!str) return '';
+    let text = str.replace(/<br\s*[\/]?>/gi, '\n');
+    text = text.replace(/<\/p>/gi, '\n');
+    text = text.replace(/Nota agregada desde la App:/gi, '');
+    return text.replace(/<[^>]+>/g, '').trim();
   };
 
-  const handleDownloadExcel = async () => {
+  const formatChatDate = (dateStr: string) => {
+    if (!dateStr) return '';
     try {
-      if (filteredClientes.length === 0) return Alert.alert("Aviso", "No hay clientes para exportar.");
-      const data = filteredClientes.map(c => ({
-        "Nombre": c.name,
-        "CUIT": c.vat,
-        "Teléfono": c.phone || "",
-        "Email": c.email || "",
-        "Dirección": c.street || "",
-        "Ciudad": c.city || "",
-        "Provincia": c.state || "",
-        "Estado (Reporte)": config.title
-      }));
-      const ws = XLSX.utils.json_to_sheet(data);
-      const wb = XLSX.utils.book_new();
-      XLSX.utils.book_append_sheet(wb, ws, "Clientes");
-      const wbout = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
-      const fileName = `Reporte_${estadoId}_${Date.now()}.xlsx`;
-      const dir = FS.documentDirectory || FS.cacheDirectory;
-      const uri = dir + fileName;
-      await FS.writeAsStringAsync(uri, wbout, { encoding: 'base64' });
-      await Sharing.shareAsync(uri, { mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', dialogTitle: 'Descargar Reporte Excel', UTI: 'com.microsoft.excel.xlsx' });
-    } catch (error) { Alert.alert("Error", "No se pudo generar el Excel."); }
+        const [d, t] = dateStr.split(' ');
+        const [year, month, day] = d.split('-');
+        const [hour, min] = t.split(':');
+        return `${day}/${month} ${hour}:${min}`;
+    } catch { return dateStr; }
   };
 
   const renderItem = ({ item }: { item: Cliente }) => (
@@ -335,7 +339,6 @@ const ListadoClientes = () => {
         <TouchableOpacity style={[s.iconBtn, { backgroundColor: '#FFF3E0', marginRight: 10 }]} onPress={() => handleOpenNoteModal(item)}>
             <IconNote />
         </TouchableOpacity>
-
         {item.phone && (
             <>
               <TouchableOpacity style={s.iconBtn} onPress={() => handleCall(item.phone!)}><IconPhone /></TouchableOpacity>
@@ -353,20 +356,8 @@ const ListadoClientes = () => {
     <View style={[s.container, { paddingTop: insets.top }]}>
       <View style={s.headerRow}>
         <View style={s.titleContainer}>
-            <Text style={[s.title, { color: config.color }]} numberOfLines={1}>
-            {config.title}
-            </Text>
+            <Text style={[s.title, { color: config.color }]} numberOfLines={1}>{config.title}</Text>
             <Text style={s.countText}>({filteredClientes.length})</Text>
-        </View>
-        <View style={s.exportButtonsRow}>
-            <TouchableOpacity style={[s.exportBtn, { borderColor: '#2E7D32', backgroundColor: '#E8F5E9' }]} onPress={handleDownloadExcel}>
-                <IconExcel />
-                <Text style={[s.exportText, { color: '#2E7D32' }]}>XLS</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={[s.exportBtn, { borderColor: '#C62828', backgroundColor: '#FFEBEE', marginLeft: 8 }]} onPress={handleDownloadPdf}>
-                <IconPdf />
-                <Text style={[s.exportText, { color: '#C62828' }]}>PDF</Text>
-            </TouchableOpacity>
         </View>
       </View>
 
@@ -377,7 +368,6 @@ const ListadoClientes = () => {
               <Ionicons name="search" size={20} color="#999" style={s.searchIcon} />
            </View>
         </View>
-        
         <View style={s.filtersRow}>
             <TouchableOpacity style={[s.filterInputWrap, { marginRight: 10 }]} onPress={() => setModalType('state')}>
                 <Text style={[s.filterText, !selectedState && { color: '#999' }]} numberOfLines={1}>{selectedState || "PROVINCIA"}</Text>
@@ -388,7 +378,6 @@ const ListadoClientes = () => {
                 <Ionicons name="chevron-down" size={16} color="#999" />
             </TouchableOpacity>
         </View>
-        
         {(selectedCity || selectedState) && (
             <View style={s.chipsRow}>
                 {selectedState && <TouchableOpacity onPress={() => setSelectedState(null)} style={s.chip}><Text style={s.chipText}>{selectedState} ✕</Text></TouchableOpacity>}
@@ -413,7 +402,7 @@ const ListadoClientes = () => {
         />
       )}
 
-      {/* MODAL FILTROS */}
+      {/* MODALES OCULTOS POR ESPACIO */}
       <Modal visible={!!modalType} transparent animationType="fade" onRequestClose={() => setModalType(null)}>
         <Pressable style={s.modalOverlay} onPress={() => setModalType(null)}>
             <View style={s.modalContent}>
@@ -424,55 +413,31 @@ const ListadoClientes = () => {
                             <Text style={s.modalItemText}>{item || 'Desconocido'}</Text>
                         </TouchableOpacity>
                     ))}
-                    {(modalType === 'state' ? uniqueStates : uniqueCities).length === 0 && <Text style={s.emptyText}>No hay opciones disponibles.</Text>}
                 </ScrollView>
                 <TouchableOpacity style={s.modalCloseBtn} onPress={() => setModalType(null)}><Text style={s.modalCloseText}>Cerrar</Text></TouchableOpacity>
             </View>
         </Pressable>
       </Modal>
 
-      {/* MODAL NOTA INTERNA MEJORADO CON KEYBOARD AVOIDING VIEW */}
+      {/* MODAL NOTA INTERNA */}
       <Modal visible={noteModalVisible} transparent animationType="fade" onRequestClose={() => setNoteModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
           <Pressable style={s.modalOverlay} onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); }}>
             <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
               <View style={[s.modalContent, { width: '90%' }]}>
-                <Text style={s.modalTitle}>Agregar Nota Interna</Text>
-                <Text style={{textAlign:'center', marginBottom:15, color:'#666', fontFamily: 'BarlowCondensed-Regular'}}>
-                    Cliente: {selectedClientForNote?.name}
-                </Text>
-                
-                <TextInput
-                  style={s.noteInput}
-                  placeholder="Escribe algún comentario o recordatorio..."
-                  placeholderTextColor="#999"
-                  multiline
-                  numberOfLines={4}
-                  value={noteText}
-                  onChangeText={setNoteText}
-                  textAlignVertical="top"
-                />
-
-                {/* SECCIÓN ADJUNTAR ARCHIVO */}
+                <Text style={s.modalTitle}>Agregar Nota</Text>
+                <Text style={{textAlign:'center', marginBottom:15, color:'#666', fontFamily: 'BarlowCondensed-Regular'}}>Cliente: {selectedClientForNote?.name}</Text>
+                <TextInput style={s.noteInput} placeholder="Escribe un comentario..." placeholderTextColor="#999" multiline numberOfLines={4} value={noteText} onChangeText={setNoteText} textAlignVertical="top" />
                 <TouchableOpacity style={s.attachBtn} onPress={pickFile}>
-                  <Ionicons name="attach" size={20} color="#666" />
-                  <Text style={s.attachText} numberOfLines={1}>
-                    {selectedFile ? selectedFile.name : 'Adjuntar foto o archivo'}
-                  </Text>
+                  <Ionicons name="camera-outline" size={20} color="#666" />
+                  <Text style={s.attachText} numberOfLines={1}>{selectedFile ? selectedFile.name : 'Tomar Foto o Adjuntar'}</Text>
                 </TouchableOpacity>
                 {selectedFile && (
-                    <TouchableOpacity onPress={() => setSelectedFile(null)} style={{alignSelf: 'flex-end', marginBottom: 10}}>
-                      <Text style={{color: '#D32F2F', fontSize: 12, fontFamily: 'BarlowCondensed-Bold'}}>Quitar archivo</Text>
-                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => setSelectedFile(null)} style={{alignSelf: 'flex-end', marginBottom: 10}}><Text style={{color: '#D32F2F', fontSize: 12, fontFamily: 'BarlowCondensed-Bold'}}>Quitar archivo</Text></TouchableOpacity>
                 )}
-                
                 <View style={s.noteButtonsRow}>
-                    <TouchableOpacity style={s.noteCancelBtn} onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); }} disabled={isSavingNote}>
-                        <Text style={s.noteCancelText}>Cancelar</Text>
-                    </TouchableOpacity>
-                    <TouchableOpacity style={[s.noteSaveBtn, { backgroundColor: config.color }]} onPress={handleSaveNote} disabled={isSavingNote || !noteText.trim()}>
-                        {isSavingNote ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={s.noteSaveText}>Guardar</Text>}
-                    </TouchableOpacity>
+                    <TouchableOpacity style={s.noteCancelBtn} onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); }} disabled={isSavingNote}><Text style={s.noteCancelText}>Cancelar</Text></TouchableOpacity>
+                    <TouchableOpacity style={[s.noteSaveBtn, { backgroundColor: config.color }]} onPress={handleSaveNote} disabled={isSavingNote || !noteText.trim()}>{isSavingNote ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={s.noteSaveText}>Guardar</Text>}</TouchableOpacity>
                 </View>
               </View>
             </TouchableWithoutFeedback>
@@ -480,25 +445,53 @@ const ListadoClientes = () => {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* MODAL HISTORIAL DE NOTAS */}
+      {/* MODAL HISTORIAL DE NOTAS (TIPO CHAT) */}
       <Modal visible={historyModalVisible} transparent animationType="fade" onRequestClose={() => setHistoryModalVisible(false)}>
         <Pressable style={s.modalOverlay} onPress={() => setHistoryModalVisible(false)}>
-          <Pressable style={[s.modalContent, { width: '90%', maxHeight: '80%' }]} onPress={e => e.stopPropagation()}>
-            <Text style={s.modalTitle}>Historial de Notas</Text>
-            <Text style={{textAlign:'center', marginBottom:15, color:'#666', fontFamily: 'BarlowCondensed-Regular'}}>
-                {selectedClientForNote?.name}
-            </Text>
+          <Pressable style={[s.modalContent, { width: '95%', maxHeight: '85%', padding: 15, backgroundColor: '#F8F9FA' }]} onPress={e => e.stopPropagation()}>
+            <Text style={[s.modalTitle, {marginBottom: 5}]}>Historial de Contacto</Text>
+            <Text style={{textAlign:'center', marginBottom:15, color:'#1C9BD8', fontFamily: 'BarlowCondensed-SemiBold'}}>{selectedClientForNote?.name}</Text>
 
             {loadingHistory ? (
                <ActivityIndicator size="large" color={config.color} style={{ marginVertical: 30 }} />
             ) : (
-               <ScrollView style={s.historyContainer}>
-                 <Text style={s.historyText}>{historyText}</Text>
+               <ScrollView style={s.chatScrollContainer} showsVerticalScrollIndicator={false}>
+                 
+                 {/* Nota Pinned (Si Odoo tiene la nota general cargada) */}
+                 {!!historyData.comment_general && (
+                     <View style={s.pinnedNote}>
+                         <View style={s.pinnedNoteHeader}>
+                             <Ionicons name="pin" size={14} color="#F57C00" />
+                             <Text style={s.pinnedNoteTitle}>Nota Ficha Principal</Text>
+                         </View>
+                         <Text style={s.pinnedNoteText}>{historyData.comment_general}</Text>
+                     </View>
+                 )}
+
+                 {/* Historial Chatter (Burbujas) */}
+                 {historyData.messages.map((msg, idx) => (
+                     <View key={msg.id || idx} style={s.chatRow}>
+                         <View style={s.chatAvatar}>
+                             <Text style={s.chatAvatarText}>{msg.author.charAt(0).toUpperCase()}</Text>
+                         </View>
+                         <View style={s.chatBubble}>
+                             <View style={s.chatHeaderInfo}>
+                                 <Text style={s.chatAuthorName} numberOfLines={1}>{msg.author}</Text>
+                                 <Text style={s.chatTime}>{formatChatDate(msg.date)}</Text>
+                             </View>
+                             <Text style={s.chatMessageText}>{cleanHtml(msg.body)}</Text>
+                         </View>
+                     </View>
+                 ))}
+
+                 {(!historyData.comment_general && historyData.messages.length === 0) && (
+                     <Text style={s.emptyChatText}>No hay interacciones registradas con este cliente.</Text>
+                 )}
                </ScrollView>
             )}
 
-            <TouchableOpacity style={s.modalCloseBtn} onPress={() => setHistoryModalVisible(false)}>
-                <Text style={s.modalCloseText}>Cerrar</Text>
+            <TouchableOpacity style={s.closeChatBtn} onPress={() => setHistoryModalVisible(false)}>
+                <Text style={s.closeChatText}>Cerrar</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
@@ -511,16 +504,10 @@ const ListadoClientes = () => {
 const s = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#FFFFFF' },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 20 },
-  headerRow: {
-    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
-    paddingHorizontal: 16, paddingTop: 0, marginTop: -10, paddingBottom: 4, backgroundColor: '#fff',
-  },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 16, paddingTop: 0, marginTop: -10, paddingBottom: 4, backgroundColor: '#fff' },
   titleContainer: { flexDirection: 'row', alignItems: 'baseline', flex: 1, marginRight: 10 },
   title: { fontSize: 22, fontFamily: 'BarlowCondensed-Bold', letterSpacing: 0.5 },
   countText: { color: '#999', fontSize: 18, marginLeft: 6, fontFamily: 'BarlowCondensed-Regular' },
-  exportButtonsRow: { flexDirection: 'row' },
-  exportBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1 },
-  exportText: { marginLeft: 3, fontSize: 10, fontFamily: 'BarlowCondensed-Bold', fontWeight: '700' },
   filtersContainer: { paddingHorizontal: 16, paddingBottom: 10, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#F0F0F0', paddingTop: 8 },
   searchRow: { marginBottom: 10 },
   searchInputWrap: { backgroundColor: '#F5F5F5', borderRadius: 20, height: 40, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, borderWidth: 1, borderColor: '#E0E0E0' },
@@ -549,47 +536,42 @@ const s = StyleSheet.create({
   retryText: { color: '#fff', fontWeight: 'bold' },
   emptyContainer: { marginTop: 60, alignItems: 'center' },
   emptyText: { fontSize: 16, color: '#999', fontStyle: 'italic' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.3)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  modalContent: { backgroundColor: '#fff', borderRadius: 12, padding: 20, maxHeight: '80%', width: '100%' },
-  modalTitle: { fontSize: 18, fontFamily: 'BarlowCondensed-Bold', marginBottom: 15, textAlign: 'center', color: '#333' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  modalContent: { backgroundColor: '#fff', borderRadius: 12, padding: 20, maxHeight: '80%', width: '100%', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5 },
+  modalTitle: { fontSize: 18, fontFamily: 'BarlowCondensed-Bold', marginBottom: 5, textAlign: 'center', color: '#333' },
   modalItem: { paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#f0f0f0' },
   modalItemText: { fontSize: 16, color: '#333' },
   modalCloseBtn: { marginTop: 15, alignSelf: 'center', padding: 10 },
   modalCloseText: { color: '#D32F2F', fontWeight: 'bold' },
   
-  // Estilos del modal de Notas
-  noteInput: {
-    borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 8, padding: 12, fontSize: 16, backgroundColor: '#F9F9F9', minHeight: 100, marginBottom: 10, fontFamily: 'BarlowCondensed-Regular'
-  },
-  attachBtn: {
-    flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0F0F0', padding: 12, borderRadius: 8, marginBottom: 10
-  },
-  attachText: {
-    marginLeft: 8, color: '#555', flex: 1, fontFamily: 'BarlowCondensed-SemiBold'
-  },
-  noteButtonsRow: {
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center'
-  },
-  noteCancelBtn: {
-    paddingVertical: 12, paddingHorizontal: 15, borderRadius: 8, backgroundColor: '#F5F5F5', flex: 1, marginRight: 10, alignItems: 'center'
-  },
-  noteCancelText: {
-    color: '#555', fontFamily: 'BarlowCondensed-Bold', fontSize: 16
-  },
-  noteSaveBtn: {
-    paddingVertical: 12, paddingHorizontal: 15, borderRadius: 8, flex: 1, alignItems: 'center'
-  },
-  noteSaveText: {
-    color: '#FFF', fontFamily: 'BarlowCondensed-Bold', fontSize: 16
-  },
+  noteInput: { borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 8, padding: 12, fontSize: 16, backgroundColor: '#F9F9F9', minHeight: 100, marginBottom: 10, fontFamily: 'BarlowCondensed-Regular' },
+  attachBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F0F0F0', padding: 12, borderRadius: 8, marginBottom: 10 },
+  attachText: { marginLeft: 8, color: '#555', flex: 1, fontFamily: 'BarlowCondensed-SemiBold' },
+  noteButtonsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  noteCancelBtn: { paddingVertical: 12, paddingHorizontal: 15, borderRadius: 8, backgroundColor: '#F5F5F5', flex: 1, marginRight: 10, alignItems: 'center' },
+  noteCancelText: { color: '#555', fontFamily: 'BarlowCondensed-Bold', fontSize: 16 },
+  noteSaveBtn: { paddingVertical: 12, paddingHorizontal: 15, borderRadius: 8, flex: 1, alignItems: 'center' },
+  noteSaveText: { color: '#FFF', fontFamily: 'BarlowCondensed-Bold', fontSize: 16 },
+
+  // --- ESTILOS DEL CHAT ---
+  chatScrollContainer: { marginTop: 5, paddingHorizontal: 5 },
+  emptyChatText: { textAlign: 'center', color: '#999', fontStyle: 'italic', marginTop: 40 },
+  closeChatBtn: { marginTop: 15, backgroundColor: '#E3E3E3', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
+  closeChatText: { color: '#333', fontFamily: 'BarlowCondensed-Bold', fontSize: 16 },
   
-  // Estilos del modal de Historial
-  historyContainer: {
-    backgroundColor: '#F9F9F9', padding: 15, borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0'
-  },
-  historyText: {
-    color: '#444', fontSize: 14, lineHeight: 22, fontFamily: 'BarlowCondensed-Regular'
-  }
+  pinnedNote: { backgroundColor: '#FFF3E0', borderRadius: 8, padding: 12, marginBottom: 20, borderWidth: 1, borderColor: '#FFE0B2' },
+  pinnedNoteHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
+  pinnedNoteTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 14, color: '#F57C00', marginLeft: 4 },
+  pinnedNoteText: { fontSize: 14, color: '#555', fontFamily: 'BarlowCondensed-Regular' },
+  
+  chatRow: { flexDirection: 'row', marginBottom: 16, alignItems: 'flex-start' },
+  chatAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#1C9BD8', justifyContent: 'center', alignItems: 'center', marginRight: 10, marginTop: 2 },
+  chatAvatarText: { color: '#FFF', fontFamily: 'BarlowCondensed-Bold', fontSize: 16 },
+  chatBubble: { flex: 1, backgroundColor: '#FFFFFF', borderRadius: 12, borderTopLeftRadius: 2, padding: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: 2, borderWidth: 1, borderColor: '#F0F0F0' },
+  chatHeaderInfo: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  chatAuthorName: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#333', flex: 1, marginRight: 10 },
+  chatTime: { fontSize: 11, color: '#999', fontFamily: 'BarlowCondensed-Regular' },
+  chatMessageText: { fontSize: 14, color: '#444', lineHeight: 20, fontFamily: 'BarlowCondensed-Regular' }
 });
 
 export default ListadoClientes;

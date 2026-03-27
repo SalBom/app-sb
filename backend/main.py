@@ -3006,7 +3006,7 @@ def clientes_por_estado():
         log.error(f"❌ /clientes-por-estado Error: {e}")
         return jsonify({"error": str(e)}), 500
     
-# --- NUEVOS ENDPOINTS DE NOTAS Y ARCHIVOS ---
+# --- NUEVO ENDPOINT DE HISTORIAL (ESTILO CHAT) ---
 @app.route("/cliente/historial-notas", methods=["GET"])
 def historial_notas_cliente():
     partner_id = request.args.get("partner_id")
@@ -3014,10 +3014,43 @@ def historial_notas_cliente():
         return jsonify({"error": "Falta partner_id"}), 400
         
     def logic(client):
-        # Buscamos el comentario de notas internas crudo en Odoo
-        partner_recs = client.env["res.partner"].search_read([("id", "=", int(partner_id))], ["comment"], limit=1)
-        comment = partner_recs[0].get("comment") if partner_recs else "No hay historial registrado."
-        return jsonify({"comment": comment or "No hay historial registrado."})
+        pid = int(partner_id)
+        
+        # 1. Traer la nota del campo principal por si hay anotaciones viejas allí
+        partner_recs = client.env["res.partner"].search_read([("id", "=", pid)], ["comment"], limit=1)
+        comment_general = partner_recs[0].get("comment") if partner_recs else ""
+
+        # 2. Traer el historial real del chatter (mail.message)
+        messages = client.env["mail.message"].search_read(
+            [("model", "=", "res.partner"), ("res_id", "=", pid)],
+            ["body", "date", "author_id", "message_type"],
+            order="id desc", # Del más nuevo al más viejo
+            limit=40
+        )
+
+        formatted_msgs = []
+        for m in messages:
+            # Evitamos las notificaciones automáticas del sistema de Odoo para no ensuciar el chat
+            if m.get("message_type") == "user_notification":
+                continue
+                
+            author = m.get("author_id")
+            # Si tiene autor guardamos el nombre, si no, asumimos que fue Odoo
+            author_name = author[1] if isinstance(author, (list, tuple)) and len(author) > 1 else "Sistema Odoo"
+            
+            body = m.get("body") or ""
+            if body:
+                formatted_msgs.append({
+                    "id": m["id"],
+                    "body": body,
+                    "date": str(m.get("date", "")),
+                    "author": author_name
+                })
+
+        return jsonify({
+            "comment_general": comment_general or "",
+            "messages": formatted_msgs
+        })
         
     try:
         return execute_odoo_operation(logic)
