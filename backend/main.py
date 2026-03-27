@@ -3047,36 +3047,35 @@ def agregar_nota_cliente():
             except Exception as e:
                 log.error(f"Error creando adjunto en Odoo: {e}")
         
-        # 3. Publicar directamente en el historial (Chatter) con HTML seguro
+        # 3. Buscar el ID del subtipo "Nota Interna" para que aparezca amarillo en el Historial
         try:
-            if nota:
-                # Envolvemos todo en <p> para que el sanitizador de Odoo lo respete sin borrar texto
-                cuerpo = nota.replace(chr(10), '<br/>')
-                body_html = f"<p><b>Nota agregada desde la App:</b><br/>{cuerpo}</p>"
-            else:
-                body_html = "<p><b>Archivo adjunto enviado desde la App</b></p>"
-                
-            client.env["res.partner"].message_post(
-                [partner_id],
-                body=body_html,
-                message_type="comment",
-                subtype_xmlid="mail.mt_note",
-                attachment_ids=attachment_ids
+            subtype_recs = client.env["ir.model.data"].search_read(
+                [("module", "=", "mail"), ("name", "=", "mt_note")], 
+                ["res_id"], limit=1
             )
+            note_subtype_id = subtype_recs[0]["res_id"] if subtype_recs else 2
+        except Exception:
+            note_subtype_id = 2 # ID por defecto de las Notas Internas en Odoo
+            
+        # 4. Crear el mensaje DIRECTAMENTE en el Chatter (Método infalible)
+        try:
+            cuerpo = nota.replace(chr(10), '<br/>')
+            if nota:
+                body_html = f"<p><b>Nota desde la App:</b><br/>{cuerpo}</p>"
+            else:
+                body_html = "<p><b>Archivo adjunto desde la App</b></p>"
+                
+            client.env["mail.message"].create({
+                "model": "res.partner",
+                "res_id": partner_id,
+                "body": body_html,
+                "message_type": "comment",
+                "subtype_id": note_subtype_id,
+                "attachment_ids": [(6, 0, attachment_ids)] if attachment_ids else []
+            })
         except Exception as e:
-            log.warning(f"Error con message_post: {e}")
-            try:
-                # Fallback de seguridad por si la versión de Odoo es estricta con la API
-                cuerpo_fallback = nota.replace(chr(10), '<br/>')
-                client.env["mail.message"].create({
-                    "model": "res.partner",
-                    "res_id": partner_id,
-                    "body": f"<p>Nota desde la App:<br/>{cuerpo_fallback}</p>" if nota else "<p>Archivo adjunto desde la App</p>",
-                    "message_type": "comment",
-                    "attachment_ids": [(6, 0, attachment_ids)] if attachment_ids else []
-                })
-            except Exception:
-                pass
+            log.error(f"Error crítico al escribir en el historial: {e}")
+            return jsonify({"error": "No se pudo guardar la nota en Odoo."}), 500
             
         return jsonify({"ok": True, "message": "Nota guardada en el historial"})
 
