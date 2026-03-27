@@ -3082,13 +3082,13 @@ def agregar_nota_cliente():
             
         current_comment = partner_recs[0].get("comment") or ""
         
-        # 3. Formatear la nota interna
+        # 3. Formatear la nota interna (Campo general de la ficha)
         timestamp = datetime.now().strftime("%d/%m/%Y %H:%M")
         adjunto_texto = f" [Archivo Adjunto: {file_name}]" if file_b64 else ""
         nueva_entrada = f"[{timestamp}] Nota App{adjunto_texto}:\n{nota}"
         nuevo_comment = f"{current_comment}\n\n{nueva_entrada}" if current_comment else nueva_entrada
         
-        # Escribir en la ficha
+        # Escribir en la ficha principal
         client.env["res.partner"].write([partner_id], {"comment": nuevo_comment})
         
         # 4. Manejo SEGURO del adjunto
@@ -3112,18 +3112,31 @@ def agregar_nota_cliente():
                 log.error(f"Error creando adjunto en Odoo: {e}")
                 # No detenemos el proceso, la nota ya se guardó
         
-        # 5. Publicar en el chatter (Manejo de saltos de línea para el HTML)
+        # 5. Publicar en el chatter usando el método oficial de Odoo (message_post)
         try:
             body_html = f"<b>Nota agregada desde la App:</b><br/>{nota.replace(chr(10), '<br/>')}"
-            client.env["mail.message"].create({
-                "model": "res.partner",
-                "res_id": partner_id,
-                "body": body_html,
-                "message_type": "comment",
-                "attachment_ids": [(6, 0, attachment_ids)] if attachment_ids else []
-            })
+            
+            # message_post renderiza el HTML correctamente y lo marca como nota interna (mail.mt_note)
+            client.env["res.partner"].message_post(
+                [partner_id],
+                body=body_html,
+                message_type="comment",
+                subtype_xmlid="mail.mt_note",
+                attachment_ids=attachment_ids
+            )
         except Exception as e:
-            log.warning(f"Aviso: No se pudo escribir en el chatter de Odoo: {e}")
+            log.warning(f"Aviso: No se pudo escribir en el chatter de Odoo con message_post: {e}")
+            # Fallback en caso de que la versión de Odoo sea antigua o la API lo rechace
+            try:
+                client.env["mail.message"].create({
+                    "model": "res.partner",
+                    "res_id": partner_id,
+                    "body": f"Nota desde la App: {nota}", # Enviamos texto plano puro sin HTML por las dudas
+                    "message_type": "comment",
+                    "attachment_ids": [(6, 0, attachment_ids)] if attachment_ids else []
+                })
+            except Exception:
+                pass
             
         return jsonify({"ok": True, "message": "Nota guardada correctamente"})
 
