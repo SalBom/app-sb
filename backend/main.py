@@ -3006,7 +3006,7 @@ def clientes_por_estado():
         log.error(f"❌ /clientes-por-estado Error: {e}")
         return jsonify({"error": str(e)}), 500
     
-# 1. ENDPOINT PARA GUARDAR NOTA Y ADJUNTO (SEPARADO Y SEGURO)
+# 1. ENDPOINT PARA GUARDAR NOTA Y ADJUNTO (BLINDADO CONTRA OBJETOS RECURSIVOS)
 @app.route("/cliente/nota", methods=["POST"])
 def agregar_nota_cliente():
     data = request.json or {}
@@ -3024,55 +3024,72 @@ def agregar_nota_cliente():
         return jsonify({"error": "Faltan datos obligatorios (Nota o Archivo)."}), 400
 
     def logic(client):
+        # 1. Verificar si existe el cliente
         if not client.env["res.partner"].search_count([("id", "=", partner_id)]):
-            return jsonify({"error": "Cliente no encontrado"}), 404
+            return jsonify({"error": "Cliente no encontrado en Odoo"}), 404
             
         attachment_ids = []
         
-        # PASO 1: Subir el archivo pesado primero de forma aislada
+        # 2. Subir el adjunto si existe (Extracción SEGURA del ID)
         if file_b64:
             clean_b64 = file_b64.split(",")[1] if "," in file_b64 else file_b64
             try:
-                attach_id = client.env["ir.attachment"].create({
+                attach_res = client.env["ir.attachment"].create({
                     "name": file_name,
                     "type": "binary",
                     "datas": clean_b64,
                     "res_model": "res.partner",
                     "res_id": partner_id
                 })
-                # Guardamos solo el ID (ej: 452)
+                
+                # 🔥 FIX CRÍTICO: Forzar extracción del ID numérico puro para evitar diccionarios recursivos
+                if isinstance(attach_res, int):
+                    attach_id = attach_res
+                elif isinstance(attach_res, list):
+                    attach_id = attach_res[0]
+                elif hasattr(attach_res, 'id'):
+                    attach_id = attach_res.id
+                elif isinstance(attach_res, dict) and 'id' in attach_res:
+                    attach_id = attach_res['id']
+                else:
+                    attach_id = int(attach_res)
+                    
                 attachment_ids.append(attach_id)
             except Exception as e:
-                log.error(f"Error al subir imagen: {e}")
+                log.error(f"Error creando adjunto: {e}")
 
-        # PASO 2: Preparar el texto en HTML
+        # 3. Preparar el HTML respetando los saltos de línea
         cuerpo = nota.replace('\n', '<br/>')
         if nota:
             body_html = f"<strong>Nota desde la App:</strong><br/>{cuerpo}"
         else:
-            body_html = "<strong>Archivo adjunto desde la App</strong>"
+            body_html = "<strong>Archivo adjunto enviado desde la App</strong>"
 
-        # PASO 3: Publicar la nota en el Historial usando el método oficial
+        # 4. Buscar el ID del subtipo 'Nota Interna' (para que salga amarillo en el chatter)
         try:
-            client.env["res.partner"].message_post(
-                [partner_id],
-                body=body_html,
-                message_type="comment",
-                subtype_xmlid="mail.mt_note", # Lo marca como Nota Interna
-                attachment_ids=attachment_ids # Odoo espera una lista simple de IDs
+            subtype = client.env["ir.model.data"].search_read(
+                [("module", "=", "mail"), ("name", "=", "mt_note")], 
+                ["res_id"], limit=1
             )
-        except Exception as e:
-            log.error(f"Fallo message_post: {e}")
-            # Fallback limpio: si Odoo es muy estricto, mandamos texto plano sin etiquetas raras
+            note_subtype_id = subtype[0]["res_id"] if subtype else 2
+        except Exception:
+            note_subtype_id = 2
+            
+        # 5. Publicar en el historial forzando el tipo y las relaciones puras
+        try:
             client.env["mail.message"].create({
                 "model": "res.partner",
                 "res_id": partner_id,
-                "body": nota if nota else "Archivo adjunto enviado",
+                "body": body_html,
                 "message_type": "comment",
+                "subtype_id": note_subtype_id, # Obliga a Odoo a renderizarlo como Nota Interna
                 "attachment_ids": [(6, 0, attachment_ids)] if attachment_ids else []
             })
+        except Exception as e:
+            log.error(f"Fallo crítico al registrar historial: {e}")
+            return jsonify({"error": "Odoo rechazó el mensaje"}), 500
             
-        return jsonify({"ok": True, "message": "Nota y adjunto guardados correctamente"})
+        return jsonify({"ok": True, "message": "Nota y adjunto guardados exitosamente"})
 
     try:
         return execute_odoo_operation(logic)
