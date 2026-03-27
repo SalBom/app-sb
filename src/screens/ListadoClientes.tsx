@@ -35,7 +35,6 @@ import * as ImagePicker from 'expo-image-picker';
 import authStorage from '../utils/authStorage';
 import { API_URL } from '../config';
 
-// Alias para FileSystem
 const FS = FileSystem as any;
 
 // --- ICONOS ---
@@ -105,6 +104,14 @@ type Cliente = {
   email?: string;
 };
 
+type ChatMessage = {
+  id: number;
+  body: string;
+  date: string;
+  author: string;
+  attachments: { id: number; name: string; mimetype: string }[];
+};
+
 const CONFIG_ESTADOS: Record<string, { title: string; color: string }> = {
   'perdidos':     { title: 'CLIENTES PERDIDOS', color: '#D32F2F' },
   'riesgo-alto':  { title: 'RIESGO ALTO',       color: '#f6f606ff' },
@@ -145,9 +152,9 @@ const ListadoClientes = () => {
   const [isSavingNote, setIsSavingNote] = useState(false);
   const [selectedFile, setSelectedFile] = useState<{ name: string, b64: string } | null>(null);
 
-  // Modal Historial (Estética Chat)
+  // Modal Historial
   const [historyModalVisible, setHistoryModalVisible] = useState(false);
-  const [historyData, setHistoryData] = useState<{comment_general: string, messages: any[]}>({comment_general: '', messages: []});
+  const [historyMessages, setHistoryMessages] = useState<ChatMessage[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
   const fetchClientes = useCallback(async (isRefresh = false) => {
@@ -260,7 +267,7 @@ const ListadoClientes = () => {
   };
 
   const handleSaveNote = async () => {
-    if (!noteText.trim() || !selectedClientForNote) return;
+    if (!selectedClientForNote || (!noteText.trim() && !selectedFile)) return;
     setIsSavingNote(true);
     Keyboard.dismiss();
     try {
@@ -272,7 +279,7 @@ const ListadoClientes = () => {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'No se pudo guardar la nota.');
-      Alert.alert('Éxito', 'Nota adjuntada en la ficha de Odoo.');
+      Alert.alert('Éxito', 'Nota guardada en el historial del cliente.');
       setNoteModalVisible(false);
     } catch (e: any) {
       Alert.alert('Error', e.message);
@@ -281,36 +288,55 @@ const ListadoClientes = () => {
     }
   };
 
-  // --- LÓGICA PARA RENDERIZAR CHAT ---
+  // --- LÓGICA CHATTER Y ADJUNTOS ---
   const handleOpenHistoryModal = async (client: Cliente) => {
     setSelectedClientForNote(client);
     setHistoryModalVisible(true);
     setLoadingHistory(true);
-    setHistoryData({comment_general: '', messages: []});
+    setHistoryMessages([]);
     try {
       const res = await fetch(`${API_URL}/cliente/historial-notas?partner_id=${client.id}`);
       const data = await res.json();
       if (res.ok) {
-        setHistoryData({
-            comment_general: data.comment_general || '',
-            messages: data.messages || []
-        });
-      } else {
-        setHistoryData({comment_general: 'Error cargando historial', messages: []});
+        setHistoryMessages(data.messages || []);
       }
     } catch (e) {
-      setHistoryData({comment_general: 'Error de conexión', messages: []});
+      Alert.alert('Error', 'No se pudo conectar al servidor para buscar historial.');
     } finally {
       setLoadingHistory(false);
     }
   };
 
+  const handleDownloadAttachment = (attId: number) => {
+    const url = `${API_URL}/adjunto/${attId}`;
+    Linking.openURL(url);
+  };
+
+  // VERSIÓN MEJORADA: Limpia el HTML a prueba de balas sin perder el texto
   const cleanHtml = (str: string) => {
-    if (!str) return '';
-    let text = str.replace(/<br\s*[\/]?>/gi, '\n');
+    if (!str || typeof str !== 'string') return '';
+    let text = str;
+    
+    // 1. Reemplazamos los saltos de línea HTML por saltos reales (\n)
+    text = text.replace(/<br\s*[\/]?>/gi, '\n');
     text = text.replace(/<\/p>/gi, '\n');
+    text = text.replace(/<\/div>/gi, '\n');
+    
+    // 2. Eliminamos absolutamente cualquier etiqueta HTML restante (<...>)
+    text = text.replace(/<[^>]+>/g, '');
+    
+    // 3. Limpiamos las frases/prefijos automáticos
     text = text.replace(/Nota agregada desde la App:/gi, '');
-    return text.replace(/<[^>]+>/g, '').trim();
+    text = text.replace(/Archivo adjunto enviado desde la App/gi, '');
+    text = text.replace(/Nota desde la App:/gi, '');
+    
+    // 4. Decodificamos caracteres especiales comunes que Odoo envía
+    text = text.replace(/&nbsp;/gi, ' ');
+    text = text.replace(/&amp;/gi, '&');
+    text = text.replace(/&lt;/gi, '<');
+    text = text.replace(/&gt;/gi, '>');
+
+    return text.trim();
   };
 
   const formatChatDate = (dateStr: string) => {
@@ -322,6 +348,9 @@ const ListadoClientes = () => {
         return `${day}/${month} ${hour}:${min}`;
     } catch { return dateStr; }
   };
+
+  const handleDownloadPdf = async () => { /* Logica Export PDF */ };
+  const handleDownloadExcel = async () => { /* Logica Export Excel */ };
 
   const renderItem = ({ item }: { item: Cliente }) => (
     <TouchableOpacity style={s.rowContainer} onPress={() => handleOpenHistoryModal(item)} activeOpacity={0.7}>
@@ -358,6 +387,16 @@ const ListadoClientes = () => {
         <View style={s.titleContainer}>
             <Text style={[s.title, { color: config.color }]} numberOfLines={1}>{config.title}</Text>
             <Text style={s.countText}>({filteredClientes.length})</Text>
+        </View>
+        <View style={s.exportButtonsRow}>
+            <TouchableOpacity style={[s.exportBtn, { borderColor: '#2E7D32', backgroundColor: '#E8F5E9' }]} onPress={handleDownloadExcel}>
+                <IconExcel />
+                <Text style={[s.exportText, { color: '#2E7D32' }]}>XLS</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[s.exportBtn, { borderColor: '#C62828', backgroundColor: '#FFEBEE', marginLeft: 8 }]} onPress={handleDownloadPdf}>
+                <IconPdf />
+                <Text style={[s.exportText, { color: '#C62828' }]}>PDF</Text>
+            </TouchableOpacity>
         </View>
       </View>
 
@@ -402,23 +441,6 @@ const ListadoClientes = () => {
         />
       )}
 
-      {/* MODALES OCULTOS POR ESPACIO */}
-      <Modal visible={!!modalType} transparent animationType="fade" onRequestClose={() => setModalType(null)}>
-        <Pressable style={s.modalOverlay} onPress={() => setModalType(null)}>
-            <View style={s.modalContent}>
-                <Text style={s.modalTitle}>Seleccionar {modalType === 'state' ? 'Provincia' : 'Ciudad'}</Text>
-                <ScrollView style={{ maxHeight: 300 }}>
-                    {(modalType === 'state' ? uniqueStates : uniqueCities).map((item, idx) => (
-                        <TouchableOpacity key={idx} style={s.modalItem} onPress={() => { if (modalType === 'state') setSelectedState(item as string); else setSelectedCity(item as string); setModalType(null); }}>
-                            <Text style={s.modalItemText}>{item || 'Desconocido'}</Text>
-                        </TouchableOpacity>
-                    ))}
-                </ScrollView>
-                <TouchableOpacity style={s.modalCloseBtn} onPress={() => setModalType(null)}><Text style={s.modalCloseText}>Cerrar</Text></TouchableOpacity>
-            </View>
-        </Pressable>
-      </Modal>
-
       {/* MODAL NOTA INTERNA */}
       <Modal visible={noteModalVisible} transparent animationType="fade" onRequestClose={() => setNoteModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
@@ -428,6 +450,7 @@ const ListadoClientes = () => {
                 <Text style={s.modalTitle}>Agregar Nota</Text>
                 <Text style={{textAlign:'center', marginBottom:15, color:'#666', fontFamily: 'BarlowCondensed-Regular'}}>Cliente: {selectedClientForNote?.name}</Text>
                 <TextInput style={s.noteInput} placeholder="Escribe un comentario..." placeholderTextColor="#999" multiline numberOfLines={4} value={noteText} onChangeText={setNoteText} textAlignVertical="top" />
+                
                 <TouchableOpacity style={s.attachBtn} onPress={pickFile}>
                   <Ionicons name="camera-outline" size={20} color="#666" />
                   <Text style={s.attachText} numberOfLines={1}>{selectedFile ? selectedFile.name : 'Tomar Foto o Adjuntar'}</Text>
@@ -435,9 +458,12 @@ const ListadoClientes = () => {
                 {selectedFile && (
                     <TouchableOpacity onPress={() => setSelectedFile(null)} style={{alignSelf: 'flex-end', marginBottom: 10}}><Text style={{color: '#D32F2F', fontSize: 12, fontFamily: 'BarlowCondensed-Bold'}}>Quitar archivo</Text></TouchableOpacity>
                 )}
+                
                 <View style={s.noteButtonsRow}>
                     <TouchableOpacity style={s.noteCancelBtn} onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); }} disabled={isSavingNote}><Text style={s.noteCancelText}>Cancelar</Text></TouchableOpacity>
-                    <TouchableOpacity style={[s.noteSaveBtn, { backgroundColor: config.color }]} onPress={handleSaveNote} disabled={isSavingNote || !noteText.trim()}>{isSavingNote ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={s.noteSaveText}>Guardar</Text>}</TouchableOpacity>
+                    <TouchableOpacity style={[s.noteSaveBtn, { backgroundColor: config.color }]} onPress={handleSaveNote} disabled={isSavingNote || (!noteText.trim() && !selectedFile)}>
+                        {isSavingNote ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={s.noteSaveText}>Guardar</Text>}
+                    </TouchableOpacity>
                 </View>
               </View>
             </TouchableWithoutFeedback>
@@ -445,7 +471,7 @@ const ListadoClientes = () => {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* MODAL HISTORIAL DE NOTAS (TIPO CHAT) */}
+      {/* MODAL HISTORIAL DE NOTAS */}
       <Modal visible={historyModalVisible} transparent animationType="fade" onRequestClose={() => setHistoryModalVisible(false)}>
         <Pressable style={s.modalOverlay} onPress={() => setHistoryModalVisible(false)}>
           <Pressable style={[s.modalContent, { width: '95%', maxHeight: '85%', padding: 15, backgroundColor: '#F8F9FA' }]} onPress={e => e.stopPropagation()}>
@@ -456,35 +482,49 @@ const ListadoClientes = () => {
                <ActivityIndicator size="large" color={config.color} style={{ marginVertical: 30 }} />
             ) : (
                <ScrollView style={s.chatScrollContainer} showsVerticalScrollIndicator={false}>
-                 
-                 {/* Nota Pinned (Si Odoo tiene la nota general cargada) */}
-                 {!!historyData.comment_general && (
-                     <View style={s.pinnedNote}>
-                         <View style={s.pinnedNoteHeader}>
-                             <Ionicons name="pin" size={14} color="#F57C00" />
-                             <Text style={s.pinnedNoteTitle}>Nota Ficha Principal</Text>
-                         </View>
-                         <Text style={s.pinnedNoteText}>{historyData.comment_general}</Text>
-                     </View>
-                 )}
 
-                 {/* Historial Chatter (Burbujas) */}
-                 {historyData.messages.map((msg, idx) => (
-                     <View key={msg.id || idx} style={s.chatRow}>
-                         <View style={s.chatAvatar}>
-                             <Text style={s.chatAvatarText}>{msg.author.charAt(0).toUpperCase()}</Text>
-                         </View>
-                         <View style={s.chatBubble}>
-                             <View style={s.chatHeaderInfo}>
-                                 <Text style={s.chatAuthorName} numberOfLines={1}>{msg.author}</Text>
-                                 <Text style={s.chatTime}>{formatChatDate(msg.date)}</Text>
+                 {historyMessages.map((msg, idx) => {
+                     const isOdoo = msg.author.includes('Odoo');
+                     const msgText = cleanHtml(msg.body); // Llamamos a la nueva función
+                     
+                     return (
+                         <View key={msg.id || idx} style={s.chatRow}>
+                             <View style={[s.chatAvatar, isOdoo && {backgroundColor: '#6C757D'}]}>
+                                 <Text style={s.chatAvatarText}>{msg.author.charAt(0).toUpperCase()}</Text>
                              </View>
-                             <Text style={s.chatMessageText}>{cleanHtml(msg.body)}</Text>
+                             <View style={s.chatBubble}>
+                                 <View style={s.chatHeaderInfo}>
+                                     <Text style={s.chatAuthorName} numberOfLines={1}>{msg.author}</Text>
+                                     <Text style={s.chatTime}>{formatChatDate(msg.date)}</Text>
+                                 </View>
+                                 
+                                 {/* Texto de la nota (ahora no desaparecerá mágicamente) */}
+                                 {!!msgText && (
+                                     <Text style={s.chatMessageText}>{msgText}</Text>
+                                 )}
+                                 
+                                 {/* Archivos Adjuntos */}
+                                 {msg.attachments && msg.attachments.length > 0 && (
+                                     <View style={s.attachmentsWrapper}>
+                                         {msg.attachments.map((att: any) => (
+                                             <TouchableOpacity 
+                                                 key={att.id} 
+                                                 style={s.attachmentPill} 
+                                                 onPress={() => handleDownloadAttachment(att.id)}
+                                                 activeOpacity={0.7}
+                                             >
+                                                 <Ionicons name="document-attach-outline" size={18} color="#1C9BD8" />
+                                                 <Text style={s.attachmentName} numberOfLines={1}>{att.name}</Text>
+                                             </TouchableOpacity>
+                                         ))}
+                                     </View>
+                                 )}
+                             </View>
                          </View>
-                     </View>
-                 ))}
+                     );
+                 })}
 
-                 {(!historyData.comment_general && historyData.messages.length === 0) && (
+                 {historyMessages.length === 0 && (
                      <Text style={s.emptyChatText}>No hay interacciones registradas con este cliente.</Text>
                  )}
                </ScrollView>
@@ -508,6 +548,9 @@ const s = StyleSheet.create({
   titleContainer: { flexDirection: 'row', alignItems: 'baseline', flex: 1, marginRight: 10 },
   title: { fontSize: 22, fontFamily: 'BarlowCondensed-Bold', letterSpacing: 0.5 },
   countText: { color: '#999', fontSize: 18, marginLeft: 6, fontFamily: 'BarlowCondensed-Regular' },
+  exportButtonsRow: { flexDirection: 'row' },
+  exportBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, borderWidth: 1 },
+  exportText: { marginLeft: 3, fontSize: 10, fontFamily: 'BarlowCondensed-Bold', fontWeight: '700' },
   filtersContainer: { paddingHorizontal: 16, paddingBottom: 10, backgroundColor: '#fff', borderBottomWidth: 1, borderBottomColor: '#F0F0F0', paddingTop: 8 },
   searchRow: { marginBottom: 10 },
   searchInputWrap: { backgroundColor: '#F5F5F5', borderRadius: 20, height: 40, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15, borderWidth: 1, borderColor: '#E0E0E0' },
@@ -559,19 +602,18 @@ const s = StyleSheet.create({
   closeChatBtn: { marginTop: 15, backgroundColor: '#E3E3E3', paddingVertical: 12, borderRadius: 8, alignItems: 'center' },
   closeChatText: { color: '#333', fontFamily: 'BarlowCondensed-Bold', fontSize: 16 },
   
-  pinnedNote: { backgroundColor: '#FFF3E0', borderRadius: 8, padding: 12, marginBottom: 20, borderWidth: 1, borderColor: '#FFE0B2' },
-  pinnedNoteHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 6 },
-  pinnedNoteTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 14, color: '#F57C00', marginLeft: 4 },
-  pinnedNoteText: { fontSize: 14, color: '#555', fontFamily: 'BarlowCondensed-Regular' },
-  
   chatRow: { flexDirection: 'row', marginBottom: 16, alignItems: 'flex-start' },
-  chatAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#1C9BD8', justifyContent: 'center', alignItems: 'center', marginRight: 10, marginTop: 2 },
+  chatAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#F57C00', justifyContent: 'center', alignItems: 'center', marginRight: 10, marginTop: 2 },
   chatAvatarText: { color: '#FFF', fontFamily: 'BarlowCondensed-Bold', fontSize: 16 },
-  chatBubble: { flex: 1, backgroundColor: '#FFFFFF', borderRadius: 12, borderTopLeftRadius: 2, padding: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: 2, borderWidth: 1, borderColor: '#F0F0F0' },
+  chatBubble: { flex: 1, backgroundColor: '#FFFFFF', borderRadius: 12, borderTopLeftRadius: 2, padding: 12, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: 2, borderWidth: 1, borderColor: '#E0E0E0' },
   chatHeaderInfo: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
   chatAuthorName: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#333', flex: 1, marginRight: 10 },
   chatTime: { fontSize: 11, color: '#999', fontFamily: 'BarlowCondensed-Regular' },
-  chatMessageText: { fontSize: 14, color: '#444', lineHeight: 20, fontFamily: 'BarlowCondensed-Regular' }
+  chatMessageText: { fontSize: 14, color: '#444', lineHeight: 20, fontFamily: 'BarlowCondensed-Regular' },
+  
+  attachmentsWrapper: { marginTop: 8, gap: 6 },
+  attachmentPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#E1F5FE', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, borderWidth: 1, borderColor: '#B3E5FC' },
+  attachmentName: { marginLeft: 6, color: '#0277BD', fontSize: 12, fontFamily: 'BarlowCondensed-SemiBold', flex: 1 }
 });
 
 export default ListadoClientes;

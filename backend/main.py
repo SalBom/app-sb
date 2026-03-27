@@ -3047,12 +3047,14 @@ def agregar_nota_cliente():
             except Exception as e:
                 log.error(f"Error creando adjunto en Odoo: {e}")
         
-        # 3. Publicar directamente en el historial (Chatter)
+        # 3. Publicar directamente en el historial (Chatter) con HTML seguro
         try:
             if nota:
-                body_html = f"<b>Nota agregada desde la App:</b><br/>{nota.replace(chr(10), '<br/>')}"
+                # Envolvemos todo en <p> para que el sanitizador de Odoo lo respete sin borrar texto
+                cuerpo = nota.replace(chr(10), '<br/>')
+                body_html = f"<p><b>Nota agregada desde la App:</b><br/>{cuerpo}</p>"
             else:
-                body_html = "<b>Archivo adjunto enviado desde la App</b>"
+                body_html = "<p><b>Archivo adjunto enviado desde la App</b></p>"
                 
             client.env["res.partner"].message_post(
                 [partner_id],
@@ -3064,11 +3066,12 @@ def agregar_nota_cliente():
         except Exception as e:
             log.warning(f"Error con message_post: {e}")
             try:
-                # Fallback de seguridad
+                # Fallback de seguridad por si la versión de Odoo es estricta con la API
+                cuerpo_fallback = nota.replace(chr(10), '<br/>')
                 client.env["mail.message"].create({
                     "model": "res.partner",
                     "res_id": partner_id,
-                    "body": f"Nota desde la App: {nota}" if nota else "Archivo adjunto desde la App",
+                    "body": f"<p>Nota desde la App:<br/>{cuerpo_fallback}</p>" if nota else "<p>Archivo adjunto desde la App</p>",
                     "message_type": "comment",
                     "attachment_ids": [(6, 0, attachment_ids)] if attachment_ids else []
                 })
