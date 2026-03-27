@@ -3006,7 +3006,7 @@ def clientes_por_estado():
         log.error(f"❌ /clientes-por-estado Error: {e}")
         return jsonify({"error": str(e)}), 500
     
-# 1. ENDPOINT PARA GUARDAR NOTA Y ADJUNTO (BLINDADO CONTRA OBJETOS RECURSIVOS)
+# 1. ENDPOINT PARA GUARDAR NOTA Y ADJUNTO (CON FIRMA DE VENDEDOR)
 @app.route("/cliente/nota", methods=["POST"])
 def agregar_nota_cliente():
     data = request.json or {}
@@ -3019,18 +3019,19 @@ def agregar_nota_cliente():
     nota = data.get("nota", "").strip()
     file_b64 = data.get("file_b64")
     file_name = data.get("file_name", "Archivo_Adjunto.jpg") 
+    
+    # 🔥 Atrapamos el nombre del vendedor (si no llega, pone 'App Sal-Bom')
+    vendor_name = data.get("vendor_name", "App Sal-Bom") 
 
     if not partner_id or (not nota and not file_b64):
         return jsonify({"error": "Faltan datos obligatorios (Nota o Archivo)."}), 400
 
     def logic(client):
-        # 1. Verificar si existe el cliente
         if not client.env["res.partner"].search_count([("id", "=", partner_id)]):
             return jsonify({"error": "Cliente no encontrado en Odoo"}), 404
             
         attachment_ids = []
         
-        # 2. Subir el adjunto si existe (Extracción SEGURA del ID)
         if file_b64:
             clean_b64 = file_b64.split(",")[1] if "," in file_b64 else file_b64
             try:
@@ -3042,7 +3043,7 @@ def agregar_nota_cliente():
                     "res_id": partner_id
                 })
                 
-                # 🔥 FIX CRÍTICO: Forzar extracción del ID numérico puro para evitar diccionarios recursivos
+                # Forzar extracción del ID numérico puro
                 if isinstance(attach_res, int):
                     attach_id = attach_res
                 elif isinstance(attach_res, list):
@@ -3058,14 +3059,15 @@ def agregar_nota_cliente():
             except Exception as e:
                 log.error(f"Error creando adjunto: {e}")
 
-        # 3. Preparar el HTML respetando los saltos de línea
+        # 🔥 ARMAMOS EL HTML CON LA FIRMA DEL VENDEDOR
         cuerpo = nota.replace('\n', '<br/>')
-        if nota:
-            body_html = f"<strong>Nota desde la App:</strong><br/>{cuerpo}"
-        else:
-            body_html = "<strong>Archivo adjunto enviado desde la App</strong>"
+        firma = f"<br/><br/><span style='color: #666; font-size: 11px;'><i>CARGADO POR: {vendor_name.upper()}</i></span>"
 
-        # 4. Buscar el ID del subtipo 'Nota Interna' (para que salga amarillo en el chatter)
+        if nota:
+            body_html = f"<strong>Nota desde la App:</strong><br/>{cuerpo}{firma}"
+        else:
+            body_html = f"<strong>Archivo adjunto enviado desde la App</strong>{firma}"
+
         try:
             subtype = client.env["ir.model.data"].search_read(
                 [("module", "=", "mail"), ("name", "=", "mt_note")], 
@@ -3075,14 +3077,13 @@ def agregar_nota_cliente():
         except Exception:
             note_subtype_id = 2
             
-        # 5. Publicar en el historial forzando el tipo y las relaciones puras
         try:
             client.env["mail.message"].create({
                 "model": "res.partner",
                 "res_id": partner_id,
                 "body": body_html,
                 "message_type": "comment",
-                "subtype_id": note_subtype_id, # Obliga a Odoo a renderizarlo como Nota Interna
+                "subtype_id": note_subtype_id,
                 "attachment_ids": [(6, 0, attachment_ids)] if attachment_ids else []
             })
         except Exception as e:
