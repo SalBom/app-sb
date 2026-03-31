@@ -862,25 +862,71 @@ def get_productos():
 def get_marcas():
     client = get_odoo_client()
     try:
-        key = "marcas_filtradas_app"
+        # Cambiamos el nombre de la llave para forzar que se borre el caché viejo inmediatamente
+        key = "marcas_filtradas_app_v2"
 
         def query():
+            # 1. Detectar campo marca dinámicamente (Igual que hace la ruta /productos)
+            posibles_campos = ["product_brand_id", "x_brand", "x_marca", "brand_id", "x_studio_marca"]
+            campo_marca = None
+            res_fields = {}
+            try:
+                res_fields = client.env["product.template"].fields_get(posibles_campos, attributes=["string", "relation", "type"])
+                for candidato in posibles_campos:
+                    if candidato in res_fields:
+                        campo_marca = candidato
+                        break
+            except Exception: 
+                pass
+            
+            # Fallback por si no detecta nada
+            if not campo_marca:
+                campo_marca = "product_brand_id" 
+
+            # 2. Buscar TODOS los productos que tengan la etiqueta "APP"
             products = client.env["product.template"].search_read(
                 [("product_tag_ids", "ilike", "APP")], 
-                ["product_brand_id"]
+                [campo_marca]
             )
+            
             brand_ids = set()
+            brand_names = set()
+            
             for p in products:
-                pb = p.get("product_brand_id")
+                pb = p.get(campo_marca)
                 if pb and isinstance(pb, (list, tuple)) and len(pb) > 0:
                     brand_ids.add(pb[0])
+                elif pb and isinstance(pb, str):
+                    brand_names.add(pb)
             
-            if not brand_ids: return []
-            return client.env["product.brand"].search_read(
-                [("id", "in", list(brand_ids))], 
-                ["id", "name"],
-                order="name asc"
-            )
+            marcas_finales = []
+            
+            # 3. Si Odoo nos devolvió IDs relacionales (Many2one - Lo más común)
+            if brand_ids:
+                # Buscar a qué tabla pertenece realmente la marca
+                rel_model = "product.brand"
+                if res_fields.get(campo_marca) and res_fields[campo_marca].get("relation"):
+                    rel_model = res_fields[campo_marca]["relation"]
+                
+                try:
+                    marcas_db = client.env[rel_model].search_read(
+                        [("id", "in", list(brand_ids))], 
+                        ["id", "name"],
+                        order="name asc"
+                    )
+                    marcas_finales.extend(marcas_db)
+                except Exception:
+                    pass
+            
+            # 4. Si Odoo nos devolvió marcas como texto (Char/Selection)
+            if brand_names:
+                # Les inventamos un ID numérico para que el frontend (React Native) no tire error
+                for idx, b_name in enumerate(sorted(list(brand_names))):
+                    marcas_finales.append({"id": 90000 + idx, "name": b_name})
+                    
+            # 5. Ordenar todo alfabéticamente para que quede prolijo en el desplegable
+            marcas_finales.sort(key=lambda x: str(x.get("name", "")).lower())
+            return marcas_finales
 
         return jsonify(get_cache_or_execute(key, fallback_fn=query))
 

@@ -270,13 +270,23 @@ const ListadoClientes = () => {
     if (!selectedClientForNote || (!noteText.trim() && !selectedFile)) return;
     setIsSavingNote(true);
     Keyboard.dismiss();
+    
     try {
+      // Obtenemos el nombre del usuario logueado usando getAuth()
+      const user = await authStorage.getAuth();
+      const vendorName = user?.name || 'Vendedor';
+
       const res = await fetch(`${API_URL}/cliente/nota`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          partner_id: selectedClientForNote.id, nota: noteText.trim(), file_b64: selectedFile?.b64, file_name: selectedFile?.name
+          partner_id: selectedClientForNote.id, 
+          nota: noteText.trim(), 
+          file_b64: selectedFile?.b64, 
+          file_name: selectedFile?.name,
+          vendor_name: vendorName
         })
       });
+      
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'No se pudo guardar la nota.');
       Alert.alert('Éxito', 'Nota guardada en el historial del cliente.');
@@ -312,7 +322,6 @@ const ListadoClientes = () => {
     Linking.openURL(url);
   };
 
-  // VERSIÓN MEJORADA: Limpia el HTML a prueba de balas sin perder el texto
   const cleanHtml = (str: string) => {
     if (!str || typeof str !== 'string') return '';
     let text = str;
@@ -330,7 +339,7 @@ const ListadoClientes = () => {
     text = text.replace(/Archivo adjunto enviado desde la App/gi, '');
     text = text.replace(/Nota desde la App:/gi, '');
     
-    // 4. Decodificamos caracteres especiales comunes que Odoo envía
+    // 4. Decodificamos caracteres especiales comunes
     text = text.replace(/&nbsp;/gi, ' ');
     text = text.replace(/&amp;/gi, '&');
     text = text.replace(/&lt;/gi, '<');
@@ -349,8 +358,48 @@ const ListadoClientes = () => {
     } catch { return dateStr; }
   };
 
-  const handleDownloadPdf = async () => { /* Logica Export PDF */ };
-  const handleDownloadExcel = async () => { /* Logica Export Excel */ };
+  const handleDownloadPdf = async () => {
+    try {
+      if (filteredClientes.length === 0) return Alert.alert("Aviso", "No hay clientes para exportar.");
+      const rows = filteredClientes.map(c => `
+        <tr>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${c.name}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${c.vat || ''}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${c.phone || ''}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${c.email || ''}</td>
+          <td style="padding: 8px; border-bottom: 1px solid #ddd;">${c.city || ''}, ${c.state || ''}</td>
+        </tr>
+      `).join('');
+      const html = `<html><head><style>body{font-family:'Helvetica';padding:20px}h1{color:${config.color};font-size:18px;margin-bottom:20px}table{width:100%;border-collapse:collapse;font-size:12px}th{text-align:left;padding:8px;background-color:#f2f2f2;border-bottom:2px solid #ccc}</style></head><body><h1>Reporte - ${config.title} (${filteredClientes.length})</h1><table><thead><tr><th>Nombre</th><th>CUIT</th><th>Teléfono</th><th>Email</th><th>Ubicación</th></tr></thead><tbody>${rows}</tbody></table></body></html>`;
+      const { uri } = await Print.printToFileAsync({ html });
+      await Sharing.shareAsync(uri, { UTI: '.pdf', mimeType: 'application/pdf' });
+    } catch (error) { Alert.alert("Error", "No se pudo generar el PDF."); }
+  };
+
+  const handleDownloadExcel = async () => {
+    try {
+      if (filteredClientes.length === 0) return Alert.alert("Aviso", "No hay clientes para exportar.");
+      const data = filteredClientes.map(c => ({
+        "Nombre": c.name,
+        "CUIT": c.vat,
+        "Teléfono": c.phone || "",
+        "Email": c.email || "",
+        "Dirección": c.street || "",
+        "Ciudad": c.city || "",
+        "Provincia": c.state || "",
+        "Estado (Reporte)": config.title
+      }));
+      const ws = XLSX.utils.json_to_sheet(data);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Clientes");
+      const wbout = XLSX.write(wb, { type: 'base64', bookType: 'xlsx' });
+      const fileName = `Reporte_${estadoId}_${Date.now()}.xlsx`;
+      const dir = FS.documentDirectory || FS.cacheDirectory;
+      const uri = dir + fileName;
+      await FS.writeAsStringAsync(uri, wbout, { encoding: 'base64' });
+      await Sharing.shareAsync(uri, { mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', dialogTitle: 'Descargar Reporte Excel', UTI: 'com.microsoft.excel.xlsx' });
+    } catch (error) { Alert.alert("Error", "No se pudo generar el Excel."); }
+  };
 
   const renderItem = ({ item }: { item: Cliente }) => (
     <TouchableOpacity style={s.rowContainer} onPress={() => handleOpenHistoryModal(item)} activeOpacity={0.7}>
@@ -441,6 +490,24 @@ const ListadoClientes = () => {
         />
       )}
 
+      {/* MODAL FILTROS */}
+      <Modal visible={!!modalType} transparent animationType="fade" onRequestClose={() => setModalType(null)}>
+        <Pressable style={s.modalOverlay} onPress={() => setModalType(null)}>
+            <View style={s.modalContent}>
+                <Text style={s.modalTitle}>Seleccionar {modalType === 'state' ? 'Provincia' : 'Ciudad'}</Text>
+                <ScrollView style={{ maxHeight: 300 }}>
+                    {(modalType === 'state' ? uniqueStates : uniqueCities).map((item, idx) => (
+                        <TouchableOpacity key={idx} style={s.modalItem} onPress={() => { if (modalType === 'state') setSelectedState(item as string); else setSelectedCity(item as string); setModalType(null); }}>
+                            <Text style={s.modalItemText}>{item || 'Desconocido'}</Text>
+                        </TouchableOpacity>
+                    ))}
+                    {(modalType === 'state' ? uniqueStates : uniqueCities).length === 0 && <Text style={s.emptyText}>No hay opciones disponibles.</Text>}
+                </ScrollView>
+                <TouchableOpacity style={s.modalCloseBtn} onPress={() => setModalType(null)}><Text style={s.modalCloseText}>Cerrar</Text></TouchableOpacity>
+            </View>
+        </Pressable>
+      </Modal>
+
       {/* MODAL NOTA INTERNA */}
       <Modal visible={noteModalVisible} transparent animationType="fade" onRequestClose={() => setNoteModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
@@ -485,7 +552,7 @@ const ListadoClientes = () => {
 
                  {historyMessages.map((msg, idx) => {
                      const isOdoo = msg.author.includes('Odoo');
-                     const msgText = cleanHtml(msg.body); // Llamamos a la nueva función
+                     const msgText = cleanHtml(msg.body); 
                      
                      return (
                          <View key={msg.id || idx} style={s.chatRow}>
@@ -498,7 +565,7 @@ const ListadoClientes = () => {
                                      <Text style={s.chatTime}>{formatChatDate(msg.date)}</Text>
                                  </View>
                                  
-                                 {/* Texto de la nota (ahora no desaparecerá mágicamente) */}
+                                 {/* Texto de la nota */}
                                  {!!msgText && (
                                      <Text style={s.chatMessageText}>{msgText}</Text>
                                  )}

@@ -29,12 +29,12 @@ import authStorage from '../utils/authStorage';
 import type { ProductoBase } from '../store/cartStore';
 import SearchBar from '../components/SearchBar';
 import type { RootStackParamList } from '../types/navigation';
-import { API_URL } from '../config'; // <--- IMPORTACIÓN CENTRALIZADA
+import { API_URL } from '../config'; 
 
 import TarjetaProductoListado from '../components/TarjetaProductoListado';
 import TarjetaProductoKanban from '../components/TarjetaProductoKanban';
 import SkeletonProduct from '../components/SkeletonProduct'; 
-import EmptyState from '../components/EmptyState'; // <--- COMPONENTE ESTADO VACÍO
+import EmptyState from '../components/EmptyState'; 
 import FlechaProductosSvg from '../../assets/flechaProductos.svg';
 
 // --- ASSETS ---
@@ -176,7 +176,10 @@ const Productos = () => {
   const [isFetchingMas, setIsFetchingMas] = useState(false);
   const [loading, setLoading] = useState<boolean>(true);
   
-  const [search, setSearch] = useState('');
+  // --- NUEVO SISTEMA DE BÚSQUEDA ---
+  const [searchTerm, setSearchTerm] = useState(''); // Lo que el usuario escribe
+  const [debouncedSearch, setDebouncedSearch] = useState(''); // Lo que se envía a la API
+  
   const [marcaSeleccionada, setMarcaSeleccionada] = useState('');
   const [categoriaSeleccionada, setCategoriaSeleccionada] = useState('');
   const [onlyStock, setOnlyStock] = useState(false);
@@ -216,21 +219,26 @@ const Productos = () => {
     return `M ${MODAL_CUT},0 H ${MODAL_W - MODAL_CUT} L ${MODAL_W},${MODAL_CUT} V ${modalHeight - MODAL_CUT} L ${MODAL_W - MODAL_CUT},${modalHeight} H ${MODAL_CUT} L 0,${modalHeight - MODAL_CUT} V ${MODAL_CUT} Z`;
   }, [modalHeight]);
 
+  // --- EFECTO DEBOUCING PARA BÚSQUEDA ---
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchTerm);
+    }, 500); // Espera medio segundo después de que el usuario deje de escribir
+    return () => clearTimeout(timer);
+  }, [searchTerm]);
+
   useFocusEffect(
     useCallback(() => {
         const loadBanners = async () => {
             try {
-                // USAMOS API_URL centralizada
                 const res = await axios.get(`${API_URL}/config/FEATURED_PRODUCTOS`);
                 const list = res.data;
-
                 if (Array.isArray(list) && list.length > 0) {
                     setBanners(list);
                 } else {
                     setBanners([{ static: true }]);
                 }
             } catch (e) { 
-                console.log("Error banners productos:", e);
                 setBanners([{ static: true }]); 
             }
         };
@@ -296,7 +304,8 @@ const Productos = () => {
         setProductos([]); 
         setPagina(0);
         
-        setSearch(''); 
+        setSearchTerm(''); 
+        setDebouncedSearch('');
         setMarcaSeleccionada(''); 
         setCategoriaSeleccionada('');
         setOnlyStock(false); 
@@ -333,47 +342,49 @@ const Productos = () => {
           const found = categorias.find(c => normalizeText(c.name).includes(term));
           let targetCatId = ''; let targetSearch = '';
           if (found) { targetCatId = String(found.id); setCategoriaSeleccionada(targetCatId); }
-          else { targetSearch = pendingSearchName; setSearch(targetSearch); }
+          else { targetSearch = pendingSearchName; setSearchTerm(targetSearch); setDebouncedSearch(targetSearch); }
           fetchProductosDirect(false, { search: targetSearch, marca_id: '', categ_id: targetCatId });
           setPendingSearchName(null);
       }
   }, [pendingSearchName, categorias]);
 
+  // --- ESCUCHA A DEBOUNCED SEARCH PARA LA LISTA PRINCIPAL ---
   useEffect(() => {
     if (blockSearchRef.current || isResetting) return;
-    fetchProductosDirect(false, { search: search, marca_id: marcaSeleccionada, categ_id: categoriaSeleccionada });
-  }, [search, marcaSeleccionada, categoriaSeleccionada]);
+    fetchProductosDirect(false, { search: debouncedSearch, marca_id: marcaSeleccionada, categ_id: categoriaSeleccionada });
+  }, [debouncedSearch, marcaSeleccionada, categoriaSeleccionada]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
-    fetchProductosDirect(false, { search: search, marca_id: marcaSeleccionada, categ_id: categoriaSeleccionada });
-  }, [search, marcaSeleccionada, categoriaSeleccionada]);
+    fetchProductosDirect(false, { search: debouncedSearch, marca_id: marcaSeleccionada, categ_id: categoriaSeleccionada });
+  }, [debouncedSearch, marcaSeleccionada, categoriaSeleccionada]);
 
   const handleLoadMore = () => {
     if (!loading && hasMas && !isFetchingMas) {
-        fetchProductosDirect(true, { search, marca_id: marcaSeleccionada, categ_id: categoriaSeleccionada });
+        fetchProductosDirect(true, { search: debouncedSearch, marca_id: marcaSeleccionada, categ_id: categoriaSeleccionada });
     }
   };
 
+  // --- ESCUCHA A SEARCHTERM PARA LAS SUGERENCIAS ---
   useEffect(() => {
-    if (!search || search.length < 2) { setShowSugerencias(false); return; }
+    if (!searchTerm || searchTerm.length < 2) { setShowSugerencias(false); return; }
     const timer = setTimeout(async () => {
         setLoadingSugerencias(true); setShowSugerencias(true);
-        const term = normalizeText(search);
+        const term = normalizeText(searchTerm);
         const catsFiltradas = categorias.filter(c => normalizeText(c.name).includes(term)).slice(0, 3);
         setSugerenciasCat(catsFiltradas);
         try {
-            const res = await axios.get(`${API_URL}/productos`, { params: { search, limit: 8 } });
+            const res = await axios.get(`${API_URL}/productos`, { params: { search: searchTerm, limit: 8 } });
             const prods = Array.isArray(res.data) ? res.data : (res.data?.items ?? []);
             setSugerenciasProd(prods);
         } catch { setSugerenciasProd([]); } finally { setLoadingSugerencias(false); }
-    }, 400);
+    }, 300); // 300ms para las sugerencias
     return () => clearTimeout(timer);
-  }, [search, categorias]);
+  }, [searchTerm, categorias]);
 
   const handleSelectCategorySuggestion = (cat: Categoria) => {
       setCategoriaSeleccionada(cat.id.toString());
-      setSearch(''); setShowSugerencias(false); Keyboard.dismiss();
+      setSearchTerm(''); setDebouncedSearch(''); setShowSugerencias(false); Keyboard.dismiss();
   };
   const handleSelectProductSuggestion = (prod: Producto) => {
       setShowSugerencias(false); 
@@ -381,7 +392,7 @@ const Productos = () => {
   };
 
   const limpiarFiltros = () => {
-    setMarcaSeleccionada(''); setCategoriaSeleccionada(''); setSearch('');
+    setMarcaSeleccionada(''); setCategoriaSeleccionada(''); setSearchTerm(''); setDebouncedSearch('');
     setSoloOfertas(false); setOnlyStock(false); setSortOption('default');
   };
 
@@ -420,11 +431,15 @@ const Productos = () => {
             updateQuantity(item.id, existing.product_uom_qty + quantity);
         } else if (quantity > 0) {
             addToCart({
-                product_id: item.id, name: item.name, price_unit: finalPrice, list_price: item.list_price,
-                product_uom_qty: quantity, default_code: item.default_code || '', 
-                image_128: item.image_128 ?? undefined, 
-                image_md_url: item.image_md_url ?? null, image_thumb_url: item.image_thumb_url ?? null,
-            });
+                product_id: item.id, 
+                name: item.name, 
+                price_unit: finalPrice, 
+                list_price: item.list_price,
+                product_uom_qty: quantity, 
+                default_code: item.default_code || '', 
+                image_md_url: item.image_md_url ?? null, 
+                image_thumb_url: item.image_thumb_url ?? null,
+            } as any);
         }
     };
 
@@ -466,12 +481,9 @@ const Productos = () => {
     return <DynamicCarouselItem item={item} onPress={() => navigation.navigate('ProductoDetalle', { id: Number(item.id), preload: item } as any)} />;
   };
 
-  // --- MEMOIZACIÓN DEL HEADER ---
+  // --- HEADER CONTENT (YA NO INCLUYE EL SEARCHBAR) ---
   const headerContent = useMemo(() => (
       <View style={styles.scrollHeaderWrap}>
-        <View style={{ zIndex: 20 }}>
-            <SearchBar value={search} onChangeText={setSearch} onClear={() => { setSearch(''); setShowSugerencias(false); }} placeholder="BUSCAR PRODUCTO O CATEGORÍA" variant="hero" rightIcon containerStyle={{ marginTop: 0, marginBottom: SEARCH_TO_CAROUSEL_GAP, marginHorizontal: 0 }} />
-        </View>
         <View style={styles.carouselCard}>
             <FlatList
                 data={banners.length > 0 ? banners : [{static: true}]}
@@ -499,7 +511,7 @@ const Productos = () => {
         </View>
         <Text style={styles.countText}>{loading || isResetting ? 'Cargando...' : `${productosProcesados.length} producto(s) encontrado(s)`}</Text>
       </View>
-  ), [search, banners, bannerIndex, sortOption, onlyStock, categoriaSeleccionada, marcaSeleccionada, soloOfertas, loading, isResetting, productosProcesados.length]);
+  ), [banners, bannerIndex, sortOption, onlyStock, categoriaSeleccionada, marcaSeleccionada, soloOfertas, loading, isResetting, productosProcesados.length]);
 
   const bottomPad = 64 + insets.bottom + 32 + 12;
   const showSkeleton = (loading && pagina === 0 && !refreshing) || isResetting;
@@ -513,6 +525,8 @@ const Productos = () => {
   return (
     <TouchableWithoutFeedback onPress={() => { setShowSugerencias(false); Keyboard.dismiss(); }}>
         <View style={{ flex: 1, backgroundColor: '#ffffff' }}>
+        
+        {/* CABECERA FIJA - AQUÍ MOVIMOS EL SEARCHBAR */}
         <View style={[styles.fixedHeader, { zIndex: 10 }]}>
             <View style={[styles.titleRow, { marginLeft: -(HEADER_PAD + EDGE_KISS), height: Math.max(ARROW_H, TITLE_SIZE) }]}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
@@ -525,7 +539,20 @@ const Productos = () => {
                     {viewMode === 'list' ? <IconGrid /> : <IconList />}
                 </TouchableOpacity>
             </View>
+
+            <View style={{ zIndex: 20, marginTop: 4, marginBottom: 8 }}>
+                <SearchBar 
+                    value={searchTerm} 
+                    onChangeText={setSearchTerm} 
+                    onClear={() => { setSearchTerm(''); setShowSugerencias(false); }} 
+                    placeholder="BUSCAR NOMBRE O CÓDIGO" 
+                    variant="hero" 
+                    rightIcon 
+                    containerStyle={{ marginHorizontal: 0 }} 
+                />
+            </View>
         </View>
+
         <View style={{ flex: 1, zIndex: 1 }}>
             {showSkeleton ? (
                 <FlatList key="skel" data={[1,2,3,4,5,6]} keyExtractor={(i) => i.toString()} renderItem={() => <SkeletonProduct />} ListHeaderComponent={headerContent} contentContainerStyle={{ paddingTop: 10, paddingBottom: bottomPad }} showsVerticalScrollIndicator={false} />
@@ -538,8 +565,6 @@ const Productos = () => {
                     numColumns={viewMode === 'kanban' ? 2 : 1}
                     columnWrapperStyle={viewMode === 'kanban' ? { justifyContent: 'space-between', paddingHorizontal: HEADER_PAD } : undefined}
                     ListHeaderComponent={headerContent}
-                    
-                    // --- AQUÍ ESTÁ LA MAGIA DEL EMPTY STATE ---
                     ListEmptyComponent={
                         !loading && !isResetting ? (
                             <EmptyState 
@@ -553,14 +578,10 @@ const Productos = () => {
                         { paddingTop: 10, paddingBottom: bottomPad },
                         productosProcesados.length === 0 && { flex: 1, justifyContent: 'center' }
                     ]}
-                    // ------------------------------------------
-
                     onEndReached={handleLoadMore}
                     onEndReachedThreshold={0.5}
                     ListFooterComponent={isFetchingMas ? <ActivityIndicator size="small" color="#139EDB" style={{ margin: 10 }} /> : null}
                     refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#1C9BD8']} tintColor="#1C9BD8" progressViewOffset={10} />}
-                    
-                    // OPTIMIZACIONES DE RENDIMIENTO
                     initialNumToRender={4} 
                     maxToRenderPerBatch={4}
                     windowSize={3}
@@ -569,8 +590,10 @@ const Productos = () => {
                     keyboardShouldPersistTaps="handled"
                 />
             )}
+
+            {/* CAJA DE SUGERENCIAS ALINEADA CORRECTAMENTE DEBAJO DEL HEADER FIJO */}
             {showSugerencias && (
-                <View style={[styles.suggestionsOverlay, { top: insets.top + 60 }]}> 
+                <View style={[styles.suggestionsOverlay, { top: 0 }]}> 
                     <ScrollView keyboardShouldPersistTaps="handled" style={{ flex: 1 }}>
                         {loadingSugerencias && (<ActivityIndicator size="small" color="#139EDB" style={{ margin: 20 }} />)}
                         {sugerenciasCat.length > 0 && (
