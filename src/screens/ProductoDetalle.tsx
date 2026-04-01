@@ -236,12 +236,37 @@ function ProductoDetalle() {
     });
   }, [plazosData, discountRules]);
 
-  const calculateFinalPrice = (base: number, termId: number) => {
+  // --- LÓGICA ESTRICTA DE PRECIOS SEGÚN OFERTA VS PLAZO ---
+  const calculateFinalPrice = (termId: number) => {
     const rule = discountRules[termId];
-    if (!rule) return base;
+    const listPrice = producto?.list_price || 0;
+
+    if (!rule) return esOferta ? precioBase : listPrice;
+    
     const d1 = parseFloat(rule.descuento || 0);
     const d2 = parseFloat(rule.descuento2 || 0);
-    return base * (1 - d1 / 100) * (1 - d2 / 100);
+    
+    // Calculamos el precio de lista puro con los descuentos que ofrezca este plazo
+    const priceWithDiscount = listPrice * (1 - d1 / 100) * (1 - d2 / 100);
+    
+    // Identificamos si este plazo específico admite convivencia con ofertas
+    const permiteOferta = rule.oferta === true || rule.oferta === 'true' || rule.oferta === 1 || rule.oferta === '1';
+
+    if (esOferta) {
+        if (!permiteOferta) {
+            // EXCEPCIÓN: El plazo indica que NO aplica a ofertas.
+            // Por lo tanto, el cliente pierde el beneficio de la oferta y se le cobra
+            // el precio de lista normal (con el descuento propio del plazo si lo hubiera).
+            return priceWithDiscount;
+        } else {
+            // REGLA GENERAL: El plazo SÍ admite ofertas.
+            // Se respeta el precio de oferta de forma intocable, SIN aplicar los descuentos del plazo.
+            return precioBase;
+        }
+    }
+
+    // Si el producto no está en oferta, se cobra el precio de lista con los descuentos del plazo.
+    return priceWithDiscount;
   };
 
   // --- LÓGICA DE FAVORITOS (SYNC CON DB) ---
@@ -249,14 +274,12 @@ function ProductoDetalle() {
     if (!prod) return;
     const favorito = isFavorite(prod.id);
     
-    // 1. Optimistic Update (UI inmediata)
     if (favorito) {
         removeFavorite(prod.id);
     } else {
         addFavorite(prod as any);
     }
 
-    // 2. Sync con Backend
     try {
         const cuit = await getCuitFromStorage();
         if (cuit) {
@@ -351,7 +374,13 @@ function ProductoDetalle() {
     fetchRelacionados();
   }, [numericId]);
 
-  const formatMoney = (v?: number) => v == null ? '0' : Math.round(v).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+  // --- LÓGICA DE FORMATEO DE MONEDA ---
+  const formatMoney = (v?: number) => {
+    if (v == null) return '0,00';
+    const [intPart, decPart] = v.toFixed(2).split('.');
+    return `${intPart.replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${decPart}`;
+  };
+
   const modalBgPath = `M ${MODAL_CUT},0 H ${MODAL_W - MODAL_CUT} L ${MODAL_W},${MODAL_CUT} V ${modalHeight - MODAL_CUT} L ${MODAL_W - MODAL_CUT},${modalHeight} H ${MODAL_CUT} L 0,${modalHeight - MODAL_CUT} V ${MODAL_CUT} Z`;
 
   if (loading || !producto || producto.id !== numericId) {
@@ -383,7 +412,7 @@ function ProductoDetalle() {
           keyExtractor={(item, index) => index.toString()}
         />
         
-        {/* BOTÓN FAVORITO FLOTANTE ESTILO CORAZON-2.PNG */}
+        {/* BOTÓN FAVORITO FLOTANTE */}
         <TouchableOpacity 
             style={styles.favBtnFloating} 
             onPress={() => handleToggleFav(producto)}
@@ -392,9 +421,7 @@ function ProductoDetalle() {
             <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
                 <Path
                     d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"
-                    // Si está activo: Relleno Azul. Si no: Relleno Transparente.
                     fill={isMainFav ? "#1C9BD8" : "none"} 
-                    // Siempre Borde Azul (como la imagen corazon-2.png)
                     stroke="#1C9BD8" 
                     strokeWidth="2.2"
                     strokeLinecap="round"
@@ -508,12 +535,32 @@ function ProductoDetalle() {
                         {modalType === 'precios' ? (
                           plazosFiltrados.map((term) => {
                             const rule = discountRules[term.id] || {};
-                            const finalPrice = calculateFinalPrice(precioBase, term.id);
+                            
+                            // 1. Usamos la lógica blindada y estricta
+                            const finalPrice = calculateFinalPrice(term.id);
+                            const permiteOferta = rule.oferta === true || rule.oferta === 'true' || rule.oferta === 1 || rule.oferta === '1';
+                            
                             const totalDto = parseFloat(rule.descuento || 0) + parseFloat(rule.descuento2 || 0);
+                            let dtoText = totalDto > 0 ? `-${totalDto}%` : '—';
+                            let dtoColor = '#10B981';
+
+                            // 2. Si es un producto en oferta, mostramos el texto correcto en la columna DTO%
+                            if (esOferta) {
+                                if (permiteOferta) {
+                                    // Mantiene la oferta pura
+                                    dtoText = 'OFERTA';
+                                    dtoColor = '#D32F2F';
+                                } else {
+                                    // Pierde la oferta y usa el descuento del plazo.
+                                    // Opcionalmente podrías cambiar el color aquí para notar que perdió la oferta, 
+                                    // pero dejaremos el % verde que es el comportamiento esperado.
+                                }
+                            }
+
                             return (
                                 <View key={term.id} style={styles.modalNewItem}>
                                     <Text style={[styles.td, { flex: 2.2 }]} numberOfLines={1}>{term.nombre}</Text>
-                                    <Text style={[styles.td, { flex: 1, textAlign: 'center', color: '#10B981' }]}>{totalDto > 0 ? `-${totalDto}%` : '—'}</Text>
+                                    <Text style={[styles.td, { flex: 1, textAlign: 'center', color: dtoColor, fontFamily: 'BarlowCondensed-Bold' }]}>{dtoText}</Text>
                                     <Text style={[styles.td, { flex: 1.5, textAlign: 'center' }]}>${formatMoney(rule.min_compra)}</Text>
                                     <Text style={[styles.tdPrice, { flex: 1.5, textAlign: 'right' }]}>${formatMoney(finalPrice)}</Text>
                                 </View>
@@ -621,22 +668,7 @@ const styles = StyleSheet.create({
   code: { fontSize: 18, fontFamily: 'BarlowCondensed-Light', color: '#3A4A57' },
   imageBox: { height: 264, backgroundColor: '#FFF', borderRadius: 16, padding: 12, elevation: 2, alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.06, shadowOffset: { width: 0, height: 3 }, shadowRadius: 6, position: 'relative' },
   image: { width: '100%', height: 230 },
-  
-  // ESTILO BOTÓN FAV FLOTANTE
-  favBtnFloating: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#F3F4F6',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 10,
-    elevation: 2
-  },
-
+  favBtnFloating: { position: 'absolute', top: 12, right: 12, width: 40, height: 40, borderRadius: 20, backgroundColor: '#F3F4F6', alignItems: 'center', justifyContent: 'center', zIndex: 10, elevation: 2 },
   pagers: { flexDirection: 'row', marginTop: 10 },
   dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#D3EAF6', marginHorizontal: 3 },
   dotActive: { backgroundColor: '#2DB4E8' },

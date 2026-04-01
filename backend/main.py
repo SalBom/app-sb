@@ -2211,13 +2211,19 @@ def _upsert_order_logic(client, data):
         it_term = clean_int(it.get('payment_term_id'))
         if it_term: term_ids_to_fetch.add(it_term)
 
+    # 🚀 FIX 1: Usar search_read en vez de browse para asegurar la obtención de los nombres
     terms_map = {}
     try:
         if term_ids_to_fetch:
-            term_recs = client.env['account.payment.term'].browse(list(term_ids_to_fetch))
+            term_recs = client.env['account.payment.term'].search_read(
+                [('id', 'in', list(term_ids_to_fetch))],
+                ['id', 'name']
+            )
             for t in term_recs:
-                terms_map[t.id] = "CONTADO" if t.name and "inmediato" in str(t.name).lower() else str(t.name)
-    except Exception: pass
+                t_name = str(t.get('name', ''))
+                terms_map[t['id']] = "CONTADO" if "inmediato" in t_name.lower() else t_name
+    except Exception as e: 
+        log.error(f"Error al buscar nombres de plazos: {e}")
 
     groups = {}
     vistos = set()
@@ -2309,7 +2315,8 @@ def _upsert_order_logic(client, data):
                 if existing:
                     update_vals = {
                         'order_line': [(5, 0, 0)] + order_lines_cmd,
-                        'client_order_ref': str(ref_cliente)
+                        'client_order_ref': str(ref_cliente),
+                        'note': str(nota_cliente) # 🚀 FIX 2: Imprime la nota cliente en el PDF
                     }
                     if global_term_id: update_vals['payment_term_id'] = global_term_id
                     if carrier_id: update_vals['carrier_id'] = carrier_id
@@ -2332,6 +2339,7 @@ def _upsert_order_logic(client, data):
                 "payment_term_id": global_term_id if global_term_id else False,
                 "origin": "APP SALBOM",
                 "client_order_ref": str(ref_cliente),
+                "note": str(nota_cliente), # 🚀 FIX 2: Imprime la nota cliente en el PDF
                 "order_line": order_lines_cmd
             }
             if carrier_id: vals["carrier_id"] = carrier_id
@@ -2344,20 +2352,18 @@ def _upsert_order_logic(client, data):
         try: order_obj._amount_all()
         except: pass
 
+        # 🚀 FIX 3: Simplificamos message_post para evitar crashes por kwargs estrictos en Odoo
         if obs_internas:
-            try: order_obj.message_post(body=f"📝 <b>Observación interna:</b><br/>{obs_internas}", message_type='comment', subtype_xmlid='mail.mt_note')
-            except: pass
+            try: 
+                order_obj.message_post(body=f"📝 <b>Observación interna (App):</b><br/>{obs_internas}")
+            except Exception as e: 
+                log.error(f"Fallo al publicar observación en chatter: {e}")
             
-        if nota_cliente:
-            try: order_obj.message_post(body=f"🗣️ <b>Instrucciones del Cliente:</b><br/>{nota_cliente}", message_type='comment', subtype_xmlid='mail.mt_note')
-            except: pass
-
         nro_pedido = f"Pedido #{order_obj.id}"
         total, base, impuestos = 0.0, 0.0, 0.0
         currency = "USD"
         
         try:
-            # 🚀 CORRECCIÓN: Evitar KeyError usando search_read en lugar de .read()[0]
             datos_list = client.env['sale.order'].search_read(
                 [('id', '=', order_obj.id)], 
                 ['amount_total', 'amount_untaxed', 'name', 'currency_id']
