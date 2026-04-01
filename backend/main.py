@@ -2211,7 +2211,7 @@ def _upsert_order_logic(client, data):
         it_term = clean_int(it.get('payment_term_id'))
         if it_term: term_ids_to_fetch.add(it_term)
 
-    # 🚀 FIX: Usar search_read para obtener los nombres correctamente y mostrar en los separadores
+    # Usar search_read para obtener los nombres correctamente y mostrar en los separadores
     terms_map = {}
     try:
         if term_ids_to_fetch:
@@ -2316,7 +2316,6 @@ def _upsert_order_logic(client, data):
                     update_vals = {
                         'order_line': [(5, 0, 0)] + order_lines_cmd,
                         'client_order_ref': str(ref_cliente)
-                        # NOTA ELIMINADA DE AQUÍ PARA QUE NO VAYA AL PDF
                     }
                     if global_term_id: update_vals['payment_term_id'] = global_term_id
                     if carrier_id: update_vals['carrier_id'] = carrier_id
@@ -2339,7 +2338,6 @@ def _upsert_order_logic(client, data):
                 "payment_term_id": global_term_id if global_term_id else False,
                 "origin": "APP SALBOM",
                 "client_order_ref": str(ref_cliente),
-                # NOTA ELIMINADA DE AQUÍ PARA QUE NO VAYA AL PDF
                 "order_line": order_lines_cmd
             }
             if carrier_id: vals["carrier_id"] = carrier_id
@@ -2352,14 +2350,19 @@ def _upsert_order_logic(client, data):
         try: order_obj._amount_all()
         except: pass
 
-        # 🚀 RESTAURAMOS EXACTAMENTE EL CÓDIGO DE NOTAS INTERNAS DEL MURO (CHATTER)
+        # 🚀 RESTAURAMOS Y BLINDAMOS LAS NOTAS DEL MURO (CHATTER)
+        # Se elimina "message_type" y se agrega registro de errores real.
         if obs_internas:
-            try: order_obj.message_post(body=f"📝 <b>Observación interna:</b><br/>{obs_internas}", message_type='comment', subtype_xmlid='mail.mt_note')
-            except: pass
-            
+            try: 
+                order_obj.message_post(body=f"📝Observación interna: {obs_internas}", subtype_xmlid='mail.mt_note')
+            except Exception as e: 
+                log.error(f"❌ Error en Odoo al guardar obs_internas: {e}")
+                
         if nota_cliente:
-            try: order_obj.message_post(body=f"🗣️ <b>Instrucciones del Cliente:</b><br/>{nota_cliente}", message_type='comment', subtype_xmlid='mail.mt_note')
-            except: pass
+            try: 
+                order_obj.message_post(body=f"🗣️ <b>Instrucciones del Cliente: {nota_cliente}", subtype_xmlid='mail.mt_note')
+            except Exception as e: 
+                log.error(f"❌ Error en Odoo al guardar nota_cliente: {e}")
 
         nro_pedido = f"Pedido #{order_obj.id}"
         total, base, impuestos = 0.0, 0.0, 0.0
