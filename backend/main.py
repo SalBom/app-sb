@@ -2354,13 +2354,13 @@ def _upsert_order_logic(client, data):
         # Se elimina "message_type" y se agrega registro de errores real.
         if obs_internas:
             try: 
-                order_obj.message_post(body=f"📝Observación interna: {obs_internas}", subtype_xmlid='mail.mt_note')
+                order_obj.message_post(body=f"📝 <b>Observación interna:</b><br/>{obs_internas}", subtype_xmlid='mail.mt_note')
             except Exception as e: 
                 log.error(f"❌ Error en Odoo al guardar obs_internas: {e}")
                 
         if nota_cliente:
             try: 
-                order_obj.message_post(body=f"🗣️ <b>Instrucciones del Cliente: {nota_cliente}", subtype_xmlid='mail.mt_note')
+                order_obj.message_post(body=f"🗣️ <b>Instrucciones del Cliente:</b><br/>{nota_cliente}", subtype_xmlid='mail.mt_note')
             except Exception as e: 
                 log.error(f"❌ Error en Odoo al guardar nota_cliente: {e}")
 
