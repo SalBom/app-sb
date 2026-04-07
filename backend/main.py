@@ -1524,89 +1524,64 @@ def get_mis_pedidos():
     finally:
         release_odoo_client(client)
 
-@app.route("/pedido_pdf")
-def pedido_pdf():
-    client = get_odoo_client()
-    try:
-        pedido_name = request.args.get("pedidoId")
-        if not pedido_name:
-            return jsonify({"error": "Parámetro pedidoId requerido"}), 400
+@app.route("/pedido_pdf", methods=["GET"]) # (Ajusta el nombre de la ruta si en tu frontend la llamaste distinto)
+def get_pedido_pdf():
+    # 1. Obtener el ID del pedido solicitado por el frontend
+    pedido_id = request.args.get("id") or request.args.get("pedido_id")
+    if not pedido_id:
+        return jsonify({"error": "Falta el ID del pedido"}), 400
 
-        order = client.env['sale.order'].search([('name', '=', pedido_name)], limit=1)
-        if not order:
-            return jsonify({"error": "Pedido no encontrado"}), 404
+    # 2. Leer las variables de entorno de Odoo que ya usas en tu main.py
+    odoo_url = os.environ.get("ODOO_URL", "").rstrip("/")
+    db = os.environ.get("ODOO_DB")
+    user = os.environ.get("ODOO_USER") or os.environ.get("ODOO_USERNAME")
+    password = os.environ.get("ODOO_PASSWORD")
+    
+    if not odoo_url:
+        return jsonify({"error": "Las credenciales de Odoo no están configuradas"}), 500
 
-        attachment_name = f"{order.name}.pdf"
-        existing_attachment = client.env['ir.attachment'].search([
-            ('res_model', '=', 'sale.order'),
-            ('res_id', '=', order.id),
-            ('name', '=', attachment_name)
-        ], limit=1, order='create_date desc')
-
-        if not existing_attachment:
-            try:
-                log.info(f"🔄 Intentando generar PDF vía HTTP para {order.name}...")
-                
-                base_odoo = ODOO_SERVER.rstrip('/')
-                auth_url = f"{base_odoo}/web/session/authenticate"
-                report_url = f"{base_odoo}/report/pdf/sale.report_saleorder/{order.id}"
-                
-                ctx = ssl.create_default_context()
-                ctx.check_hostname = False
-                ctx.verify_mode = ssl.CERT_NONE
-
-                cj = urllib.request.HTTPCookieProcessor()
-                opener = urllib.request.build_opener(urllib.request.HTTPSHandler(context=ctx), urllib.request.HTTPHandler(), cj)
-                
-                auth_data = json.dumps({
-                    "jsonrpc": "2.0",
-                    "method": "call",
-                    "params": {
-                        "db": ODOO_DB,
-                        "login": ODOO_USER,
-                        "password": ODOO_PASSWORD
-                    }
-                }).encode('utf-8')
-                
-                req_auth = urllib.request.Request(auth_url, data=auth_data, headers={'Content-Type': 'application/json'})
-                opener.open(req_auth)
-
-                req_report = urllib.request.Request(report_url)
-                with opener.open(req_report) as response:
-                    pdf_content = response.read()
-
-                if pdf_content.startswith(b'%PDF'):
-                    log.info(f"✅ PDF descargado vía HTTP ({len(pdf_content)} bytes)")
-                    vals = {
-                        'name': attachment_name,
-                        'type': 'binary',
-                        'datas': base64.b64encode(pdf_content).decode('utf-8'),
-                        'res_model': 'sale.order',
-                        'res_id': order.id,
-                        'mimetype': 'application/pdf'
-                    }
-                    existing_attachment = client.env['ir.attachment'].create(vals)
-                else:
-                    log.error("⚠️ El contenido descargado no parece un PDF.")
-            
-            except Exception as e_http:
-                log.error(f"⚠️ Falló generación HTTP: {e_http}")
-
-        if not existing_attachment:
-             return jsonify({"error": "PDF no disponible y no se pudo generar automáticamente."}), 404
-
-        base = PUBLIC_BASE_URL or (request.url_root.rstrip("/"))
-        return {
-            "nombre_archivo": existing_attachment.name,
-            "pdf_url": f"{base}/descargar_pdf?attachment_id={existing_attachment.id}"
+    # 3. Autenticación HTTP (Bypass al bloqueo XML-RPC)
+    session_url = f"{odoo_url}/web/session/authenticate"
+    payload = {
+        "jsonrpc": "2.0",
+        "method": "call",
+        "params": {
+            "db": db,
+            "login": user,
+            "password": password
         }
+    }
+    
+    try:
+        # Simulamos el login de un humano
+        session_resp = requests.post(session_url, json=payload, timeout=15)
+        session_resp.raise_for_status()
+        
+        # Extraemos la "llave maestra"
+        session_id = session_resp.cookies.get("session_id")
+        if not session_id:
+            return jsonify({"error": "Odoo rechazó la autenticación web temporal"}), 401
+            
+        # 4. Descarga nativa del reporte oficial de Presupuesto/Pedido
+        # El ID técnico del reporte en Odoo suele ser 'sale.report_saleorder'
+        pdf_url = f"{odoo_url}/report/pdf/sale.report_saleorder/{pedido_id}"
+        
+        pdf_resp = requests.get(pdf_url, cookies={"session_id": session_id}, timeout=25)
+        
+        if pdf_resp.status_code != 200:
+            return jsonify({"error": f"Fallo en Odoo al renderizar el PDF. HTTP {pdf_resp.status_code}"}), 500
+            
+        # 5. Enviamos el archivo físico (bytes) directo a la app
+        response = Response(pdf_resp.content, content_type='application/pdf')
+        response.headers['Content-Disposition'] = f'attachment; filename="Pedido_{pedido_id}.pdf"'
+        return response
 
+    except requests.exceptions.RequestException as req_e:
+        print(f"❌ Error de red conectando al servidor PDF de Odoo: {req_e}")
+        return jsonify({"error": "El servidor de PDF tardó demasiado en responder"}), 504
     except Exception as e:
-        handle_connection_error(e)
-        log.error(f"❌ /pedido_pdf:\n{traceback.format_exc()}")
-        return jsonify({"error": "Error interno"}), 500
-    finally:
-        release_odoo_client(client)
+        print(f"❌ Error interno generando PDF para pedido {pedido_id}: {e}")
+        return jsonify({"error": "Error interno al procesar el documento"}), 500
 
 @app.route("/mis_facturas", methods=["GET"])
 def get_mis_facturas():
