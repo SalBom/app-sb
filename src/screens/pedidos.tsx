@@ -195,6 +195,54 @@ const Pedidos: React.FC = () => {
     } catch (e) { Alert.alert('Error', 'No se pudo descargar el PDF.'); }
   };
 
+  // ───────────────────────── Cancelar Pedido (solo PRESUPUESTO) ─────────────────────────
+  const handleCancelOrder = (item: PedidoItem) => {
+    if (item.estado !== 'draft' && item.estado !== 'sent') {
+      Alert.alert('Aviso', 'Solo se pueden cancelar pedidos en estado PRESUPUESTO.');
+      return;
+    }
+
+    Alert.alert(
+      'Cancelar Pedido',
+      `¿Confirmás la cancelación del pedido ${item.numero_pedido}? Esta acción también lo cancela en el sistema.`,
+      [
+        { text: 'Volver', style: 'cancel' },
+        {
+          text: 'Cancelar Pedido',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const cuit = cuitOverride || await authStorage.getCuitFromStorage();
+              const baseUrl = getBaseUrl();
+              const res = await fetch(`${baseUrl}/cancelar-pedido`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  numero_pedido: item.numero_pedido,
+                  cuit,
+                }),
+              });
+              const json = await res.json();
+              if (!res.ok) {
+                Alert.alert('No se pudo cancelar', json?.error || 'Error desconocido.');
+                return;
+              }
+              // Actualizamos el estado localmente para que la tarjeta se re-renderice
+              setPedidos(prev =>
+                prev.map(p =>
+                  p.numero_pedido === item.numero_pedido ? { ...p, estado: 'cancel' } : p
+                )
+              );
+              Alert.alert('Listo', 'El pedido fue cancelado.');
+            } catch (e) {
+              Alert.alert('Error', 'No se pudo cancelar el pedido. Intentá nuevamente.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const formatCurrency = (value: number) => value.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   
   const getEstadoInfo = (estado: string) => {
@@ -224,6 +272,8 @@ const Pedidos: React.FC = () => {
     const rawInvStatus = item.estado_facturacion || item.invoice_status || 'no'; 
     const facturacionInfo = getFacturacionInfo(rawInvStatus);
 
+    const isPresupuesto = item.estado === 'draft' || item.estado === 'sent';
+
     return (
       <View style={s.cardContainer}>
           <ContenedorFacturaSvg style={StyleSheet.absoluteFill} width="100%" height="100%" preserveAspectRatio="none"/>
@@ -252,8 +302,19 @@ const Pedidos: React.FC = () => {
                       </View>
 
                       <View style={s.actionsRow}>
-                          <TouchableOpacity style={s.iconButton} onPress={() => handleDownloadPdf(item.numero_pedido)}><Feather name="download" size={20} color="#2B2B2B" /></TouchableOpacity>
-                          <TouchableOpacity style={s.iconButton}><Feather name="info" size={20} color="#2B2B2B" /></TouchableOpacity>
+                          <TouchableOpacity style={s.iconButton} onPress={() => handleDownloadPdf(item.numero_pedido)}>
+                              <Feather name="download" size={20} color="#2B2B2B" />
+                          </TouchableOpacity>
+
+                          {isPresupuesto && (
+                              <TouchableOpacity style={s.iconButton} onPress={() => handleCancelOrder(item)}>
+                                  <Feather name="x-circle" size={20} color="#CC0000" />
+                              </TouchableOpacity>
+                          )}
+
+                          <TouchableOpacity style={s.iconButton}>
+                              <Feather name="info" size={20} color="#2B2B2B" />
+                          </TouchableOpacity>
                       </View>
                   </View>
               </View>

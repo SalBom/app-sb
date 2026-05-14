@@ -2479,6 +2479,77 @@ def confirmar_pedido():
     finally:
         release_odoo_client(client)
 
+@app.route('/cancelar-pedido', methods=['POST'])
+def cancelar_pedido():
+    data = request.get_json() or {}
+    order_id = data.get('order_id') or data.get('pedido_id')
+    name     = data.get('name') or data.get('numero_pedido') or data.get('nro_pedido')
+    cuit     = (data.get('cuit') or '').strip()
+
+    if not order_id and not name:
+        return jsonify({"error": "Falta order_id o numero_pedido"}), 400
+
+    def _op(client):
+        Order = client.env['sale.order']
+        order = None
+
+        if order_id:
+            try:
+                br = Order.browse(int(order_id))
+                if br and br.exists():
+                    order = br
+            except Exception:
+                order = None
+
+        if (order is None) and name:
+            res = Order.search([('name', '=', name)], limit=1)
+            if res:
+                order = res[0]
+
+        if not order:
+            return jsonify({"error": f"Pedido no encontrado (order_id={order_id}, name={name})"}), 404
+
+        # 🔒 Releemos el estado desde Odoo: no confiamos en lo que mande la app.
+        current_state = str(order.state)
+        if current_state not in ('draft', 'sent'):
+            return jsonify({
+                "error": "Solo se pueden cancelar pedidos en estado PRESUPUESTO.",
+                "estado_actual": current_state,
+                "code": "INVALID_STATE"
+            }), 409
+
+        # 🔒 (Opcional pero recomendado) chequeo de propiedad del pedido
+        if cuit:
+            partner = client.env['res.partner'].search([('vat', '=', cuit)], limit=1)
+            if partner:
+                user = client.env['res.users'].search([('partner_id', '=', int(partner[0].id))], limit=1)
+                if user:
+                    order_user = order.user_id
+                    if order_user and int(order_user.id) != int(user[0].id):
+                        return jsonify({"error": "No tenés permiso para cancelar este pedido.", "code": "FORBIDDEN"}), 403
+
+        try:
+            order.action_cancel()
+        except Exception:
+            try:
+                order.write({"state": "cancel"})
+            except Exception as e2:
+                log.error("❌ no se pudo cancelar pedido:\n" + traceback.format_exc())
+                return jsonify({"error": str(e2)}), 500
+
+        return jsonify({
+            "ok": True,
+            "pedido_id": int(order.id),
+            "numero_pedido": order.name,
+            "estado": str(order.state)
+        })
+
+    try:
+        return execute_odoo_operation(_op)
+    except Exception as e:
+        log.error(f"❌ cancelar_pedido:\n{traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/usuario-perfil', methods=['GET'])
 def usuario_perfil():
     client = get_odoo_client()
