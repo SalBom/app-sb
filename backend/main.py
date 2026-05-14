@@ -2479,75 +2479,116 @@ def confirmar_pedido():
     finally:
         release_odoo_client(client)
 
-@app.route('/cancelar-pedido', methods=['POST'])
+@app.route('/cancelar_pedido', methods=['POST'])
 def cancelar_pedido():
-    data = request.get_json() or {}
-    order_id = data.get('order_id') or data.get('pedido_id')
-    name     = data.get('name') or data.get('numero_pedido') or data.get('nro_pedido')
-    cuit     = (data.get('cuit') or '').strip()
+    """
+    Cancela un pedido de venta en Odoo.
 
-    if not order_id and not name:
-        return jsonify({"error": "Falta order_id o numero_pedido"}), 400
+    Body esperado:
+    {
+        "pedido_id": 123
+    }
 
-    def _op(client):
-        Order = client.env['sale.order']
-
-        # ✅ search_read devuelve dicts, evita el lazy loading de odooly
-        domain = [('id', '=', int(order_id))] if order_id else [('name', '=', name)]
-        results = Order.search_read(domain, ['id', 'name', 'state', 'user_id'], limit=1)
-
-        if not results:
-            return jsonify({"error": f"Pedido no encontrado (order_id={order_id}, name={name})"}), 404
-
-        order_data = results[0]
-        order_id_int = order_data['id']
-        order_name = order_data.get('name', '')
-        current_state = str(order_data.get('state', ''))
-
-        if current_state not in ('draft', 'sent'):
-            return jsonify({
-                "error": "Solo se pueden cancelar pedidos en estado PRESUPUESTO.",
-                "estado_actual": current_state,
-                "code": "INVALID_STATE"
-            }), 409
-
-        # 🔒 Chequeo de propiedad del pedido
-        if cuit:
-            partner = client.env['res.partner'].search([('vat', '=', cuit)], limit=1)
-            if partner:
-                user = client.env['res.users'].search([('partner_id', '=', int(partner[0].id))], limit=1)
-                if user:
-                    order_user = order_data.get('user_id')
-                    order_user_id = order_user[0] if isinstance(order_user, (list, tuple)) else order_user
-                    if order_user_id and int(order_user_id) != int(user[0].id):
-                        return jsonify({"error": "No tenés permiso para cancelar este pedido.", "code": "FORBIDDEN"}), 403
-
-        # ✅ Cancelar usando _execute para evitar el __getattr__ de odooly
-        try:
-            Order._execute('action_cancel', [[order_id_int]])
-        except Exception:
-            try:
-                Order._execute('write', [[order_id_int], {"state": "cancel"}])
-            except Exception as e2:
-                log.error("❌ no se pudo cancelar pedido:\n" + traceback.format_exc())
-                return jsonify({"error": str(e2)}), 500
-
-        # Re-leer estado para confirmar
-        updated = Order.search_read([('id', '=', order_id_int)], ['state'], limit=1)
-        final_state = updated[0]['state'] if updated else 'cancel'
-
-        return jsonify({
-            "ok": True,
-            "pedido_id": order_id_int,
-            "numero_pedido": order_name,
-            "estado": str(final_state)
-        })
+    También acepta:
+    {
+        "order_id": 123
+    }
+    """
 
     try:
+        data = request.get_json(silent=True) or {}
+
+        pedido_id = data.get("pedido_id") or data.get("order_id") or data.get("id")
+
+        if not pedido_id:
+            return jsonify({
+                "success": False,
+                "error": "Falta el ID del pedido"
+            }), 400
+
+        try:
+            pedido_id = int(pedido_id)
+        except (TypeError, ValueError):
+            return jsonify({
+                "success": False,
+                "error": "El ID del pedido debe ser numérico"
+            }), 400
+
+        def _op(client):
+            SaleOrder = client.env['sale.order']
+
+            # ✅ Corrección importante:
+            # No usar order.state porque Odooly intenta llamar fields_get_keys.
+            pedido_data = SaleOrder.read(
+                [pedido_id],
+                ['id', 'name', 'state']
+            )
+
+            if not pedido_data:
+                return jsonify({
+                    "success": False,
+                    "error": "Pedido no encontrado"
+                }), 404
+
+            pedido = pedido_data[0]
+            current_state = pedido.get('state')
+            pedido_name = pedido.get('name')
+
+            # Estados habituales en sale.order:
+            # draft = presupuesto
+            # sent = presupuesto enviado
+            # sale = pedido confirmado
+            # done = bloqueado/finalizado
+            # cancel = cancelado
+
+            if current_state == 'cancel':
+                return jsonify({
+                    "success": False,
+                    "error": "El pedido ya está cancelado",
+                    "pedido_id": pedido_id,
+                    "pedido": pedido_name,
+                    "state": current_state
+                }), 400
+
+            if current_state == 'done':
+                return jsonify({
+                    "success": False,
+                    "error": "No se puede cancelar un pedido en estado finalizado/bloqueado",
+                    "pedido_id": pedido_id,
+                    "pedido": pedido_name,
+                    "state": current_state
+                }), 400
+
+            # ✅ Cancelación directa por método del modelo
+            SaleOrder.action_cancel([pedido_id])
+
+            # Volvemos a leer para confirmar el estado final
+            pedido_actualizado = SaleOrder.read(
+                [pedido_id],
+                ['id', 'name', 'state']
+            )
+
+            final_state = pedido_actualizado[0].get('state') if pedido_actualizado else None
+
+            return jsonify({
+                "success": True,
+                "message": "Pedido cancelado correctamente",
+                "pedido_id": pedido_id,
+                "pedido": pedido_name,
+                "estado_anterior": current_state,
+                "estado_actual": final_state
+            }), 200
+
         return execute_odoo_operation(_op)
+
     except Exception as e:
-        log.error(f"❌ cancelar_pedido:\n{traceback.format_exc()}")
-        return jsonify({"error": str(e)}), 500
+        logger.exception("❌ cancelar_pedido:")
+
+        return jsonify({
+            "success": False,
+            "error": "Error al cancelar el pedido",
+            "detalle": str(e)
+        }), 500
 
 @app.route('/usuario-perfil', methods=['GET'])
 def usuario_perfil():
