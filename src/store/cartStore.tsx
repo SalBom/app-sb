@@ -68,7 +68,7 @@ export type ProductoCarrito = ProductoBase & {
   payment_term_id: number; 
 };
 
-export const PRODUCTO_TRANSPORTE_ID = 4011;
+export const PRODUCTO_TRANSPORTE_ID = 33627;
 
 type CartState = {
   items: ProductoCarrito[];

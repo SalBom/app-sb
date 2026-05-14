@@ -19,8 +19,7 @@ import { useCartStore, ClienteSel } from '../../store/cartStore';
 import TarjetaProducto from '../../components/TarjetaProducto';
 import CarritoHeader from '../../components/CarritoHeader';
 import axios from 'axios';
-import { Feather, Ionicons } from '@expo/vector-icons'; 
-import Svg, { Path } from 'react-native-svg';
+import { Ionicons } from '@expo/vector-icons'; 
 
 import { getCuitFromStorage } from '../../utils/authStorage';
 import { API_URL } from '../../config';
@@ -56,25 +55,6 @@ function normalizeClientes(lista: any[]): ClienteSel[] {
     };
   }).filter(x => x.id && x.name);
 }
-
-// --- GEOMETRÍA EXACTA ---
-const SCREEN_W = Dimensions.get('window').width;
-const PADDING_RIGHT = 15; 
-const CARD_WIDTH = SCREEN_W - PADDING_RIGHT; 
-const CARD_CUT_SIZE = 30; 
-
-const ALERT_WIDTH = CARD_WIDTH - CARD_CUT_SIZE; 
-const ALERT_HEIGHT = 34; 
-const ALERT_INTERNAL_CUT = 12; 
-
-const alertPath = `
-  M 0,0 
-  H ${ALERT_WIDTH} 
-  V ${ALERT_HEIGHT - ALERT_INTERNAL_CUT} 
-  L ${ALERT_WIDTH - ALERT_INTERNAL_CUT},${ALERT_HEIGHT} 
-  H 0 
-  Z
-`;
 
 interface Props {
   onNext: () => void;
@@ -124,7 +104,6 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
       }
       setClientes(normList);
       
-      // Autoseleccionar el primero si no hay ninguno
       if (normList.length > 0 && !clienteSeleccionado) {
           handleSelectCliente(normList[0]);
       }
@@ -224,11 +203,6 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
           return;
       }
 
-      const sinStock = items.filter(item => stockMap[item.product_id] === 'red');
-      if (sinStock.length > 0) {
-          Alert.alert("Stock Insuficiente", "Por favor elimina los productos marcados en rojo para continuar.", [{ text: "Entendido" }]);
-          return;
-      }
       items.forEach(item => {
           const { d1, d2 } = getItemDiscounts(item);
           updateDiscount(item.product_id, { discount1: d1, discount2: d2 });
@@ -253,47 +227,28 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
   
   const renderItem = ({ item }: any) => {
     const { effectivePct } = getItemDiscounts(item);
-    const isOutOfStock = stockMap[item.product_id] === 'red';
 
     return (
         <View style={styles.itemContainer}> 
-            <View style={{ zIndex: 2 }}> 
-                <TarjetaProducto
-                  product_id={item.product_id}
-                  name={item.name}
-                  brand={item.brand || 'SHIMURA'}
-                  code={item.default_code || 'SH-S10'}
-                  price={item.price_unit}
-                  listPrice={item.list_price}
-                  quantity={item.product_uom_qty}
-                  image_1920={item.image_1920}
-                  image_md_url={item.image_md_url}
-                  image_thumb_url={item.image_thumb_url}
-                  paymentTermId={item.payment_term_id}
-                  discountPct={effectivePct}
-                  discountRules={discountRules} 
-                  onPaymentTermChange={(newId) => updateItemPaymentTerm(item.product_id, newId)}
-                  onAdd={() => updateQuantity(item.product_id, item.product_uom_qty + 1)}
-                  onSubtract={() => updateQuantity(item.product_id, Math.max(1, item.product_uom_qty - 1))}
-                  onDelete={() => removeFromCart(item.product_id)}
-                />
-            </View>
-
-            {isOutOfStock && (
-                <View style={styles.alertWrapper}>
-                    <View style={StyleSheet.absoluteFill}>
-                        <Svg width={ALERT_WIDTH} height={ALERT_HEIGHT}>
-                            <Path d={alertPath} fill="#EF4444" />
-                        </Svg>
-                    </View>
-                    <View style={styles.alertContent}>
-                        <Feather name="alert-circle" size={14} color="#FFF" style={{ marginRight: 6 }} />
-                        <Text style={styles.stockAlertText}>
-                            SIN STOCK - <Text style={styles.boldText}>ELIMINAR</Text>
-                        </Text>
-                    </View>
-                </View>
-            )}
+            <TarjetaProducto
+                product_id={item.product_id}
+                name={item.name}
+                brand={item.brand || 'SHIMURA'}
+                code={item.default_code || 'SH-S10'}
+                price={item.price_unit}
+                listPrice={item.list_price}
+                quantity={item.product_uom_qty}
+                image_1920={item.image_1920}
+                image_md_url={item.image_md_url}
+                image_thumb_url={item.image_thumb_url}
+                paymentTermId={item.payment_term_id}
+                discountPct={effectivePct}
+                discountRules={discountRules} 
+                onPaymentTermChange={(newId) => updateItemPaymentTerm(item.product_id, newId)}
+                onAdd={() => updateQuantity(item.product_id, item.product_uom_qty + 1)}
+                onSubtract={() => updateQuantity(item.product_id, Math.max(1, item.product_uom_qty - 1))}
+                onDelete={() => removeFromCart(item.product_id)}
+            />
         </View>
     );
   };
@@ -302,7 +257,6 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
     <View style={styles.headerContainerWrapper}>
         <CarritoHeader step={1} />
         
-        {/* SELECTOR DE CLIENTE INYECTADO AQUÍ */}
         <View style={styles.clientSelectorWrapper}>
             <Text style={styles.clientLabel}>CLIENTE SELECCIONADO</Text>
             <Pressable 
@@ -352,7 +306,6 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
         </TouchableWithoutFeedback>
       </View>
 
-      {/* MODAL DEL BUSCADOR DE CLIENTES */}
       <Modal visible={modalCliente} animationType="slide" transparent>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
@@ -390,76 +343,19 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
-  
-  headerContainerWrapper: {
-      paddingBottom: 15,
-  },
-  clientSelectorWrapper: {
-      paddingHorizontal: 20,
-      marginTop: 10,
-  },
-  clientLabel: {
-      fontSize: 12,
-      fontFamily: 'BarlowCondensed-SemiBold',
-      color: '#6B7280',
-      marginBottom: 6,
-      marginLeft: 4
-  },
-  select: { 
-      height: 46, 
-      borderRadius: 14, 
-      paddingHorizontal: 15, 
-      backgroundColor: '#F9FAFB', 
-      borderWidth: 1, 
-      borderColor: '#E7EAED', 
-      flexDirection: 'row', 
-      alignItems: 'center' 
-  },
+  headerContainerWrapper: { paddingBottom: 15 },
+  clientSelectorWrapper: { paddingHorizontal: 20, marginTop: 10 },
+  clientLabel: { fontSize: 12, fontFamily: 'BarlowCondensed-SemiBold', color: '#6B7280', marginBottom: 6, marginLeft: 4 },
+  select: { height: 46, borderRadius: 14, paddingHorizontal: 15, backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E7EAED', flexDirection: 'row', alignItems: 'center' },
   selectText: { flex: 1, fontSize: 14, color: '#121212', fontWeight: '700' },
   chevron: { fontSize: 16, opacity: 0.6 },
-
-  itemContainer: {
-      marginBottom: 2, 
-  },
-  alertWrapper: {
-      width: ALERT_WIDTH, 
-      height: ALERT_HEIGHT,
-      marginTop: -20, 
-      marginLeft: 0,
-      zIndex: 1, 
-      justifyContent: 'flex-end', 
-      paddingBottom: 6,
-      alignSelf: 'flex-start', 
-  },
-  alertContent: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      width: '100%',
-      paddingLeft: 0
-  },
-  stockAlertText: {
-      color: '#FFF',
-      fontFamily: 'BarlowCondensed-Regular',
-      fontSize: 13,
-      letterSpacing: 0.5,
-      marginTop: 2 
-  },
-  boldText: {
-      fontFamily: 'BarlowCondensed-Bold',
-  },
-  footerContainer: {
-    backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#f0f0f0',
-    paddingHorizontal: 20, paddingTop: 15, shadowColor: '#000',
-    shadowOffset: { width: 0, height: -3 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 5, zIndex: 100,
-  },
+  itemContainer: { marginBottom: 2 },
+  footerContainer: { backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#f0f0f0', paddingHorizontal: 20, paddingTop: 15, shadowColor: '#000', shadowOffset: { width: 0, height: -3 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 5, zIndex: 100 },
   subtotalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
   subtotalLabel: { color: '#313131', fontSize: 16, fontFamily: 'BarlowCondensed-Light', textTransform: 'uppercase' },
   subtotalAmount: { color: '#313131', fontSize: 28, fontFamily: 'BarlowCondensed-SemiBold', fontWeight: '600' },
   botonContinuar: { backgroundColor: '#1C9BD8', height: 48, borderRadius: 999, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 3 },
   botonContinuarTexto: { color: '#fff', fontSize: 16, fontFamily: 'BarlowCondensed-Bold', fontWeight: '700', letterSpacing: 1 },
-
-  // Estilos del Modal
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   modalCard: { backgroundColor: '#fff', maxHeight: '70%', borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingTop: 12 },
   modalTitle: { fontSize: 16, fontWeight: '700', paddingHorizontal: 16, paddingBottom: 8 },

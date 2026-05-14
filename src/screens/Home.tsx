@@ -5,7 +5,6 @@ import {
   StyleSheet,
   Dimensions,
   Animated,
-  Image as RNImage, 
   TextInput,
   PanResponder,
   Pressable,
@@ -19,7 +18,7 @@ import { useNavigation, useIsFocused } from '@react-navigation/native';
 import { Image } from 'expo-image';
 import axios from 'axios'; 
 import { useVideoPlayer, VideoView } from 'expo-video';
-import { API_URL } from '../config'; // <--- IMPORTACIÓN CENTRALIZADA
+import { API_URL } from '../config'; 
 
 // SVGs
 import FlechaCategoriaSvg from '../../assets/flechaCategoria.svg';
@@ -60,6 +59,10 @@ const HERO_IMG_H = 378;
 const SVG_W = SCREEN_W * 0.60;
 const SVG_H = 120;             
 const CATS_STACK_H = 350 + SVG_H;
+
+// --- OPTIMIZACIÓN: Valores fijos en lugar de onLayout ---
+const CATS_SECTION_Y_FIXED = 480; 
+const NOSOTROS_SECTION_Y_FIXED = 1350; 
 
 // --- CONFIG POPUPS ---
 const POPUP_W = Math.min(SCREEN_W * 0.95, 380); 
@@ -108,8 +111,25 @@ export default function Home() {
   const featuredListRef = useRef<any[]>([]);
   const currentIndexRef = useRef(0);
   const scrollY = useRef(new Animated.Value(0)).current;
-  const [catsSectionY, setCatsSectionY] = useState(0);
-  const [nosotrosSectionY, setNosotrosSectionY] = useState(0);
+
+  // --- OPTIMIZACIÓN: Apagar video al scrollear ---
+  useEffect(() => {
+    if (!player) return;
+    const scrollListenerId = scrollY.addListener(({ value }) => {
+      // Si el scroll supera la altura del video (aprox 350px) y el video está reproduciendo, lo pausamos
+      if (value > 350 && player.playing) {
+        player.pause();
+      } 
+      // Si volvemos arriba y la pantalla está en foco, lo reanudamos
+      else if (value <= 350 && !player.playing && isFocused) {
+        player.play();
+      }
+    });
+
+    return () => {
+      scrollY.removeListener(scrollListenerId);
+    };
+  }, [player, isFocused]);
 
   const [showPopup, setShowPopup] = useState(false);
   const [popupSlides, setPopupSlides] = useState<any[]>([]);
@@ -131,9 +151,9 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (isFocused) {
+    if (isFocused && scrollY as any <= 350) {
       loadFeatured();
-      if (player) player.play(); 
+      if (player && !player.playing) player.play(); 
     } else {
       if (player) player.pause();
     }
@@ -214,7 +234,7 @@ export default function Home() {
   };
 
   const openMinoristaLink = () => {
-      Linking.openURL('https://share.google/9avSJoSckfq4iFjoZ').catch(() => {});
+      Linking.openURL('[https://share.google/9avSJoSckfq4iFjoZ](https://share.google/9avSJoSckfq4iFjoZ)').catch(() => {});
   };
 
   const renderPopupSlide = ({ item }: any) => {
@@ -248,6 +268,10 @@ export default function Home() {
                             pagingEnabled
                             showsHorizontalScrollIndicator={false}
                             keyExtractor={(prod:any) => String(prod.id)}
+                            initialNumToRender={2}
+                            maxToRenderPerBatch={2}
+                            windowSize={3}
+                            removeClippedSubviews={true}
                             renderItem={({item: prod}) => (
                                 <View style={s.productSlide}>
                                     <Image source={{ uri: prod.img }} style={s.productImg} contentFit="contain" />
@@ -339,13 +363,17 @@ export default function Home() {
         bounces={false}
         onScroll={Animated.event([{ nativeEvent: { contentOffset: { y: scrollY } } }], { useNativeDriver: true })}
         scrollEventThrottle={16} 
+        removeClippedSubviews={true}
     >
       <View style={s.heroWrap}>
         <View style={s.heroFrame}>
           <View style={s.heroImgBox}>
             <VideoView player={player} style={{ width: HERO_W, height: HERO_IMG_H }} contentFit="cover" nativeControls={false} />
           </View>
-          <VectorHomeSvg width={296} height={270} preserveAspectRatio="xMidYMid meet" style={{ position: 'absolute', right: -70, top: 190 }} pointerEvents="none" />
+          {/* OPTIMIZACIÓN: renderToHardwareTextureAndroid para SVGs estáticos gigantes */}
+          <View pointerEvents="none" style={{ position: 'absolute', right: -70, top: 190 }} renderToHardwareTextureAndroid={true} shouldRasterizeIOS={true}>
+              <VectorHomeSvg width={296} height={270} preserveAspectRatio="xMidYMid meet" />
+          </View>
         </View>
         <View style={s.heroTextWrap}>
           <Text style={s.heroTitle}>MAQUINAS Y{"\n"}HERRAMIENTAS</Text>
@@ -353,32 +381,34 @@ export default function Home() {
         </View>
       </View>
 
-      <View style={[s.headerRow, { marginLeft: -25 }]}>
+      <View style={[s.headerRow, { marginLeft: -25 }]} renderToHardwareTextureAndroid={true}>
         <FlechaCategoriaSvg width={115} height={36} preserveAspectRatio="xMidYMid meet" />
         <Text style={s.headerTitle}>CATEGORÍAS</Text>
       </View>
       
-      {/* SECCIÓN CATEGORÍAS */}
-      <View style={{ marginTop: 20, height: CATS_STACK_H }} onLayout={(event) => setCatsSectionY(event.nativeEvent.layout.y)}>
-        <ScrollRevealItem scrollY={scrollY} sectionY={catsSectionY} itemY={0} direction="right" style={{ position: 'absolute', top: 0, right: -16, zIndex: 10, width: SVG_W, height: SVG_H }}>
+      {/* SECCIÓN CATEGORÍAS (Usando constantes fijas) */}
+      <View style={{ marginTop: 20, height: CATS_STACK_H }}>
+        <ScrollRevealItem scrollY={scrollY} sectionY={CATS_SECTION_Y_FIXED} itemY={0} direction="right" style={{ position: 'absolute', top: 0, right: -16, zIndex: 10, width: SVG_W, height: SVG_H }}>
             <Pressable onPress={() => go('Maquinaria para Taller')} style={{flex:1}}><CatTallerComp /></Pressable>
         </ScrollRevealItem>
-        <ScrollRevealItem scrollY={scrollY} sectionY={catsSectionY} itemY={70} direction="left" style={{ position: 'absolute', top: 70, left: -16, zIndex: 9, width: SVG_W, height: SVG_H }}>
+        <ScrollRevealItem scrollY={scrollY} sectionY={CATS_SECTION_Y_FIXED} itemY={70} direction="left" style={{ position: 'absolute', top: 70, left: -16, zIndex: 9, width: SVG_W, height: SVG_H }}>
             <Pressable onPress={() => go('Maquinaria para Jardín')} style={{flex:1}}><CatJardinComp /></Pressable>
         </ScrollRevealItem>
-        <ScrollRevealItem scrollY={scrollY} sectionY={catsSectionY} itemY={140} direction="right" style={{ position: 'absolute', top: 140, right: -16, zIndex: 8, width: SVG_W, height: SVG_H }}>
+        <ScrollRevealItem scrollY={scrollY} sectionY={CATS_SECTION_Y_FIXED} itemY={140} direction="right" style={{ position: 'absolute', top: 140, right: -16, zIndex: 8, width: SVG_W, height: SVG_H }}>
             <Pressable onPress={() => go('Bombas, Filtros y Motobombas')} style={{flex:1}}><CatBombasComp /></Pressable>
         </ScrollRevealItem>
-        <ScrollRevealItem scrollY={scrollY} sectionY={catsSectionY} itemY={210} direction="left" style={{ position: 'absolute', top: 210, left: -16, zIndex: 7, width: SVG_W, height: SVG_H }}>
+        <ScrollRevealItem scrollY={scrollY} sectionY={CATS_SECTION_Y_FIXED} itemY={210} direction="left" style={{ position: 'absolute', top: 210, left: -16, zIndex: 7, width: SVG_W, height: SVG_H }}>
             <Pressable onPress={() => go('Grupos y Motores')} style={{flex:1}}><CatGruposComp /></Pressable>
         </ScrollRevealItem>
-        <ScrollRevealItem scrollY={scrollY} sectionY={catsSectionY} itemY={280} direction="right" style={{ position: 'absolute', top: 280, right: -16, zIndex: 6, width: SVG_W, height: SVG_H }}>
+        <ScrollRevealItem scrollY={scrollY} sectionY={CATS_SECTION_Y_FIXED} itemY={280} direction="right" style={{ position: 'absolute', top: 280, right: -16, zIndex: 6, width: SVG_W, height: SVG_H }}>
             <Pressable onPress={() => go('Aceites')} style={{flex:1}}><CatAccesoriosComp /></Pressable>
         </ScrollRevealItem>
       </View>
 
       <View style={s.featuredWrap}>
-        <ProductosDestacadosSvg width={SCREEN_W - 24} height={120} preserveAspectRatio="xMidYMid meet" style={{ position: 'absolute', top: 22, left: 12, zIndex: 2 }} />
+        <View style={{ position: 'absolute', top: 22, left: 12, zIndex: 2 }} renderToHardwareTextureAndroid={true}>
+            <ProductosDestacadosSvg width={SCREEN_W - 24} height={120} preserveAspectRatio="xMidYMid meet" />
+        </View>
         {currentItem && (
             <Animated.View key={currentItem.id} style={{ flex: 1, opacity: contentOpacity, zIndex: 4 }}>
                 <View style={s.featuredInfoContainer}>
@@ -388,7 +418,9 @@ export default function Home() {
                 <View style={s.featuredImgContainer}><Image source={{ uri: currentItem.img }} style={s.featuredImg} contentFit="contain" cachePolicy="memory-disk" transition={200} /></View>
             </Animated.View>
         )}
-        <FondoDestacadoSvg width={SCREEN_W} height={167} preserveAspectRatio="xMidYMid meet" style={{ position: 'absolute', bottom: -3, left: 0, zIndex: 1 }} />
+        <View style={{ position: 'absolute', bottom: -3, left: 0, zIndex: 1 }} renderToHardwareTextureAndroid={true}>
+            <FondoDestacadoSvg width={SCREEN_W} height={167} preserveAspectRatio="xMidYMid meet" />
+        </View>
         {featuredList.length > 0 && (
             <>
                 <Animated.View style={{ position: 'absolute', right: 10, bottom: 95, zIndex: 12, transform: [{ scale: mouseScale }] }}>
@@ -403,19 +435,19 @@ export default function Home() {
         )}
       </View>
 
-      <View style={s.nosotrosWrap} onLayout={(event) => setNosotrosSectionY(event.nativeEvent.layout.y)}>
+      <View style={s.nosotrosWrap}>
         <View style={s.nosotrosRibbon}>
-          <ScrollRevealItem scrollY={scrollY} sectionY={nosotrosSectionY} itemY={0} direction="left" style={s.nosotrosLeft}><Text style={s.nosotrosTitle}>NOSOTROS</Text></ScrollRevealItem>
-          <ScrollRevealItem scrollY={scrollY} sectionY={nosotrosSectionY} itemY={0} direction="right" style={s.nosotrosRight}><Text style={s.nosotrosDesde}>DESDE</Text><Text style={s.nosotrosYear}>1971</Text></ScrollRevealItem>
+          <ScrollRevealItem scrollY={scrollY} sectionY={NOSOTROS_SECTION_Y_FIXED} itemY={0} direction="left" style={s.nosotrosLeft}><Text style={s.nosotrosTitle}>NOSOTROS</Text></ScrollRevealItem>
+          <ScrollRevealItem scrollY={scrollY} sectionY={NOSOTROS_SECTION_Y_FIXED} itemY={0} direction="right" style={s.nosotrosRight}><Text style={s.nosotrosDesde}>DESDE</Text><Text style={s.nosotrosYear}>1971</Text></ScrollRevealItem>
         </View>
-        <RNImage source={NosotrosFoto} style={{ width: SCREEN_W, height: 215, marginTop: 0 }} resizeMode="cover" />
+        <Image source={NosotrosFoto} style={{ width: SCREEN_W, height: 215, marginTop: 0 }} contentFit="cover" cachePolicy="memory-disk" />
         <View style={{ paddingHorizontal: 14, paddingTop: 16, paddingBottom: 8 }}>
           <Text style={{ fontFamily: 'BarlowCondensed-Bold', fontSize: 28, color: '#2B2B2B' }}>SAL-BOM ABRE SUS PUERTAS{"\n"}EN 1971 EN LA LOCALIDAD DE{"\n"}SAN TELMO</Text>
           <Text style={{ marginTop: 8, fontSize: 13, lineHeight: 18, color: '#4A4A4A' }}>Contamos con una larga trayectoria en la comercialización de máquinas y herramientas en el mercado argentino. Para la industria ferretera ofrecemos diversidad de productos de gran calidad y servicio postventa garantizado.</Text>
         </View>
       </View>
 
-      <View style={s.cardsWrap}>
+      <View style={s.cardsWrap} renderToHardwareTextureAndroid={true}>
         <View style={s.card}><View style={s.cardIconCircle}><CartCardSvg width={48} height={48} /></View><View style={s.cardTextBox}><Text style={s.cardTitle}>ARMÁ TU PROPIO PEDIDO</Text><Text style={s.cardDesc}>Cotizá, comprá y elegí los productos que estabas buscando</Text></View></View>
         <View style={s.card}><View style={s.cardIconCircle}><UserCardSvg width={48} height={48} /></View><View style={s.cardTextBox}><Text style={s.cardTitle}>ATENCIÓN EN VIVO</Text><Text style={s.cardDesc}>Hablá con un representante de ventas en vivo a través de la intranet</Text></View></View>
         <View style={s.card}><View style={s.cardIconCircle}><CCardSvg width={48} height={48} /></View><View style={s.cardTextBox}><Text style={s.cardTitle}>MÉTODOS DE PAGO</Text><Text style={s.cardDesc}>Conocé nuestras condiciones de pago.</Text></View></View>
@@ -423,7 +455,7 @@ export default function Home() {
       </View>
 
       <View style={s.minoristaWrap}>
-        <RNImage source={MinoristaImg} style={{ width: SCREEN_W, height: 210 }} resizeMode="cover" />
+        <Image source={MinoristaImg} style={{ width: SCREEN_W, height: 210 }} contentFit="cover" cachePolicy="memory-disk" />
         <View style={s.minoristaLower}>
           <Text style={s.minoristaTitle}>SAL-BOM MINORISTA</Text>
           <Text style={s.minoristaDesc}>Conocé a las marcas que acompañan en el día a día al grupo Sal-Bom S.R.L, todas estas marcas podés encontrarlas en nuestro local minorista.</Text>
@@ -469,6 +501,9 @@ export default function Home() {
                     pagingEnabled
                     showsHorizontalScrollIndicator={false}
                     scrollEventThrottle={16}
+                    initialNumToRender={1}
+                    windowSize={2}
+                    removeClippedSubviews={true}
                     renderItem={renderPopupSlide}
                     style={{ flex: 1, width: '100%' }}
                 />

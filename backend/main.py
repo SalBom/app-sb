@@ -2208,10 +2208,10 @@ def _upsert_order_logic(client, data):
             raw_id = clean_int(it.get('product_id'))
             if not raw_id: continue
             
-            if str(raw_id) == '4011':
+            if str(raw_id) == '33627':
                 pp = client.env['product.product'].search([('default_code', '=', 'FLETE')], limit=1)
                 if not pp:
-                    pp = client.env['product.product'].search(['|', ('id', '=', 4011), ('product_tmpl_id', '=', 4011)], limit=1)
+                    pp = client.env['product.product'].search(['|', ('id', '=', 33627), ('product_tmpl_id', '=', 33627)], limit=1)
             else:
                 pp = client.env['product.product'].search([('product_tmpl_id', '=', raw_id)], limit=1)
                 if not pp:
@@ -2220,7 +2220,7 @@ def _upsert_order_logic(client, data):
             if not pp: continue
                 
             variant_id = int(pp[0].id)
-            if str(raw_id) != '4011' and variant_id in vistos: continue 
+            if str(raw_id) != '33627' and variant_id in vistos: continue 
             vistos.add(variant_id)
 
             qty = float(it.get('qty') or it.get('product_uom_qty') or it.get('quantity') or 1)
@@ -2228,7 +2228,7 @@ def _upsert_order_logic(client, data):
             name = it.get('name')
             item_term_id = clean_int(it.get('payment_term_id')) or global_term_id or 0
 
-            if str(raw_id) == '4011' and immediate_term_id:
+            if str(raw_id) == '33627' and immediate_term_id:
                 item_term_id = immediate_term_id
 
             d1 = float(it.get('discount1', 0) or 0.0)
@@ -2257,7 +2257,7 @@ def _upsert_order_logic(client, data):
             if name: line_vals["name"] = str(name)
 
             is_offer = False
-            if str(raw_id) != '4011':
+            if str(raw_id) != '33627':
                 is_offer = (lst_price > 0.0) and ((lst_price - price) > 0.01)
 
             group_key = (is_offer, item_term_id)

@@ -241,7 +241,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const processItemsForTransport = (sourceItems: any[], ignoreTrans: boolean = isTransportIgnored) => {
       const limpios = Array.isArray(sourceItems) ? sourceItems.filter((it: any) => !isNaN(Number(it.product_id)) && Number(it.product_id) < 2147483647) : [];
       const baseLocal = limpios
-          .filter((it: any) => String(it.product_id) !== '4011')
+          .filter((it: any) => String(it.product_id) !== '33627')
           .reduce((acc: number, it: any) => {
               const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
               const price = toNumber(it?.price_unit);
@@ -259,7 +259,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
 
       let hasTrans = false;
       let procesados = limpios.map((it: any) => {
-          if (String(it.product_id) === '4011') {
+          if (String(it.product_id) === '33627') {
               hasTrans = true;
               return { ...it, price_unit: costEnvio, name: nombreEnvioFinal, discount1: 0, discount2: 0, discount3: 0 };
           }
@@ -267,12 +267,12 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       });
 
       if (ignoreTrans) {
-          procesados = procesados.filter((it: any) => String(it.product_id) !== '4011');
+          procesados = procesados.filter((it: any) => String(it.product_id) !== '33627');
           hasTrans = true;
           costEnvio = 0; 
       } else if (esEnvioADomicilio && !hasTrans && limpios.length > 0) {
           procesados.push({
-              product_id: 4011,
+              product_id: 33627,
               name: nombreEnvioFinal,
               default_code: 'FLETE',
               qty: 1,
@@ -318,7 +318,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
 
   const handleRemoveTransport = async () => {
       setIsTransportIgnored(true);
-      const currentItems = useCartStore.getState().items.filter((it: any) => String(it.product_id) !== '4011');
+      const currentItems = useCartStore.getState().items.filter((it: any) => String(it.product_id) !== '33627');
       useCartStore.setState({ items: currentItems });
       setIsSyncingTotals(true);
 
@@ -332,7 +332,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   };
 
   const openEditModal = (item: any) => {
-      if (String(item.product_id) === '4011') {
+      if (String(item.product_id) === '33627') {
           Alert.alert(
               "Eliminar Transporte",
               "¿Deseás eliminar la línea del costo de transporte de este pedido?",
@@ -479,7 +479,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
             </View>
             <View style={styles.headerLine} />
             {itemsProcesados.map((it: any, index: number) => {
-              const isTransport = String(it.product_id) === '4011';
+              const isTransport = String(it.product_id) === '33627';
               const referral = isTransport ? it.name : (it.default_code || it.name || 'SIN REF');
               const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
               const priceUnit = toNumber(it?.price_unit);

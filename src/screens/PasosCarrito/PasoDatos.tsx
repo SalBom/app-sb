@@ -141,7 +141,7 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
     });
 
     const baseParaValidarRegla = itemsLimpios
-        .filter((it:any) => String(it.product_id) !== '4011')
+        .filter((it:any) => String(it.product_id) !== '33627')
         .reduce((acc:number, it:any) => {
             const q = toNum(it.product_uom_qty ?? it.qty ?? it.quantity ?? 1);
             const p = toNum(it.price_unit);
@@ -168,7 +168,7 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
         console.log("Error consultando regla de descuentos", e);
     }
 
-    const itemsConDescuentosAplicados = itemsLimpios.filter((it:any) => String(it.product_id) !== '4011').map((it: any) => {
+    const itemsConDescuentosAplicados = itemsLimpios.filter((it:any) => String(it.product_id) !== '33627').map((it: any) => {
         const isOffer = it.list_price && (it.list_price - it.price_unit > 0.01);
 
         let finalD1 = it.discount1 || 0;
@@ -218,7 +218,7 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
 
     const itemsParaZustand: any[] = [...itemsConDescuentosAplicados];
     itemsParaZustand.push({
-        product_id: 4011,
+        product_id: 33627,
         name: nombreEnvioFinal,
         default_code: 'FLETE',
         product_uom_qty: 1,
@@ -246,7 +246,7 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
     }));
 
     odooItems.push({
-        product_id: 4011,
+        product_id: 33627,
         product_uom_qty: 1,
         price_unit: costoEnvioUSD,
         discount1: 0, discount2: 0, discount3: 0,
