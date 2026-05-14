@@ -2582,7 +2582,7 @@ def cancelar_pedido():
         return execute_odoo_operation(_op)
 
     except Exception as e:
-        logger.exception("❌ cancelar_pedido:")
+        app.logger.exception("❌ cancelar_pedido:")
 
         return jsonify({
             "success": False,
