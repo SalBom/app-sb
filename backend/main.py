@@ -2491,26 +2491,19 @@ def cancelar_pedido():
 
     def _op(client):
         Order = client.env['sale.order']
-        order = None
 
-        if order_id:
-            try:
-                br = Order.browse(int(order_id))
-                if br and br.exists():
-                    order = br
-            except Exception:
-                order = None
+        # ✅ search_read devuelve dicts, evita el lazy loading de odooly
+        domain = [('id', '=', int(order_id))] if order_id else [('name', '=', name)]
+        results = Order.search_read(domain, ['id', 'name', 'state', 'user_id'], limit=1)
 
-        if (order is None) and name:
-            res = Order.search([('name', '=', name)], limit=1)
-            if res:
-                order = res[0]
-
-        if not order:
+        if not results:
             return jsonify({"error": f"Pedido no encontrado (order_id={order_id}, name={name})"}), 404
 
-        # 🔒 Releemos el estado desde Odoo: no confiamos en lo que mande la app.
-        current_state = str(order.state)
+        order_data = results[0]
+        order_id_int = order_data['id']
+        order_name = order_data.get('name', '')
+        current_state = str(order_data.get('state', ''))
+
         if current_state not in ('draft', 'sent'):
             return jsonify({
                 "error": "Solo se pueden cancelar pedidos en estado PRESUPUESTO.",
@@ -2518,30 +2511,36 @@ def cancelar_pedido():
                 "code": "INVALID_STATE"
             }), 409
 
-        # 🔒 (Opcional pero recomendado) chequeo de propiedad del pedido
+        # 🔒 Chequeo de propiedad del pedido
         if cuit:
             partner = client.env['res.partner'].search([('vat', '=', cuit)], limit=1)
             if partner:
                 user = client.env['res.users'].search([('partner_id', '=', int(partner[0].id))], limit=1)
                 if user:
-                    order_user = order.user_id
-                    if order_user and int(order_user.id) != int(user[0].id):
+                    order_user = order_data.get('user_id')
+                    order_user_id = order_user[0] if isinstance(order_user, (list, tuple)) else order_user
+                    if order_user_id and int(order_user_id) != int(user[0].id):
                         return jsonify({"error": "No tenés permiso para cancelar este pedido.", "code": "FORBIDDEN"}), 403
 
+        # ✅ Cancelar usando _execute para evitar el __getattr__ de odooly
         try:
-            order.action_cancel()
+            Order._execute('action_cancel', [[order_id_int]])
         except Exception:
             try:
-                order.write({"state": "cancel"})
+                Order._execute('write', [[order_id_int], {"state": "cancel"}])
             except Exception as e2:
                 log.error("❌ no se pudo cancelar pedido:\n" + traceback.format_exc())
                 return jsonify({"error": str(e2)}), 500
 
+        # Re-leer estado para confirmar
+        updated = Order.search_read([('id', '=', order_id_int)], ['state'], limit=1)
+        final_state = updated[0]['state'] if updated else 'cancel'
+
         return jsonify({
             "ok": True,
-            "pedido_id": int(order.id),
-            "numero_pedido": order.name,
-            "estado": str(order.state)
+            "pedido_id": order_id_int,
+            "numero_pedido": order_name,
+            "estado": str(final_state)
         })
 
     try:
