@@ -26,6 +26,7 @@ import FlechaPedidoSvg from '../../assets/flechaPedido.svg';
 import { API_URL } from '../config';
 
 type PedidoItem = {
+  pedido_id?: number;
   numero_pedido: string;
   cliente: string;
   fecha: string;
@@ -218,7 +219,7 @@ const Pedidos: React.FC = () => {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  numero_pedido: item.numero_pedido,
+                  pedido_id: item.pedido_id,
                   cuit,
                 }),
               });

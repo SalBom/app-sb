@@ -1506,6 +1506,7 @@ def get_mis_pedidos():
         )
 
         items = [{
+            "pedido_id": p["id"],
             "numero_pedido": p["name"],
             "cliente": p["partner_id"][1] if p["partner_id"] else "Desconocido",
             "fecha": p["date_order"] or "Sin fecha",
