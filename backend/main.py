@@ -1759,17 +1759,12 @@ def descargar_pdf():
 
 @app.route("/factura_pdf")
 def factura_pdf():
-    """
-    Genera y devuelve el PDF de una factura vía XMLRPC (sin auth web).
-    Acepta: ?id=123  o  ?facturaId=FA-A 0001-00000123
-    """
     factura_id = request.args.get("id") or request.args.get("factura_id")
     factura_name = request.args.get("facturaId")
 
     def _op(client):
         nonlocal factura_id
 
-        # 1) Resolver nombre → ID si hace falta
         if not factura_id and factura_name:
             results = client.env['account.move'].search_read(
                 [('name', '=', factura_name)], ['id'], limit=1
@@ -1782,36 +1777,63 @@ def factura_pdf():
         else:
             return jsonify({"error": "Falta el ID de la factura"}), 400
 
-        # 2) Intentar renderizar el PDF vía XMLRPC
-        IrReport = client.env['ir.actions.report']
+        raw_server = (ODOO_SERVER or "").strip().rstrip("/")
+        if raw_server and not raw_server.startswith("http"):
+            odoo_url = f"https://{raw_server}"
+        else:
+            odoo_url = raw_server
+
+        # ── Intento 1: descarga directa con Basic Auth ──
         report_names = [
             'account.report_invoice_with_payments',
             'account.report_invoice',
         ]
-
         for report_name in report_names:
-            for method in ['render_qweb_pdf', '_render_qweb_pdf']:
-                try:
-                    log.info(f"🔍 [factura_pdf] Intentando {method}('{report_name}', [{factura_id_int}])")
-                    pdf_result = IrReport._execute(method, report_name, [factura_id_int])
+            try:
+                url = f"{odoo_url}/report/pdf/{report_name}/{factura_id_int}"
+                log.info(f"🔍 [factura_pdf] Intento Basic Auth: {url}")
+                resp = requests.get(
+                    url,
+                    auth=(ODOO_USER, ODOO_PASSWORD),
+                    timeout=25,
+                    allow_redirects=True
+                )
+                log.info(f"🔍 [factura_pdf] Basic Auth status={resp.status_code}, content-type={resp.headers.get('Content-Type','?')}, size={len(resp.content)}")
+                if resp.status_code == 200 and b'%PDF' in resp.content[:20]:
+                    log.info(f"✅ [factura_pdf] PDF obtenido con Basic Auth + {report_name}")
+                    response = Response(resp.content, content_type='application/pdf')
+                    response.headers['Content-Disposition'] = f'attachment; filename="Factura_{factura_id_int}.pdf"'
+                    return response
+            except Exception as e:
+                log.info(f"⚠️ [factura_pdf] Basic Auth falló: {e}")
 
-                    if pdf_result and pdf_result[0]:
-                        pdf_bytes = pdf_result[0]
-                        if isinstance(pdf_bytes, str):
-                            pdf_bytes = base64.b64decode(pdf_bytes)
-                        elif isinstance(pdf_bytes, bytes) and not pdf_bytes.startswith(b'%PDF'):
-                            pdf_bytes = base64.b64decode(pdf_bytes)
+        # ── Intento 2: web session con cookie ──
+        session_url = f"{odoo_url}/web/session/authenticate"
+        auth_payload = {
+            "jsonrpc": "2.0",
+            "method": "call",
+            "params": {"db": ODOO_DB, "login": ODOO_USER, "password": ODOO_PASSWORD}
+        }
+        try:
+            log.info(f"🔍 [factura_pdf] Intento Web Session...")
+            sess_resp = requests.post(session_url, json=auth_payload, timeout=15)
+            session_id = sess_resp.cookies.get("session_id")
+            if session_id:
+                for report_name in report_names:
+                    url = f"{odoo_url}/report/pdf/{report_name}/{factura_id_int}"
+                    resp = requests.get(url, cookies={"session_id": session_id}, timeout=25)
+                    if resp.status_code == 200 and b'%PDF' in resp.content[:20]:
+                        log.info(f"✅ [factura_pdf] PDF obtenido con Web Session + {report_name}")
+                        response = Response(resp.content, content_type='application/pdf')
+                        response.headers['Content-Disposition'] = f'attachment; filename="Factura_{factura_id_int}.pdf"'
+                        return response
+            else:
+                log.info(f"⚠️ [factura_pdf] Web Session sin cookie")
+        except Exception as e:
+            log.info(f"⚠️ [factura_pdf] Web Session falló: {e}")
 
-                        log.info(f"✅ [factura_pdf] PDF generado con {method} + {report_name}")
-                        resp = Response(pdf_bytes, content_type='application/pdf')
-                        resp.headers['Content-Disposition'] = f'attachment; filename="Factura_{factura_id_int}.pdf"'
-                        return resp
-                except Exception as e:
-                    log.info(f"⚠️ [factura_pdf] {method}('{report_name}') falló: {e}")
-                    continue
-
-        # 3) Fallback: buscar adjunto existente en ir.attachment
-        log.info(f"🔍 [factura_pdf] Intentando leer adjunto de ir.attachment...")
+        # ── Intento 3: adjunto existente en ir.attachment ──
+        log.info(f"🔍 [factura_pdf] Buscando adjunto en ir.attachment...")
         try:
             attachments = client.env['ir.attachment'].search_read(
                 [
@@ -1823,9 +1845,10 @@ def factura_pdf():
                 limit=1,
                 order='id desc'
             )
+            log.info(f"🔍 [factura_pdf] Adjuntos encontrados: {len(attachments)}")
             if attachments and attachments[0].get('datas'):
                 pdf_bytes = base64.b64decode(attachments[0]['datas'])
-                log.info(f"✅ [factura_pdf] PDF encontrado en ir.attachment: {attachments[0]['name']}")
+                log.info(f"✅ [factura_pdf] PDF desde adjunto: {attachments[0]['name']}")
                 resp = Response(pdf_bytes, content_type='application/pdf')
                 resp.headers['Content-Disposition'] = f'attachment; filename="{attachments[0]["name"]}"'
                 return resp
@@ -1833,7 +1856,7 @@ def factura_pdf():
             log.info(f"⚠️ [factura_pdf] ir.attachment falló: {e}")
 
         return jsonify({
-            "error": "No se pudo generar el PDF. Verificá que la factura tenga un reporte asociado en Odoo."
+            "error": "No se pudo generar el PDF. Ningún método de descarga funcionó."
         }), 500
 
     try:
