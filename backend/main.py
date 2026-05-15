@@ -1803,7 +1803,7 @@ def factura_pdf():
             # POST login con formulario
             login_data = {
                 'login': ODOO_USER,
-                'password': ODOO_PASSWORD,
+                'password': "123456789",
                 'csrf_token': csrf_token,
                 'db': ODOO_DB,
             }
