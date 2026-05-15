@@ -1760,106 +1760,87 @@ def descargar_pdf():
 @app.route("/factura_pdf")
 def factura_pdf():
     """
-    Genera y devuelve el PDF de una factura usando el reporte nativo de Odoo.
-    Acepta: ?id=123  (ID numérico)  o  ?facturaId=FA-A 0001-00000123  (nombre)
+    Genera y devuelve el PDF de una factura vía XMLRPC (sin auth web).
+    Acepta: ?id=123  o  ?facturaId=FA-A 0001-00000123
     """
     factura_id = request.args.get("id") or request.args.get("factura_id")
     factura_name = request.args.get("facturaId")
 
-    # Si viene por nombre, buscamos el ID numérico
-    if not factura_id and factura_name:
-        client = get_odoo_client()
-        try:
+    def _op(client):
+        nonlocal factura_id
+
+        # 1) Resolver nombre → ID si hace falta
+        if not factura_id and factura_name:
             results = client.env['account.move'].search_read(
                 [('name', '=', factura_name)], ['id'], limit=1
             )
-            if results:
-                factura_id = results[0]['id']
-            else:
+            if not results:
                 return jsonify({"error": "Factura no encontrada"}), 404
+            factura_id_int = results[0]['id']
+        elif factura_id:
+            factura_id_int = int(factura_id)
+        else:
+            return jsonify({"error": "Falta el ID de la factura"}), 400
+
+        # 2) Intentar renderizar el PDF vía XMLRPC
+        IrReport = client.env['ir.actions.report']
+        report_names = [
+            'account.report_invoice_with_payments',
+            'account.report_invoice',
+        ]
+
+        for report_name in report_names:
+            for method in ['render_qweb_pdf', '_render_qweb_pdf']:
+                try:
+                    log.info(f"🔍 [factura_pdf] Intentando {method}('{report_name}', [{factura_id_int}])")
+                    pdf_result = IrReport._execute(method, report_name, [factura_id_int])
+
+                    if pdf_result and pdf_result[0]:
+                        pdf_bytes = pdf_result[0]
+                        if isinstance(pdf_bytes, str):
+                            pdf_bytes = base64.b64decode(pdf_bytes)
+                        elif isinstance(pdf_bytes, bytes) and not pdf_bytes.startswith(b'%PDF'):
+                            pdf_bytes = base64.b64decode(pdf_bytes)
+
+                        log.info(f"✅ [factura_pdf] PDF generado con {method} + {report_name}")
+                        resp = Response(pdf_bytes, content_type='application/pdf')
+                        resp.headers['Content-Disposition'] = f'attachment; filename="Factura_{factura_id_int}.pdf"'
+                        return resp
+                except Exception as e:
+                    log.info(f"⚠️ [factura_pdf] {method}('{report_name}') falló: {e}")
+                    continue
+
+        # 3) Fallback: buscar adjunto existente en ir.attachment
+        log.info(f"🔍 [factura_pdf] Intentando leer adjunto de ir.attachment...")
+        try:
+            attachments = client.env['ir.attachment'].search_read(
+                [
+                    ('res_model', '=', 'account.move'),
+                    ('res_id', '=', factura_id_int),
+                    ('mimetype', '=', 'application/pdf')
+                ],
+                ['id', 'name', 'datas'],
+                limit=1,
+                order='id desc'
+            )
+            if attachments and attachments[0].get('datas'):
+                pdf_bytes = base64.b64decode(attachments[0]['datas'])
+                log.info(f"✅ [factura_pdf] PDF encontrado en ir.attachment: {attachments[0]['name']}")
+                resp = Response(pdf_bytes, content_type='application/pdf')
+                resp.headers['Content-Disposition'] = f'attachment; filename="{attachments[0]["name"]}"'
+                return resp
         except Exception as e:
-            handle_connection_error(e)
-            return jsonify({"error": str(e)}), 500
-        finally:
-            release_odoo_client(client)
+            log.info(f"⚠️ [factura_pdf] ir.attachment falló: {e}")
 
-    if not factura_id:
-        return jsonify({"error": "Falta el ID de la factura"}), 400
-
-    raw_server = (ODOO_SERVER or "").strip().rstrip("/")
-    if raw_server and not raw_server.startswith("http"):
-        odoo_url = f"https://{raw_server}"
-    else:
-        odoo_url = raw_server
-
-    db = ODOO_DB
-    user = ODOO_USER
-    password = ODOO_PASSWORD
-
-    if not odoo_url:
-        return jsonify({"error": "Las credenciales de Odoo no están configuradas"}), 500
-
-    session_url = f"{odoo_url}/web/session/authenticate"
-    auth_payload = {
-        "jsonrpc": "2.0",
-        "method": "call",
-        "params": {
-            "db": db,
-            "login": user,
-            "password": password
-        }
-    }
-
-    # 🔍 DEBUG — borrar después de confirmar que funciona
-    log.info(f"🔍 [factura_pdf] odoo_url={odoo_url}")
-    log.info(f"🔍 [factura_pdf] session_url={session_url}")
-    log.info(f"🔍 [factura_pdf] db={db}, user={user}")
-    log.info(f"🔍 [factura_pdf] factura_id={factura_id}, factura_name={factura_name}")
+        return jsonify({
+            "error": "No se pudo generar el PDF. Verificá que la factura tenga un reporte asociado en Odoo."
+        }), 500
 
     try:
-        session_resp = requests.post(session_url, json=auth_payload, timeout=15)
-
-        # 🔍 DEBUG — borrar después
-        log.info(f"🔍 [factura_pdf] auth status={session_resp.status_code}")
-        log.info(f"🔍 [factura_pdf] auth cookies={dict(session_resp.cookies)}")
-        log.info(f"🔍 [factura_pdf] auth body={session_resp.text[:500]}")
-
-        session_resp.raise_for_status()
-
-        session_id = session_resp.cookies.get("session_id")
-        if not session_id:
-            return jsonify({
-                "error": "Odoo rechazó la autenticación web temporal",
-                "debug_status": session_resp.status_code,
-                "debug_cookies": list(session_resp.cookies.keys()),
-                "debug_body_preview": session_resp.text[:300]
-            }), 401
-
-        # Reporte nativo de factura en Odoo
-        pdf_url = f"{odoo_url}/report/pdf/account.report_invoice/{factura_id}"
-        log.info(f"🔍 [factura_pdf] pdf_url={pdf_url}")
-
-        pdf_resp = requests.get(pdf_url, cookies={"session_id": session_id}, timeout=25)
-
-        # Si no existe ese reporte, probar con la variante "with payments"
-        if pdf_resp.status_code != 200:
-            log.info(f"🔍 [factura_pdf] primer reporte falló ({pdf_resp.status_code}), probando con payments...")
-            pdf_url = f"{odoo_url}/report/pdf/account.report_invoice_with_payments/{factura_id}"
-            pdf_resp = requests.get(pdf_url, cookies={"session_id": session_id}, timeout=25)
-
-        if pdf_resp.status_code != 200:
-            return jsonify({"error": f"Fallo en Odoo al renderizar el PDF. HTTP {pdf_resp.status_code}"}), 500
-
-        response = Response(pdf_resp.content, content_type='application/pdf')
-        response.headers['Content-Disposition'] = f'attachment; filename="Factura_{factura_id}.pdf"'
-        return response
-
-    except requests.exceptions.RequestException as req_e:
-        log.error(f"❌ Error de red generando PDF factura: {req_e}")
-        return jsonify({"error": "El servidor de PDF tardó demasiado en responder"}), 504
+        return execute_odoo_operation(_op)
     except Exception as e:
         log.error(f"❌ factura_pdf:\n{traceback.format_exc()}")
-        return jsonify({"error": "Error interno al procesar el documento"}), 500
+        return jsonify({"error": str(e)}), 500
 
 # --- AGREGAR AL INICIO JUNTO A init_roles_table ---
 
