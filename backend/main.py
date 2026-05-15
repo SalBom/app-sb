@@ -1786,10 +1786,16 @@ def factura_pdf():
     if not factura_id:
         return jsonify({"error": "Falta el ID de la factura"}), 400
 
-    odoo_url = os.environ.get("ODOO_URL", "").rstrip("/")
-    db = os.environ.get("ODOO_DB")
-    user = os.environ.get("ODOO_USER") or os.environ.get("ODOO_USERNAME")
-    password = os.environ.get("ODOO_PASSWORD")
+    raw_server = (ODOO_SERVER or "").strip().rstrip("/")
+    # Asegurar que tenga protocolo
+    if raw_server and not raw_server.startswith("http"):
+        odoo_url = f"https://{raw_server}"
+    else:
+        odoo_url = raw_server
+
+    db = ODOO_DB
+    user = ODOO_USER
+    password = ODOO_PASSWORD
 
     if not odoo_url:
         return jsonify({"error": "Las credenciales de Odoo no están configuradas"}), 500

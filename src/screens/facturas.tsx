@@ -245,14 +245,21 @@ const Facturas: React.FC = () => {
                       <View style={[s.badge, { backgroundColor: pagoInfo.color }]}><Text style={s.badgeText}>{pagoInfo.label}</Text></View>
                       <View style={[s.badge, { backgroundColor: entregaInfo.color, marginTop: 4 }]}><Text style={s.badgeText}>{entregaInfo.label}</Text></View>
                       <View style={s.actionsRow}>
-                          <TouchableOpacity style={s.iconButton} onPress={() => {
-                                const baseUrl = getBaseUrl();
-                                const url = item.factura_id
-                                    ? `${baseUrl}/factura_pdf?id=${item.factura_id}`
-                                    : `${baseUrl}/factura_pdf?facturaId=${encodeURIComponent(item.numero_factura)}`;
-                                Linking.openURL(url);
-                            }}>
-                          <TouchableOpacity style={s.iconButton}><Feather name="info" size={20} color="#2B2B2B" /></TouchableOpacity>
+                          <TouchableOpacity
+                              style={s.iconButton}
+                              onPress={() => {
+                                  const baseUrl = getBaseUrl();
+                                  const url = item.factura_id
+                                      ? `${baseUrl}/factura_pdf?id=${item.factura_id}`
+                                      : `${baseUrl}/factura_pdf?facturaId=${encodeURIComponent(item.numero_factura)}`;
+                                  Linking.openURL(url);
+                              }}
+                          >
+                              <Feather name="download" size={20} color="#2B2B2B" />
+                          </TouchableOpacity>
+                          <TouchableOpacity style={s.iconButton}>
+                              <Feather name="info" size={20} color="#2B2B2B" />
+                          </TouchableOpacity>
                       </View>
                   </View>
               </View>
