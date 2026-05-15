@@ -61,6 +61,7 @@ ODOO_SERVER   = os.getenv("ODOO_SERVER")
 ODOO_DB       = os.getenv("ODOO_DB")
 ODOO_USER     = os.getenv("ODOO_USER")
 ODOO_PASSWORD = os.getenv("ODOO_PASSWORD")
+ODOO_WEB_PASSWORD = os.getenv("ODOO_WEB_PASSWORD") or ODOO_PASSWORD
 DATABASE_URL = os.getenv("DATABASE_URL")
 PUBLIC_BASE_URL = (os.getenv("PUBLIC_BASE_URL") or "").rstrip("/")
 
@@ -1803,7 +1804,7 @@ def factura_pdf():
             # POST login con formulario
             login_data = {
                 'login': ODOO_USER,
-                'password': "123456789",
+                'password': ODOO_WEB_PASSWORD,
                 'csrf_token': csrf_token,
                 'db': ODOO_DB,
             }
@@ -1830,7 +1831,7 @@ def factura_pdf():
                 auth_resp = session.post(f"{odoo_url}/web/session/authenticate", json={
                     "jsonrpc": "2.0",
                     "method": "call",
-                    "params": {"db": ODOO_DB, "login": ODOO_USER, "password": ODOO_PASSWORD}
+                    "params": {"db": ODOO_DB, "login": ODOO_USER, "password": ODOO_WEB_PASSWORD}
                 }, timeout=15)
                 auth_json = auth_resp.json()
                 uid = auth_json.get('result', {}).get('uid') if isinstance(auth_json.get('result'), dict) else None
