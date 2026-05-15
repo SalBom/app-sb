@@ -61,6 +61,7 @@ export type ProductoBase = {
   discount3?: number;
   image_thumb_url?: string | null;
   payment_term_id?: number; 
+  corte_por_bulto?: string | null;
 };
 
 export type ProductoCarrito = ProductoBase & {

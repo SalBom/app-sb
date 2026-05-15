@@ -742,6 +742,59 @@ def _inject_realtime_offers(client, page_slice):
                 
     return realtime_offers
 
+# 🆕 HELPER: Corte por bulto (atributo product.attribute id=44)
+ATTR_CORTE_POR_BULTO_ID = 44
+
+def _inject_corte_por_bulto(client, page_slice):
+    """
+    Para cada product.template en page_slice, busca el valor del atributo
+    'CORTE POR BULTO' (product.attribute id=44) y devuelve un dict {tmpl_id: valor}.
+    Solo incluye templates que efectivamente tienen ese atributo cargado.
+    """
+    tmpl_ids = [int(p['id']) for p in page_slice]
+    result = {}
+    if not tmpl_ids:
+        return result
+
+    try:
+        lines = client.env['product.template.attribute.line'].search_read(
+            [
+                ('product_tmpl_id', 'in', tmpl_ids),
+                ('attribute_id', '=', ATTR_CORTE_POR_BULTO_ID),
+            ],
+            ['product_tmpl_id', 'value_ids']
+        ) or []
+
+        # Recolectar todos los value_ids únicos para una sola consulta
+        all_value_ids = []
+        for ln in lines:
+            for v in (ln.get('value_ids') or []):
+                if v not in all_value_ids:
+                    all_value_ids.append(v)
+
+        # Leer los nombres de cada value en una sola pasada
+        value_name_map = {}
+        if all_value_ids:
+            values = client.env['product.attribute.value'].search_read(
+                [('id', 'in', all_value_ids)],
+                ['id', 'name']
+            ) or []
+            value_name_map = {v['id']: (v.get('name') or '').strip() for v in values}
+
+        # Asociar a cada template el primer valor encontrado
+        for ln in lines:
+            tmpl = ln.get('product_tmpl_id')
+            tmpl_id = tmpl[0] if isinstance(tmpl, (list, tuple)) else tmpl
+            vids = ln.get('value_ids') or []
+            if tmpl_id and vids:
+                first_val = value_name_map.get(vids[0])
+                if first_val:
+                    result[int(tmpl_id)] = first_val
+
+    except Exception as e:
+        log.warning(f"⚠️ _inject_corte_por_bulto falló: {e}")
+
+    return result
 
 @app.route("/productos", methods=["GET"])
 def get_productos():
@@ -801,6 +854,7 @@ def get_productos():
 
         # 🚀 5.5 INYECCIÓN DE OFERTAS EN TIEMPO REAL
         offer_map = _inject_realtime_offers(client, page_slice)
+        corte_por_bulto_map = _inject_corte_por_bulto(client, page_slice)
 
         def get_fb_url(p):
             return f"https://firebasestorage.googleapis.com/v0/b/{FIREBASE_BUCKET}/o/{quote(p, safe='')}?alt=media"
@@ -842,7 +896,8 @@ def get_productos():
                 "image_thumb_url": get_fb_url(thumb_path) + (f"&v={wd}" if thumb_path else ""),
                 "image_md_url":    get_fb_url(md_path)    + (f"&v={wd}" if md_path else ""),
                 "stock_state": st_info['state'],
-                "stock_qty": st_info['quantity']
+                "stock_qty": st_info['quantity'],
+                "corte_por_bulto": corte_por_bulto_map.get(pid),
             })
 
         if pg_conn: pg_conn.close()

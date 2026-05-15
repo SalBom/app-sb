@@ -40,6 +40,7 @@ export interface ProductoListado {
   image_thumb_url?: string | null;
   image_md_url?: string | null;
   stock_state?: string; 
+  corte_por_bulto?: string | null;
 }
 
 interface Props {
@@ -52,7 +53,7 @@ interface Props {
 
 const SCREEN_W = Dimensions.get('window').width;
 const OUTER_SIDE_PAD = 16;
-const CARD_ASPECT_RATIO = 993 / 460; 
+const CARD_ASPECT_RATIO = 993 / 500; 
 
 const PAD = { top: 16, right: 16, bottom: 16, left: 16 };
 const IMG_W_PCT = 0.40; 
@@ -220,6 +221,12 @@ const TarjetaProductoListado: React.FC<Props> = ({
                   <StockSemaphore status={producto.stock_state} style={{ marginLeft: 8 }} />
               </View>
 
+              {!!producto.corte_por_bulto && (
+                  <Text style={styles.corteBulto}>
+                      CORTE POR BULTO: {producto.corte_por_bulto}
+                  </Text>
+              )}
+
               <View style={styles.actionsRow}>
                 <TouchableOpacity style={styles.cartCircleBtn} onPress={handleAddToCartClick} activeOpacity={0.8}>
                     <CartIcon width={16} height={16} color="#1C9BD8" /> 
@@ -278,7 +285,7 @@ const styles = StyleSheet.create({
   priceOld: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#9CA3AF', textDecorationLine: 'line-through', marginRight: 8, marginBottom: 0 },
   priceOffer: { fontFamily: 'BarlowCondensed-Bold', fontSize: 34, lineHeight: 38, color: '#D32F2F', letterSpacing: -1 },
   title: { fontFamily: 'BarlowCondensed-Bold', fontSize: 18, color: '#1F2937', textTransform: 'uppercase', lineHeight: 20, marginBottom: 2 },
-  
+  corteBulto: { fontFamily: 'BarlowCondensed-Regular', fontSize: 12, color: '#1C9BD8', marginBottom: 4, marginTop: 2 },
   codeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 2 },
   code: { fontFamily: 'BarlowCondensed-Regular', fontSize: 14, color: '#6B7280' },
 
