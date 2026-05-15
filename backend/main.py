@@ -1787,7 +1787,6 @@ def factura_pdf():
         return jsonify({"error": "Falta el ID de la factura"}), 400
 
     raw_server = (ODOO_SERVER or "").strip().rstrip("/")
-    # Asegurar que tenga protocolo
     if raw_server and not raw_server.startswith("http"):
         odoo_url = f"https://{raw_server}"
     else:
@@ -1801,7 +1800,7 @@ def factura_pdf():
         return jsonify({"error": "Las credenciales de Odoo no están configuradas"}), 500
 
     session_url = f"{odoo_url}/web/session/authenticate"
-    payload = {
+    auth_payload = {
         "jsonrpc": "2.0",
         "method": "call",
         "params": {
@@ -1811,21 +1810,40 @@ def factura_pdf():
         }
     }
 
+    # 🔍 DEBUG — borrar después de confirmar que funciona
+    log.info(f"🔍 [factura_pdf] odoo_url={odoo_url}")
+    log.info(f"🔍 [factura_pdf] session_url={session_url}")
+    log.info(f"🔍 [factura_pdf] db={db}, user={user}")
+    log.info(f"🔍 [factura_pdf] factura_id={factura_id}, factura_name={factura_name}")
+
     try:
-        session_resp = requests.post(session_url, json=payload, timeout=15)
+        session_resp = requests.post(session_url, json=auth_payload, timeout=15)
+
+        # 🔍 DEBUG — borrar después
+        log.info(f"🔍 [factura_pdf] auth status={session_resp.status_code}")
+        log.info(f"🔍 [factura_pdf] auth cookies={dict(session_resp.cookies)}")
+        log.info(f"🔍 [factura_pdf] auth body={session_resp.text[:500]}")
+
         session_resp.raise_for_status()
 
         session_id = session_resp.cookies.get("session_id")
         if not session_id:
-            return jsonify({"error": "Odoo rechazó la autenticación web temporal"}), 401
+            return jsonify({
+                "error": "Odoo rechazó la autenticación web temporal",
+                "debug_status": session_resp.status_code,
+                "debug_cookies": list(session_resp.cookies.keys()),
+                "debug_body_preview": session_resp.text[:300]
+            }), 401
 
         # Reporte nativo de factura en Odoo
         pdf_url = f"{odoo_url}/report/pdf/account.report_invoice/{factura_id}"
+        log.info(f"🔍 [factura_pdf] pdf_url={pdf_url}")
 
         pdf_resp = requests.get(pdf_url, cookies={"session_id": session_id}, timeout=25)
 
         # Si no existe ese reporte, probar con la variante "with payments"
         if pdf_resp.status_code != 200:
+            log.info(f"🔍 [factura_pdf] primer reporte falló ({pdf_resp.status_code}), probando con payments...")
             pdf_url = f"{odoo_url}/report/pdf/account.report_invoice_with_payments/{factura_id}"
             pdf_resp = requests.get(pdf_url, cookies={"session_id": session_id}, timeout=25)
 
