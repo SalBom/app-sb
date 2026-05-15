@@ -214,7 +214,7 @@ const Pedidos: React.FC = () => {
             try {
               const cuit = cuitOverride || await authStorage.getCuitFromStorage();
               const baseUrl = getBaseUrl();
-              const res = await fetch(`${baseUrl}/cancelar-pedido`, {
+              const res = await fetch(`${baseUrl}/cancelar_pedido`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
