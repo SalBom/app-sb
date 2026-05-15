@@ -1783,57 +1783,86 @@ def factura_pdf():
         else:
             odoo_url = raw_server
 
-        # ── Intento 1: descarga directa con Basic Auth ──
-        report_names = [
-            'account.report_invoice_with_payments',
-            'account.report_invoice',
-        ]
-        for report_name in report_names:
-            try:
-                url = f"{odoo_url}/report/pdf/{report_name}/{factura_id_int}"
-                log.info(f"🔍 [factura_pdf] Intento Basic Auth: {url}")
-                resp = requests.get(
-                    url,
-                    auth=(ODOO_USER, ODOO_PASSWORD),
-                    timeout=25,
-                    allow_redirects=True
-                )
-                log.info(f"🔍 [factura_pdf] Basic Auth status={resp.status_code}, content-type={resp.headers.get('Content-Type','?')}, size={len(resp.content)}")
-                if resp.status_code == 200 and b'%PDF' in resp.content[:20]:
-                    log.info(f"✅ [factura_pdf] PDF obtenido con Basic Auth + {report_name}")
-                    response = Response(resp.content, content_type='application/pdf')
-                    response.headers['Content-Disposition'] = f'attachment; filename="Factura_{factura_id_int}.pdf"'
-                    return response
-            except Exception as e:
-                log.info(f"⚠️ [factura_pdf] Basic Auth falló: {e}")
+        if not odoo_url:
+            return jsonify({"error": "ODOO_SERVER no configurado"}), 500
 
-        # ── Intento 2: web session con cookie ──
-        session_url = f"{odoo_url}/web/session/authenticate"
-        auth_payload = {
-            "jsonrpc": "2.0",
-            "method": "call",
-            "params": {"db": ODOO_DB, "login": ODOO_USER, "password": ODOO_PASSWORD}
-        }
+        session = requests.Session()
+
+        # ── Intento 1: login por formulario web ──
         try:
-            log.info(f"🔍 [factura_pdf] Intento Web Session...")
-            sess_resp = requests.post(session_url, json=auth_payload, timeout=15)
-            session_id = sess_resp.cookies.get("session_id")
-            if session_id:
-                for report_name in report_names:
+            log.info(f"🔍 [factura_pdf] Obteniendo CSRF token...")
+            login_page = session.get(f"{odoo_url}/web/login", timeout=15)
+            
+            # Extraer csrf_token del HTML
+            import re as _re
+            csrf_match = _re.search(r'name=["\']csrf_token["\'][^>]*value=["\']([^"\']+)', login_page.text)
+            csrf_token = csrf_match.group(1) if csrf_match else ''
+            
+            log.info(f"🔍 [factura_pdf] CSRF={'encontrado' if csrf_token else 'NO encontrado'}, cookies tras GET={list(session.cookies.keys())}")
+
+            # POST login con formulario
+            login_data = {
+                'login': ODOO_USER,
+                'password': ODOO_PASSWORD,
+                'csrf_token': csrf_token,
+                'db': ODOO_DB,
+            }
+            login_resp = session.post(
+                f"{odoo_url}/web/login",
+                data=login_data,
+                timeout=15,
+                allow_redirects=True
+            )
+            log.info(f"🔍 [factura_pdf] Login form status={login_resp.status_code}, cookies={list(session.cookies.keys())}, redirigió a={login_resp.url}")
+
+            # Si redirigió a /web (dashboard), el login fue exitoso
+            is_logged_in = '/web' in login_resp.url and '/web/login' not in login_resp.url
+            log.info(f"🔍 [factura_pdf] Login exitoso={is_logged_in}")
+
+        except Exception as e:
+            log.info(f"⚠️ [factura_pdf] Login form falló: {e}")
+            is_logged_in = False
+
+        # ── Intento 2: JSON-RPC authenticate (por si el form no anduvo) ──
+        if not is_logged_in:
+            try:
+                log.info(f"🔍 [factura_pdf] Intento JSON-RPC authenticate...")
+                auth_resp = session.post(f"{odoo_url}/web/session/authenticate", json={
+                    "jsonrpc": "2.0",
+                    "method": "call",
+                    "params": {"db": ODOO_DB, "login": ODOO_USER, "password": ODOO_PASSWORD}
+                }, timeout=15)
+                auth_json = auth_resp.json()
+                uid = auth_json.get('result', {}).get('uid') if isinstance(auth_json.get('result'), dict) else None
+                is_logged_in = uid is not None and uid is not False
+                log.info(f"🔍 [factura_pdf] JSON-RPC uid={uid}, cookies={list(session.cookies.keys())}")
+            except Exception as e:
+                log.info(f"⚠️ [factura_pdf] JSON-RPC falló: {e}")
+
+        # ── Descargar PDF con la sesión autenticada ──
+        if is_logged_in:
+            report_names = [
+                'account.report_invoice_with_payments',
+                'account.report_invoice',
+            ]
+            for report_name in report_names:
+                try:
                     url = f"{odoo_url}/report/pdf/{report_name}/{factura_id_int}"
-                    resp = requests.get(url, cookies={"session_id": session_id}, timeout=25)
+                    log.info(f"🔍 [factura_pdf] Descargando {url}")
+                    resp = session.get(url, timeout=30)
+                    log.info(f"🔍 [factura_pdf] status={resp.status_code}, content-type={resp.headers.get('Content-Type','?')}, size={len(resp.content)}")
                     if resp.status_code == 200 and b'%PDF' in resp.content[:20]:
-                        log.info(f"✅ [factura_pdf] PDF obtenido con Web Session + {report_name}")
+                        log.info(f"✅ [factura_pdf] PDF generado OK con {report_name}")
                         response = Response(resp.content, content_type='application/pdf')
                         response.headers['Content-Disposition'] = f'attachment; filename="Factura_{factura_id_int}.pdf"'
                         return response
-            else:
-                log.info(f"⚠️ [factura_pdf] Web Session sin cookie")
-        except Exception as e:
-            log.info(f"⚠️ [factura_pdf] Web Session falló: {e}")
+                except Exception as e:
+                    log.info(f"⚠️ [factura_pdf] Descarga falló: {e}")
+        else:
+            log.info(f"⚠️ [factura_pdf] No se pudo autenticar en Odoo web")
 
-        # ── Intento 3: adjunto existente en ir.attachment ──
-        log.info(f"🔍 [factura_pdf] Buscando adjunto en ir.attachment...")
+        # ── Fallback: adjunto en ir.attachment ──
+        log.info(f"🔍 [factura_pdf] Buscando adjunto...")
         try:
             attachments = client.env['ir.attachment'].search_read(
                 [
@@ -1845,10 +1874,9 @@ def factura_pdf():
                 limit=1,
                 order='id desc'
             )
-            log.info(f"🔍 [factura_pdf] Adjuntos encontrados: {len(attachments)}")
+            log.info(f"🔍 [factura_pdf] Adjuntos: {len(attachments)}")
             if attachments and attachments[0].get('datas'):
                 pdf_bytes = base64.b64decode(attachments[0]['datas'])
-                log.info(f"✅ [factura_pdf] PDF desde adjunto: {attachments[0]['name']}")
                 resp = Response(pdf_bytes, content_type='application/pdf')
                 resp.headers['Content-Disposition'] = f'attachment; filename="{attachments[0]["name"]}"'
                 return resp
@@ -1856,7 +1884,7 @@ def factura_pdf():
             log.info(f"⚠️ [factura_pdf] ir.attachment falló: {e}")
 
         return jsonify({
-            "error": "No se pudo generar el PDF. Ningún método de descarga funcionó."
+            "error": "No se pudo generar el PDF. Verificá que el usuario de Odoo tenga contraseña web configurada (no solo API key)."
         }), 500
 
     try:
