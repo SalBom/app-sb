@@ -285,7 +285,7 @@ const styles = StyleSheet.create({
   priceOld: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#9CA3AF', textDecorationLine: 'line-through', marginRight: 8, marginBottom: 0 },
   priceOffer: { fontFamily: 'BarlowCondensed-Bold', fontSize: 34, lineHeight: 38, color: '#D32F2F', letterSpacing: -1 },
   title: { fontFamily: 'BarlowCondensed-Bold', fontSize: 18, color: '#1F2937', textTransform: 'uppercase', lineHeight: 20, marginBottom: 2 },
-  corteBulto: { fontFamily: 'BarlowCondensed-Regular', fontSize: 12, color: '#1C9BD8', marginBottom: 4, marginTop: 2 },
+  corteBulto: { fontFamily: 'BarlowCondensed-Bold', fontSize: 12, color: '#1C9BD8', marginBottom: 4, marginTop: 2 },
   codeRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 2 },
   code: { fontFamily: 'BarlowCondensed-Regular', fontSize: 14, color: '#6B7280' },
 

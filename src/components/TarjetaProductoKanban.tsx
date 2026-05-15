@@ -267,7 +267,7 @@ const styles = StyleSheet.create({
   offerText: { color: '#D32F2F', fontFamily: 'BarlowCondensed-Bold', fontSize: 9, letterSpacing: 0.5 },
 
   title: { fontFamily: 'BarlowCondensed-Bold', fontSize: 14, color: '#1F2937', lineHeight: 16, marginBottom: 0, marginTop: 4 },
-  corteBulto: { fontFamily: 'BarlowCondensed-Regular', fontSize: 10, color: '#1C9BD8', marginBottom: 4, marginTop: 2 },
+  corteBulto: { fontFamily: 'BarlowCondensed-Bold', fontSize: 10, color: '#1C9BD8', marginBottom: 4, marginTop: 2 },
   
   codeRow: { flexDirection: 'row', alignItems: 'center', marginTop: 0, marginBottom: 6 },
   code: { fontFamily: 'BarlowCondensed-Regular', fontSize: 12, color: '#6B7280' },
