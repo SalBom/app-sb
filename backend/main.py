@@ -2483,21 +2483,29 @@ def _upsert_order_logic(client, data):
 
             order_obj = client.env['sale.order'].create(vals)
 
-        try: order_obj._amount_all()
-        except: pass
+                # message_post a NIVEL MODELO con el id explícito (igual que action_cancel).
+        # Llamarlo sobre el Record dispara fields_get_keys, que no existe en Odoo 17+.
+        SaleOrder = client.env['sale.order']
+        oid = order_obj.id
 
-        # 🚀 RESTAURAMOS Y BLINDAMOS LAS NOTAS DEL MURO (CHATTER)
-        # Se elimina "message_type" y se agrega registro de errores real.
         if obs_internas:
-            try: 
-                order_obj.message_post(body=f"📝 <b>Observación interna:</b><br/>{obs_internas}", subtype_xmlid='mail.mt_note')
-            except Exception as e: 
+            try:
+                SaleOrder.message_post(
+                    [oid],
+                    body=f"📝 <b>Observación interna:</b><br/>{obs_internas}",
+                    subtype_xmlid='mail.mt_note'
+                )
+            except Exception as e:
                 log.error(f"❌ Error en Odoo al guardar obs_internas: {e}")
-                
+
         if nota_cliente:
-            try: 
-                order_obj.message_post(body=f"🗣️ <b>Instrucciones del Cliente:</b><br/>{nota_cliente}", subtype_xmlid='mail.mt_note')
-            except Exception as e: 
+            try:
+                SaleOrder.message_post(
+                    [oid],
+                    body=f"🗣️ <b>Instrucciones del Cliente:</b><br/>{nota_cliente}",
+                    subtype_xmlid='mail.mt_note'
+                )
+            except Exception as e:
                 log.error(f"❌ Error en Odoo al guardar nota_cliente: {e}")
 
         nro_pedido = f"Pedido #{order_obj.id}"
