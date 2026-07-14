@@ -16,6 +16,7 @@ import { Image } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { API_URL } from '../config'; // <--- IMPORTACIÓN CENTRALIZADA
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 const KEYS = {
     HOME: 'FEATURED_HOME',
@@ -26,7 +27,8 @@ const LIMIT = 20;
 
 export default function AdminBanners() {
   const navigation = useNavigation();
-  
+  const isDesktopWeb = useIsDesktopWeb();
+
   const [currentSection, setCurrentSection] = useState<'HOME' | 'PRODUCTOS' | 'POPUP'>('HOME');
   const [popupSubTab, setPopupSubTab] = useState<'TC' | 'NEW'>('TC');
 
@@ -214,6 +216,123 @@ export default function AdminBanners() {
       </TouchableOpacity>
     );
   };
+
+  const renderProductCardD = (item: any) => {
+    const isSelected = selectedProducts.some((p) => p.id === String(item.id));
+    const imgUrl = item.image_md_url || item.image_thumb_url;
+    return (
+      <TouchableOpacity key={item.id} style={[ds.card, isSelected && ds.cardSelected]} onPress={() => toggleSelect(item)} activeOpacity={0.8}>
+        <View style={[ds.checkbox, isSelected && ds.checkboxActive]}>
+          {isSelected && <Ionicons name="checkmark" size={14} color="#FFF" />}
+        </View>
+        <Image source={imgUrl ? { uri: imgUrl } : null} style={ds.cardImg} contentFit="contain" />
+        <Text style={ds.cardName} numberOfLines={2}>{item.name}</Text>
+        <Text style={ds.cardCode}>{item.default_code || 'SIN SKU'}</Text>
+      </TouchableOpacity>
+    );
+  };
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    return (
+      <View style={ds.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={ds.page}>
+            <Text style={ds.pageTitle}>CONFIGURACIÓN DE HOME</Text>
+
+            <View style={ds.tabsRow}>
+              {(['HOME', 'PRODUCTOS', 'POPUP'] as const).map((tab) => (
+                <TouchableOpacity key={tab} onPress={() => { setCurrentSection(tab); setSearch(''); }}>
+                  <Text style={[ds.tabText, currentSection === tab && ds.tabTextActive]}>
+                    {tab === 'POPUP' ? 'Popups' : tab === 'HOME' ? 'Home' : 'Productos'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={ds.tabDivider} />
+
+            {currentSection === 'POPUP' ? (
+              <View>
+                <View style={ds.subTabsRow}>
+                  <TouchableOpacity style={[ds.subTabBtn, popupSubTab === 'TC' && ds.subTabBtnActive]} onPress={() => setPopupSubTab('TC')}>
+                    <Text style={[ds.subTabText, popupSubTab === 'TC' && ds.subTabTextActive]}>Tipo de cambio</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={[ds.subTabBtn, popupSubTab === 'NEW' && ds.subTabBtnActive]} onPress={() => setPopupSubTab('NEW')}>
+                    <Text style={[ds.subTabText, popupSubTab === 'NEW' && ds.subTabTextActive]}>Nuevos ingresos</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {popupSubTab === 'TC' && (
+                  <View style={ds.configCard}>
+                    <View style={ds.rowSwitch}>
+                      <Text style={ds.label}>Activar PopUp</Text>
+                      <Switch value={popupTCConfig.enabled} onValueChange={(v) => setPopupTCConfig((p) => ({ ...p, enabled: v }))} trackColor={{ false: '#E0E0E0', true: '#81b0ff' }} thumbColor={popupTCConfig.enabled ? '#1C9BD8' : '#f4f3f4'} />
+                    </View>
+                    <View style={{ flexDirection: 'row', gap: 24 }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={ds.label}>Valor del dólar ($)</Text>
+                        <TextInput style={ds.input} value={popupTCConfig.rate} onChangeText={(t) => setPopupTCConfig((p) => ({ ...p, rate: t }))} placeholder="Ej: 1485" keyboardType="numeric" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={ds.label}>Fecha vigencia</Text>
+                        <TextInput style={ds.input} value={popupTCConfig.date} onChangeText={(t) => setPopupTCConfig((p) => ({ ...p, date: t }))} placeholder="DD/MM/AAAA" />
+                      </View>
+                    </View>
+                    <TouchableOpacity style={[ds.saveBtn, loadingPopup && { opacity: 0.7 }]} onPress={savePopupTCConfig} disabled={loadingPopup}>
+                      {loadingPopup ? <ActivityIndicator color="#FFF" /> : <Text style={ds.saveBtnText}>Guardar TC</Text>}
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                {popupSubTab === 'NEW' && (
+                  <View>
+                    <View style={ds.configCard}>
+                      <View style={ds.rowSwitch}>
+                        <Text style={ds.label}>Activar PopUp</Text>
+                        <Switch value={popupNewConfig.enabled} onValueChange={(v) => setPopupNewConfig((p) => ({ ...p, enabled: v }))} trackColor={{ false: '#E0E0E0', true: '#81b0ff' }} thumbColor={popupNewConfig.enabled ? '#1C9BD8' : '#f4f3f4'} />
+                      </View>
+                      <Text style={ds.counterText}>PRODUCTOS: {selectedProducts.length} / 5</Text>
+                      <View style={ds.searchRow}>
+                        <TextInput style={ds.searchInput} placeholder="Buscar para agregar..." value={search} onChangeText={setSearch} onSubmitEditing={handleSearch} />
+                        <TouchableOpacity style={ds.searchBtn} onPress={handleSearch}><Ionicons name="search" size={20} color="#FFF" /></TouchableOpacity>
+                      </View>
+                      <TouchableOpacity style={[ds.saveBtn, loadingPopup && { opacity: 0.7 }]} onPress={savePopupNewConfig} disabled={loadingPopup}>
+                        {loadingPopup ? <ActivityIndicator color="#FFF" /> : <Text style={ds.saveBtnText}>Guardar ingresos</Text>}
+                      </TouchableOpacity>
+                    </View>
+                    <View style={ds.grid}>{productos.map(renderProductCardD)}</View>
+                    {hasMore && (
+                      <TouchableOpacity onPress={handleLoadMore} style={ds.loadMoreBtn}><Text style={ds.loadMoreText}>Cargar más...</Text></TouchableOpacity>
+                    )}
+                  </View>
+                )}
+              </View>
+            ) : (
+              <View>
+                <View style={ds.topBar}>
+                  <Text style={ds.counterText}>
+                    SELECCIONADOS: {selectedProducts.length} / 5  <Text style={ds.hintText}>(se guardan automáticamente)</Text>
+                  </Text>
+                  <View style={ds.searchRow}>
+                    <TextInput style={ds.searchInput} placeholder="Buscar producto..." value={search} onChangeText={setSearch} onSubmitEditing={handleSearch} />
+                    <TouchableOpacity style={ds.searchBtn} onPress={handleSearch}><Ionicons name="search" size={20} color="#FFF" /></TouchableOpacity>
+                  </View>
+                </View>
+                <View style={ds.grid}>{productos.map(renderProductCardD)}</View>
+                {loading && <ActivityIndicator size="small" color="#1C9BD8" style={{ marginVertical: 20 }} />}
+                {!loading && productos.length === 0 && <Text style={ds.emptyText}>No se encontraron productos.</Text>}
+                {hasMore && !loading && (
+                  <TouchableOpacity onPress={handleLoadMore} style={ds.loadMoreBtn}><Text style={ds.loadMoreText}>Cargar más...</Text></TouchableOpacity>
+                )}
+              </View>
+            )}
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -434,4 +553,48 @@ const styles = StyleSheet.create({
   code: { fontFamily: 'BarlowCondensed-Regular', fontSize: 14, color: '#666' },
   checkbox: { width: 24, height: 24, borderRadius: 6, borderWidth: 2, borderColor: '#DDD', alignItems: 'center', justifyContent: 'center' },
   checkboxActive: { backgroundColor: '#1C9BD8', borderColor: '#1C9BD8' }
+});
+
+// --- Estilos exclusivos de desktop ---
+const ds = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', marginBottom: 26, textTransform: 'uppercase' },
+
+  tabsRow: { flexDirection: 'row', gap: 32 },
+  tabText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 18, color: '#9CA3AF', paddingBottom: 12 },
+  tabTextActive: { color: '#1C9BD8', borderBottomWidth: 2, borderBottomColor: '#1C9BD8' },
+  tabDivider: { height: 1, backgroundColor: '#EFEFEF', marginTop: -1, marginBottom: 24 },
+
+  subTabsRow: { flexDirection: 'row', backgroundColor: '#F0F9FF', padding: 4, borderRadius: 8, alignSelf: 'flex-start', marginBottom: 20, gap: 4 },
+  subTabBtn: { paddingVertical: 8, paddingHorizontal: 18, borderRadius: 6 },
+  subTabBtnActive: { backgroundColor: '#FFFFFF', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 4, shadowOffset: { width: 0, height: 1 } },
+  subTabText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#666' },
+  subTabTextActive: { color: '#1C9BD8' },
+
+  configCard: { backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#ECECEC', padding: 24, marginBottom: 24, maxWidth: 560 },
+  rowSwitch: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20, paddingBottom: 14, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
+  label: { fontSize: 14, fontFamily: 'Rubik', color: '#555', marginBottom: 8 },
+  input: { borderWidth: 1, borderColor: '#DDD', borderRadius: 8, paddingHorizontal: 14, paddingVertical: 10, fontSize: 15, backgroundColor: '#FAFAFA', color: '#333', fontFamily: 'BarlowCondensed-Bold' },
+  saveBtn: { backgroundColor: '#1C9BD8', paddingVertical: 12, borderRadius: 8, alignItems: 'center', marginTop: 16 },
+  saveBtnText: { color: '#FFF', fontFamily: 'BarlowCondensed-Bold', fontSize: 15, letterSpacing: 0.5 },
+
+  topBar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
+  counterText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 14, color: '#1C9BD8', marginBottom: 12 },
+  hintText: { fontFamily: 'Rubik', fontSize: 11, color: '#999' },
+  searchRow: { flexDirection: 'row', gap: 10 },
+  searchInput: { width: 280, backgroundColor: '#FAFAFA', borderRadius: 8, paddingHorizontal: 14, height: 42, borderWidth: 1, borderColor: '#E0E0E0', fontSize: 14 },
+  searchBtn: { width: 42, height: 42, backgroundColor: '#1C9BD8', borderRadius: 8, alignItems: 'center', justifyContent: 'center' },
+
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 16 },
+  card: { width: 200, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#ECECEC', padding: 14, position: 'relative' },
+  cardSelected: { borderColor: '#1C9BD8', borderWidth: 2, backgroundColor: '#F0F9FF' },
+  cardImg: { width: '100%', height: 110, backgroundColor: '#F5F5F5', borderRadius: 8, marginBottom: 10 },
+  cardName: { fontFamily: 'BarlowCondensed-Bold', fontSize: 14, color: '#333', minHeight: 34 },
+  cardCode: { fontFamily: 'Rubik', fontSize: 12, color: '#8A8A8A', marginTop: 2 },
+  checkbox: { position: 'absolute', top: 10, right: 10, width: 22, height: 22, borderRadius: 6, borderWidth: 2, borderColor: '#DDD', backgroundColor: '#FFF', alignItems: 'center', justifyContent: 'center', zIndex: 2 },
+  checkboxActive: { backgroundColor: '#1C9BD8', borderColor: '#1C9BD8' },
+  loadMoreBtn: { alignItems: 'center', paddingVertical: 16 },
+  loadMoreText: { color: '#8A8A8A', fontFamily: 'Rubik', fontSize: 13 },
+  emptyText: { textAlign: 'center', marginTop: 40, color: '#999', fontSize: 15, fontFamily: 'Rubik' },
 });

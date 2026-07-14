@@ -13,7 +13,8 @@ import {
   Dimensions
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, Feather } from '@expo/vector-icons';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 // Flecha del título
 import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
@@ -99,6 +100,7 @@ type Vendor = {
 
 const DashboardAdministrador: React.FC = () => {
   const navigation = useNavigation<any>();
+  const isDesktopWeb = useIsDesktopWeb();
 
   // --- ESTADOS ---
   const [vendors, setVendors] = useState<Vendor[]>([]);
@@ -234,6 +236,154 @@ const DashboardAdministrador: React.FC = () => {
       minimumFractionDigits: 2
     }).format(value);
   };
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    return (
+      <View style={ds.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={ds.page}>
+            <View style={ds.headerRow}>
+              <Text style={ds.pageTitle}>PANEL ADMIN</Text>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <TouchableOpacity style={ds.pickerBtn} onPress={() => setVendorPickerVisible(true)}>
+                  <Feather name="user" size={14} color="#2B2B2B" />
+                  <Text style={ds.pickerText} numberOfLines={1}>{selectedVendor ? selectedVendor.name : 'Seleccionar...'}</Text>
+                  <Feather name="chevron-down" size={14} color="#2B2B2B" />
+                </TouchableOpacity>
+                <TouchableOpacity style={ds.pickerBtn} onPress={() => setPickerVisible(true)}>
+                  <Feather name="calendar" size={14} color="#2B2B2B" />
+                  <Text style={ds.pickerText}>{MONTHS[selectedMonth - 1]} {selectedYear}</Text>
+                  <Feather name="chevron-down" size={14} color="#2B2B2B" />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {loadingKpi ? (
+              <ActivityIndicator size="large" color="#1C9BD8" style={{ marginVertical: 30 }} />
+            ) : (
+              <View style={ds.kpiGrid}>
+                <View style={ds.kpiCard}>
+                  <View style={ds.kpiIconWrap}><Feather name="shopping-bag" size={18} color="#1C9BD8" /></View>
+                  <Text style={ds.kpiValue}>{kpiData.total_pedidos}</Text>
+                  <Text style={ds.kpiLabel}>Total pedidos</Text>
+                </View>
+                <View style={ds.kpiCard}>
+                  <View style={ds.kpiIconWrap}><Feather name="dollar-sign" size={18} color="#1C9BD8" /></View>
+                  <Text style={ds.kpiValue}>{formatCurrency(kpiData.total_facturado)}</Text>
+                  <Text style={ds.kpiLabel}>Total facturado</Text>
+                </View>
+                <TouchableOpacity style={ds.kpiCard} onPress={() => onPressEstado('atendidos')} activeOpacity={0.8}>
+                  <View style={ds.kpiIconWrap}><Feather name="users" size={18} color="#1C9BD8" /></View>
+                  <Text style={ds.kpiValue}>{kpiData.clientes_atendidos}</Text>
+                  <Text style={ds.kpiLabel}>Clientes atendidos</Text>
+                </TouchableOpacity>
+                <View style={ds.kpiCard}>
+                  <View style={ds.kpiIconWrap}><Feather name="user-plus" size={18} color="#1C9BD8" /></View>
+                  <Text style={ds.kpiValue}>{kpiData.clientes_nuevos}</Text>
+                  <Text style={ds.kpiLabel}>Clientes nuevos</Text>
+                </View>
+                <View style={ds.kpiCard}>
+                  <View style={ds.kpiIconWrap}><Feather name="user-x" size={18} color="#1C9BD8" /></View>
+                  <Text style={ds.kpiValue}>{kpiData.clientes_perdidos}</Text>
+                  <Text style={ds.kpiLabel}>Clientes perdidos</Text>
+                </View>
+              </View>
+            )}
+
+            <View style={{ flexDirection: 'row', gap: 18, marginTop: 8, marginBottom: 36 }}>
+              <TouchableOpacity style={ds.linkCard} onPress={() => navigation.navigate('Facturas', { cuitOverride: selectedVendor?.cuit })}>
+                <Feather name="file-text" size={18} color="#2B2B2B" />
+                <Text style={ds.linkCardText}>FACTURAS</Text>
+                <Feather name="chevron-right" size={18} color="#8A8A8A" style={{ marginLeft: 'auto' }} />
+              </TouchableOpacity>
+              <TouchableOpacity style={ds.linkCard} onPress={() => navigation.navigate('Pedidos', { cuitOverride: selectedVendor?.cuit })}>
+                <Feather name="package" size={18} color="#2B2B2B" />
+                <Text style={ds.linkCardText}>PEDIDOS</Text>
+                <Feather name="chevron-right" size={18} color="#8A8A8A" style={{ marginLeft: 'auto' }} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={ds.sectionTitle}>ESTADO DE CLIENTES</Text>
+            <View style={ds.estadoGrid}>
+              {ESTADOS.map((estado) => {
+                const { Icon } = estado;
+                return (
+                  <TouchableOpacity key={estado.id} style={ds.estadoCard} onPress={() => onPressEstado(estado.id)} activeOpacity={0.85}>
+                    <Icon width={32} height={32} />
+                    <Text style={ds.estadoLabel}>{estado.label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            <Text style={ds.sectionTitle}>ÚLTIMOS PEDIDOS</Text>
+            <View style={ds.table}>
+              {loadingFacturas ? (
+                <ActivityIndicator size="small" color="#1C9BD8" style={{ marginVertical: 20 }} />
+              ) : facturas.length === 0 ? (
+                <Text style={ds.emptyText}>No hay facturas en este período.</Text>
+              ) : (
+                facturas.map((f, idx) => (
+                  <View key={f.numero_factura + idx} style={ds.row}>
+                    <Text style={[ds.rowCell, { flex: 1, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' }]}>FACTURA #{f.numero_factura || '---'}</Text>
+                    <Text style={[ds.rowCell, { flex: 1.5 }]}>{f.cliente || 'Desconocido'}</Text>
+                    <Text style={[ds.rowCell, { flex: 1 }]}>{formatFecha(f.fecha)}</Text>
+                  </View>
+                ))
+              )}
+            </View>
+          </View>
+        </ScrollView>
+
+        <Modal visible={vendorPickerVisible} transparent animationType="fade" onRequestClose={() => setVendorPickerVisible(false)}>
+          <Pressable style={ds.modalOverlay} onPress={() => setVendorPickerVisible(false)}>
+            <Pressable style={ds.modalContent} onPress={(e: any) => e.stopPropagation?.()}>
+              <Text style={ds.modalTitle}>Seleccionar Vendedor</Text>
+              <FlatList
+                data={vendors}
+                keyExtractor={(item) => item.id.toString()}
+                style={{ maxHeight: 340 }}
+                renderItem={({ item }) => (
+                  <TouchableOpacity style={ds.vendorRow} onPress={() => { setSelectedVendor(item); setVendorPickerVisible(false); }}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                      <Text style={ds.vendorName}>{item.name}</Text>
+                      {item.id < 0 && <Text style={ds.vendorPreasignado}>PRE-ASIGNADO</Text>}
+                    </View>
+                    <Text style={ds.vendorMeta}>{item.role} {item.cuit ? `- CUIT: ${item.cuit}` : '- Sin CUIT asignado'}</Text>
+                  </TouchableOpacity>
+                )}
+              />
+            </Pressable>
+          </Pressable>
+        </Modal>
+
+        <Modal visible={pickerVisible} transparent animationType="fade" onRequestClose={() => setPickerVisible(false)}>
+          <Pressable style={ds.modalOverlay} onPress={() => setPickerVisible(false)}>
+            <Pressable style={ds.modalContent} onPress={(e: any) => e.stopPropagation?.()}>
+              <Text style={ds.modalTitle}>Seleccionar Período</Text>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 18 }}>
+                {YEARS.map((y) => (
+                  <TouchableOpacity key={y} style={[ds.yearChip, selectedYear === y && ds.yearChipActive]} onPress={() => setSelectedYear(y)}>
+                    <Text style={[ds.yearText, selectedYear === y && ds.yearTextActive]}>{y}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <View style={ds.monthGrid}>
+                {MONTHS.map((m, i) => (
+                  <TouchableOpacity key={i} style={[ds.monthItem, selectedMonth === i + 1 && ds.monthItemActive]} onPress={() => { setSelectedMonth(i + 1); setPickerVisible(false); }}>
+                    <Text style={[ds.monthText, selectedMonth === i + 1 && ds.monthTextActive]}>{m}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={s.screen} contentContainerStyle={s.container} bounces={false}>
@@ -614,6 +764,52 @@ const s = StyleSheet.create({
   monthTextActive: { color: '#FFF' },
   modalCloseBtn: { marginTop: 10, alignSelf: 'center', padding: 10 },
   modalCloseText: { color: '#D32F2F', fontWeight: 'bold' }
+});
+
+// --- Estilos exclusivos de desktop ---
+const ds = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 30 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', textTransform: 'uppercase' },
+  pickerBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FAFAFA', paddingHorizontal: 14, paddingVertical: 10, borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0' },
+  pickerText: { fontSize: 13, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B', maxWidth: 160 },
+
+  kpiGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 16, marginBottom: 24 },
+  kpiCard: { width: 200, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#ECECEC', padding: 18 },
+  kpiIconWrap: { width: 36, height: 36, borderRadius: 10, backgroundColor: '#EAF6FC', alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
+  kpiValue: { fontFamily: 'BarlowCondensed-Bold', fontSize: 24, color: '#2B2B2B' },
+  kpiLabel: { fontFamily: 'Rubik', fontSize: 12, color: '#8A8A8A', marginTop: 2 },
+
+  linkCard: { flex: 1, maxWidth: 300, flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#ECECEC', paddingVertical: 16, paddingHorizontal: 18 },
+  linkCardText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#2B2B2B' },
+
+  sectionTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 18, color: '#8A8A8A', letterSpacing: 1, marginBottom: 16 },
+  estadoGrid: { flexDirection: 'row', gap: 16, marginBottom: 36 },
+  estadoCard: { width: 160, alignItems: 'center', gap: 10, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#ECECEC', paddingVertical: 20 },
+  estadoLabel: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#2B2B2B', textAlign: 'center' },
+
+  table: { borderWidth: 1, borderColor: '#ECECEC', borderRadius: 12, padding: 8 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
+  rowCell: { fontFamily: 'Rubik', fontSize: 14, color: '#555' },
+  emptyText: { textAlign: 'center', color: '#999', fontFamily: 'Rubik', fontSize: 14, paddingVertical: 24 },
+
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
+  modalContent: { width: 420, maxWidth: '90%', backgroundColor: '#FFF', borderRadius: 16, padding: 24, shadowColor: '#000', shadowOpacity: 0.15, shadowOffset: { width: 0, height: 8 }, shadowRadius: 24, elevation: 8 },
+  modalTitle: { fontSize: 20, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B', marginBottom: 16, textAlign: 'center' },
+  vendorRow: { paddingVertical: 14, borderBottomWidth: 1, borderColor: '#F3F4F6' },
+  vendorName: { fontSize: 15, fontFamily: 'BarlowCondensed-Bold', color: '#333' },
+  vendorPreasignado: { fontSize: 10, color: '#E67E22', fontFamily: 'BarlowCondensed-Bold' },
+  vendorMeta: { fontSize: 12, color: '#999', fontFamily: 'Rubik', marginTop: 2 },
+  yearChip: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 20, backgroundColor: '#F5F5F5' },
+  yearChipActive: { backgroundColor: '#1C9BD8' },
+  yearText: { fontFamily: 'BarlowCondensed-Bold', color: '#555' },
+  yearTextActive: { color: '#FFF' },
+  monthGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  monthItem: { width: '30%', paddingVertical: 10, backgroundColor: '#F5F5F5', borderRadius: 8, alignItems: 'center' },
+  monthItemActive: { backgroundColor: '#1C9BD8' },
+  monthText: { fontFamily: 'BarlowCondensed-Bold', color: '#555', fontSize: 13 },
+  monthTextActive: { color: '#FFF' },
 });
 
 export default DashboardAdministrador;

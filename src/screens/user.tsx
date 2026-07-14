@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ScrollView, View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator, LayoutChangeEvent } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
-import * as ImagePicker from 'expo-image-picker'; 
-import { Image } from 'expo-image'; 
+import * as ImagePicker from 'expo-image-picker';
+import { Image } from 'expo-image';
+import { Feather } from '@expo/vector-icons';
 
 // SVGs
 import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
@@ -22,6 +23,7 @@ const AvatarPlaceholder = require('../../assets/avatarPlaceholder.png');
 
 // Auth
 import { getCuitFromStorage, getUserProfile, saveUserProfile } from '../utils/authStorage';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 import { API_URL } from '../config';
 
@@ -123,6 +125,7 @@ type PerfilResp = {
 
 export default function User() {
   const navigation = useNavigation<any>();
+  const isDesktopWeb = useIsDesktopWeb();
   const [perfil, setPerfil] = useState<PerfilResp | null>(null);
   const [useFallback, setUseFallback] = useState(false); 
   const [uploading, setUploading] = useState(false); 
@@ -210,15 +213,108 @@ export default function User() {
     return parts.length === 1 ? [parts[0].toUpperCase(), ''] : [parts.slice(0, -1).join(' ').toUpperCase(), parts[parts.length - 1].toUpperCase()];
   }, [perfil?.name]);
 
+  const isAdmin = !!(perfil?.role && perfil.role.toUpperCase() === 'ADMIN');
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    const menuItemsD: { icon: keyof typeof Feather.glyphMap; label: string; onPress: () => void }[] = [
+      { icon: 'grid', label: 'Mi Dashboard', onPress: () => navigation.navigate('TableroVendedor') },
+      { icon: 'heart', label: 'Mis Favoritos', onPress: () => navigation.navigate('Favoritos') },
+      { icon: 'download', label: 'Descargas', onPress: () => navigation.navigate('Descargas') },
+      { icon: 'file-text', label: 'Mis Facturas', onPress: () => navigation.navigate('FacturasVendedor') },
+      { icon: 'clipboard', label: 'Recibos', onPress: () => {} },
+      { icon: 'info', label: 'Información', onPress: () => {} },
+    ];
+
+    return (
+      <View style={ds.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={ds.page}>
+            <Text style={ds.pageTitle}>MI PERFIL</Text>
+
+            <View style={ds.topCard}>
+              <View style={ds.avatarWrap}>
+                {uploading ? (
+                  <View style={[ds.avatar, { justifyContent: 'center', alignItems: 'center' }]}>
+                    <ActivityIndicator size="small" color="#00A8E8" />
+                  </View>
+                ) : (
+                  <Image
+                    source={avatarSource}
+                    style={ds.avatar}
+                    contentFit="cover"
+                    transition={300}
+                    cachePolicy="memory-disk"
+                    onError={() => setUseFallback(true)}
+                  />
+                )}
+                <TouchableOpacity style={ds.cameraButton} onPress={pickImage}>
+                  <Feather name="camera" size={16} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+
+              <View style={{ flex: 1 }}>
+                <Text style={ds.name} key={perfil?.name || 'placeholder'}>{[line1, line2].filter(Boolean).join(' ')}</Text>
+                <View style={[ds.roleTag, !perfil?.role && { minWidth: 60, justifyContent: 'center' }]}>
+                  {perfil?.role ? (
+                    <Text style={ds.roleText}>{perfil.role}</Text>
+                  ) : (
+                    <ActivityIndicator size="small" color="#999" style={{ transform: [{ scale: 0.8 }] }} />
+                  )}
+                </View>
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14 }}>
+                  <TouchableOpacity style={ds.editBtn} onPress={() => navigation.navigate('EditUser')}>
+                    <Feather name="edit-2" size={14} color="#FFFFFF" />
+                    <Text style={ds.editBtnText}>Editar perfil</Text>
+                  </TouchableOpacity>
+
+                  {isAdmin && (
+                    <TouchableOpacity style={ds.adminBtn} onPress={() => navigation.navigate('AdminPanel')}>
+                      <Feather name="shield" size={14} color="#FFFFFF" />
+                      <Text style={ds.editBtnText}>Panel admin</Text>
+                    </TouchableOpacity>
+                  )}
+
+                  <TouchableOpacity style={ds.logoutBtn} onPress={() => navigation.reset({ index: 0, routes: [{ name: 'Login' }] })}>
+                    <Feather name="log-out" size={14} color="#E74C3C" />
+                    <Text style={ds.logoutBtnText}>Cerrar sesión</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+
+            <Text style={ds.sectionTitle}>ACCESOS RÁPIDOS</Text>
+            <View style={ds.grid}>
+              {menuItemsD.map((item) => (
+                <TouchableOpacity key={item.label} style={ds.menuCardD} onPress={item.onPress} activeOpacity={0.85}>
+                  <View style={ds.menuIconWrap}>
+                    <Feather name={item.icon} size={20} color="#1C9BD8" />
+                  </View>
+                  <Text style={ds.menuLabel}>{item.label}</Text>
+                  <Feather name="chevron-right" size={18} color="#B5B5B5" />
+                </TouchableOpacity>
+              ))}
+            </View>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
   return (
     <TinyBoundary>
       <ScrollView style={s.screen} contentContainerStyle={s.container} bounces={false}>
         
         {/* HEADER */}
         <View style={s.headerRow}>
-          <TouchableOpacity onPress={() => navigation.goBack()}>
-             {DISABLE_SVGS ? null : <FlechaHeaderSvg width={60} height={36} preserveAspectRatio="xMidYMid meet" />}
-          </TouchableOpacity>
+          {!isDesktopWeb && (
+            <TouchableOpacity onPress={() => navigation.goBack()}>
+               {DISABLE_SVGS ? null : <FlechaHeaderSvg width={60} height={36} preserveAspectRatio="xMidYMid meet" />}
+            </TouchableOpacity>
+          )}
           <Text style={s.headerTitle}>MI PERFIL</Text>
         </View>
 
@@ -410,4 +506,32 @@ const s = StyleSheet.create({
     paddingVertical: 20,
   },
   logoutText: { fontSize: 18, fontFamily: 'BarlowCondensed-Bold', color: '#E74C3C', marginLeft: 16 },
+});
+
+// --- Estilos exclusivos de desktop ---
+const ds = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', marginBottom: 24, textTransform: 'uppercase' },
+
+  topCard: { flexDirection: 'row', alignItems: 'center', gap: 28, backgroundColor: '#FFFFFF', borderRadius: 16, borderWidth: 1, borderColor: '#ECECEC', padding: 28, marginBottom: 40 },
+  avatarWrap: { position: 'relative' },
+  avatar: { width: 110, height: 110, borderRadius: 55, backgroundColor: '#E0E0E0' },
+  cameraButton: { position: 'absolute', bottom: 0, right: 0, backgroundColor: '#4A4A4A', width: 32, height: 32, borderRadius: 16, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#FFFFFF' },
+
+  name: { fontFamily: 'BarlowCondensed-Bold', fontSize: 30, color: '#2B2B2B', marginBottom: 8, textTransform: 'uppercase' },
+  roleTag: { backgroundColor: '#EEEEEE', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 4, alignSelf: 'flex-start', height: 26, justifyContent: 'center' },
+  roleText: { fontSize: 12, fontFamily: 'BarlowCondensed-Bold', color: '#616161', textTransform: 'uppercase', letterSpacing: 0.5 },
+
+  editBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#00A8E8', paddingVertical: 9, paddingHorizontal: 16, borderRadius: 8 },
+  adminBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#313131', paddingVertical: 9, paddingHorizontal: 16, borderRadius: 8 },
+  editBtnText: { color: '#FFFFFF', fontSize: 13, fontFamily: 'BarlowCondensed-Bold' },
+  logoutBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 9, paddingHorizontal: 16, borderRadius: 8, backgroundColor: '#FDEEEE' },
+  logoutBtnText: { color: '#E74C3C', fontSize: 13, fontFamily: 'BarlowCondensed-Bold' },
+
+  sectionTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 18, color: '#8A8A8A', letterSpacing: 1, marginBottom: 16 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 18 },
+  menuCardD: { width: 260, flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#ECECEC', paddingVertical: 18, paddingHorizontal: 18 },
+  menuIconWrap: { width: 40, height: 40, borderRadius: 10, backgroundColor: '#EAF6FC', alignItems: 'center', justifyContent: 'center' },
+  menuLabel: { flex: 1, fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#2B2B2B' },
 });

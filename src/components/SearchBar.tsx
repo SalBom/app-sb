@@ -22,7 +22,7 @@ interface SearchBarProps extends TextInputProps {
   containerStyle?: ViewStyle;
 }
 
-const SearchBar: React.FC<SearchBarProps> = ({
+const SearchBar = React.forwardRef<TextInput, SearchBarProps>(({
   value,
   onChangeText,
   onClear,
@@ -31,7 +31,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
   containerStyle,
   placeholder,
   ...rest
-}) => {
+}, ref) => {
   const isHero = variant === 'hero';
   return (
     <View
@@ -51,6 +51,7 @@ const SearchBar: React.FC<SearchBarProps> = ({
       )}
 
       <TextInput
+        ref={ref}
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder ?? (isHero ? 'BUSCAR' : 'Buscar...')}
@@ -78,7 +79,9 @@ const SearchBar: React.FC<SearchBarProps> = ({
       )}
     </View>
   );
-};
+});
+
+SearchBar.displayName = 'SearchBar';
 
 const styles = StyleSheet.create({
   container: {

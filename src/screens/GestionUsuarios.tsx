@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { 
-  View, Text, StyleSheet, FlatList, TouchableOpacity, 
-  ActivityIndicator, Alert, Modal, Pressable 
+import {
+  View, Text, StyleSheet, FlatList, TouchableOpacity,
+  ActivityIndicator, Alert, Modal, Pressable, ScrollView
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
 import axios from 'axios';
 import { API_URL } from '../config';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 type User = {
   id?: number;
@@ -23,7 +24,8 @@ const ROLES = ['Cliente', 'Vendedor', 'Admin', 'Vendedor Black'];
 
 const GestionUsuarios = () => {
   const navigation = useNavigation<any>();
-  
+  const isDesktopWeb = useIsDesktopWeb();
+
   // TRES PESTAÑAS: 
   // 1. usuarios (Muestra los ya asignados/registrados)
   // 2. solicitudes (Nuevos registros esperando aprobación)
@@ -190,6 +192,120 @@ const GestionUsuarios = () => {
     return null;
   };
 
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    const renderRowD = (item: User) => {
+      if (activeTab === 'usuarios') {
+        return (
+          <View key={String(item.id || item.odoo_id)} style={ds.row}>
+            <View style={{ flex: 2.2 }}>
+              <Text style={ds.rowName}>{item.name}</Text>
+              {(item.id || 0) < 0 && <Text style={ds.rowHint}>Pre-asignado (no registrado)</Text>}
+            </View>
+            <Text style={[ds.rowCell, { flex: 1.4 }]}>{item.cuit || '---'}</Text>
+            <Text style={[ds.rowCell, { flex: 1, color: '#1C9BD8', fontFamily: 'BarlowCondensed-Bold' }]}>{item.role || 'Cliente'}</Text>
+            <View style={{ flex: 1, alignItems: 'flex-end' }}>
+              <TouchableOpacity onPress={() => openRoleModal(item, false)} style={ds.editBtn}>
+                <Feather name="edit-2" size={16} color="#555" />
+              </TouchableOpacity>
+            </View>
+          </View>
+        );
+      }
+      if (activeTab === 'solicitudes') {
+        return (
+          <View key={String(item.id || item.odoo_id)} style={ds.row}>
+            <Text style={[ds.rowName, { flex: 2.2 }]}>{item.name}</Text>
+            <Text style={[ds.rowCell, { flex: 2.4 }]}>{item.email}</Text>
+            <View style={{ flex: 1, alignItems: 'flex-end' }}>
+              <TouchableOpacity style={ds.approveBtn} onPress={() => item.id && handleApprove(item.id)}>
+                <Ionicons name="checkmark-circle" size={16} color="#FFF" />
+                <Text style={ds.approveText}>Aprobar</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        );
+      }
+      const isInternal = item.tipo_odoo === 'Interno';
+      return (
+        <View key={String(item.id || item.odoo_id)} style={ds.row}>
+          <Text style={[ds.rowName, { flex: 2.2 }]}>{item.name}</Text>
+          <View style={{ flex: 1.4, flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            <View style={[ds.badge, { backgroundColor: isInternal ? '#FFF3E0' : '#E3F2FD' }]}>
+              <Text style={{ fontSize: 10, fontFamily: 'BarlowCondensed-Bold', color: isInternal ? '#E67E22' : '#1C9BD8' }}>{item.tipo_odoo?.toUpperCase()}</Text>
+            </View>
+            <Text style={ds.rowCell}>{item.cuit || 'Sin CUIT'}</Text>
+          </View>
+          <View style={{ flex: 1 }} />
+          <View style={{ flex: 1, alignItems: 'flex-end' }}>
+            <TouchableOpacity onPress={() => openRoleModal(item, true)} style={[ds.approveBtn, { backgroundColor: '#6C757D' }]}>
+              <Text style={ds.approveText}>ASIGNAR ROL</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      );
+    };
+
+    return (
+      <View style={ds.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={ds.page}>
+            <Text style={ds.pageTitle}>GESTIÓN DE USUARIOS</Text>
+
+            <View style={ds.tabsRow}>
+              {(['usuarios', 'solicitudes', 'odoo'] as const).map((t) => (
+                <TouchableOpacity key={t} onPress={() => setActiveTab(t)}>
+                  <Text style={[ds.tabText, activeTab === t && ds.tabTextActive]}>
+                    {t === 'usuarios' ? 'Usuarios' : t === 'solicitudes' ? 'Solicitudes' : 'Usuarios Odoo'}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            <View style={ds.tabDivider} />
+
+            {loading ? (
+              <ActivityIndicator size="large" color="#1C9BD8" style={{ marginTop: 40 }} />
+            ) : dataList.length === 0 ? (
+              <Text style={ds.emptyText}>No hay registros.</Text>
+            ) : (
+              <View style={ds.table}>
+                <View style={ds.tableHeadRow}>
+                  <Text style={[ds.th, { flex: 2.2 }]}>NOMBRE</Text>
+                  <Text style={[ds.th, { flex: activeTab === 'solicitudes' ? 2.4 : 1.4 }]}>{activeTab === 'solicitudes' ? 'EMAIL' : activeTab === 'odoo' ? 'ORIGEN' : 'CUIT'}</Text>
+                  {activeTab === 'usuarios' && <Text style={[ds.th, { flex: 1 }]}>ROL</Text>}
+                  {activeTab === 'odoo' && <View style={{ flex: 1 }} />}
+                  <Text style={[ds.th, { flex: 1, textAlign: 'right' }]}>ACCIÓN</Text>
+                </View>
+                {dataList.map(renderRowD)}
+              </View>
+            )}
+          </View>
+        </ScrollView>
+
+        <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => setModalVisible(false)}>
+          <Pressable style={ds.modalOverlay} onPress={() => setModalVisible(false)}>
+            <Pressable style={ds.modalCard} onPress={(e: any) => e.stopPropagation?.()}>
+              <Text style={styles.modalTitle}>{isImporting ? 'Asignar Rol (Pre-alta)' : 'Cambiar Rol'}</Text>
+              <Text style={{ textAlign: 'center', marginBottom: 15, color: '#666' }}>Usuario: {selectedUser?.name}</Text>
+              {ROLES.map((r) => (
+                <TouchableOpacity
+                  key={r}
+                  style={[styles.roleOption, selectedUser?.role === r && !isImporting && styles.roleOptionSelected]}
+                  onPress={() => handleChangeRole(r)}
+                >
+                  <Text style={[styles.roleText, selectedUser?.role === r && !isImporting && styles.roleTextSelected]}>{r}</Text>
+                  {selectedUser?.role === r && !isImporting && <Ionicons name="checkmark" size={20} color="#1C9BD8" />}
+                </TouchableOpacity>
+              ))}
+            </Pressable>
+          </Pressable>
+        </Modal>
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       {/* Header */}
@@ -301,6 +417,34 @@ const styles = StyleSheet.create({
   roleOptionSelected: { backgroundColor: '#F0F9FF', marginHorizontal: -20, paddingHorizontal: 20 },
   roleText: { fontSize: 16, color: '#555' },
   roleTextSelected: { color: '#1C9BD8', fontWeight: 'bold' }
+});
+
+// --- Estilos exclusivos de desktop ---
+const ds = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', marginBottom: 26, textTransform: 'uppercase' },
+
+  tabsRow: { flexDirection: 'row', gap: 32 },
+  tabText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 18, color: '#9CA3AF', paddingBottom: 12 },
+  tabTextActive: { color: '#1C9BD8', borderBottomWidth: 2, borderBottomColor: '#1C9BD8' },
+  tabDivider: { height: 1, backgroundColor: '#EFEFEF', marginTop: -1, marginBottom: 24 },
+
+  table: { borderWidth: 1, borderColor: '#ECECEC', borderRadius: 12, overflow: 'hidden' },
+  tableHeadRow: { flexDirection: 'row', backgroundColor: '#FAFAFA', paddingVertical: 12, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: '#ECECEC' },
+  th: { fontFamily: 'BarlowCondensed-Bold', fontSize: 12, color: '#8A8A8A', letterSpacing: 0.5 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
+  rowName: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#2B2B2B' },
+  rowHint: { fontFamily: 'Rubik', fontSize: 11, color: '#E67E22', marginTop: 2 },
+  rowCell: { fontFamily: 'Rubik', fontSize: 13, color: '#555' },
+  badge: { paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  editBtn: { width: 34, height: 34, borderRadius: 8, backgroundColor: '#F3F4F6', alignItems: 'center', justifyContent: 'center' },
+  approveBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#10B981', paddingVertical: 8, paddingHorizontal: 14, borderRadius: 8 },
+  approveText: { color: '#FFF', fontSize: 12, fontFamily: 'BarlowCondensed-Bold' },
+  emptyText: { textAlign: 'center', marginTop: 60, color: '#999', fontSize: 16, fontFamily: 'BarlowCondensed-Regular' },
+
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
+  modalCard: { width: 420, maxWidth: '90%', backgroundColor: '#FFFFFF', borderRadius: 16, padding: 24, shadowColor: '#000', shadowOpacity: 0.15, shadowOffset: { width: 0, height: 8 }, shadowRadius: 24, elevation: 8 },
 });
 
 export default GestionUsuarios;

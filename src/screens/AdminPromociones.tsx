@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
-import { 
-  View, Text, StyleSheet, FlatList, TouchableOpacity, 
-  ActivityIndicator, TextInput, Modal
+import {
+  View, Text, StyleSheet, FlatList, TouchableOpacity,
+  ActivityIndicator, TextInput, Modal, ScrollView
 } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
@@ -11,6 +11,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import FlechaHeaderSvg from '../../assets/flechaHeader.svg'; 
 
 import { API_URL } from '../config';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 interface PromoItem {
   id: number;
@@ -29,7 +30,8 @@ interface PromoItem {
 export default function AdminPromociones() {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
-  
+  const isDesktopWeb = useIsDesktopWeb();
+
   const [promos, setPromos] = useState<PromoItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -149,6 +151,132 @@ export default function AdminPromociones() {
       </TouchableOpacity>
     );
   };
+
+  const renderCardD = (item: PromoItem) => {
+    let badgeColor = '#4CAF50';
+    let badgeText = 'ACTIVA';
+    let cardOpacity = 1;
+    if (item.status === 'vencida') { badgeColor = '#F44336'; badgeText = 'VENCIDA'; cardOpacity = 0.7; }
+    else if (item.status === 'futura') { badgeColor = '#FF9800'; badgeText = 'FUTURA'; }
+
+    return (
+      <TouchableOpacity
+        key={item.id}
+        style={[dsty.card, { opacity: cardOpacity }]}
+        onPress={() => navigation.navigate('AdminNuevaPromo', { promo: item })}
+        activeOpacity={0.8}
+      >
+        <View style={dsty.cardHeader}>
+          <View style={[dsty.badge, { backgroundColor: badgeColor }]}><Text style={dsty.badgeText}>{badgeText}</Text></View>
+          <Text style={dsty.qtyText}>Min: {item.min_qty} u.</Text>
+        </View>
+        <Text style={dsty.prodName} numberOfLines={2}>{item.name}</Text>
+        <Text style={dsty.price}>USD {item.price.toFixed(2)}</Text>
+        <View style={dsty.cardFooter}>
+          <View>
+            <Text style={dsty.dateLabel}>Desde</Text>
+            <Text style={[dsty.dateText, sortBy === 'date_start' && dsty.highlightText]}>{formatDate(item.date_start)}</Text>
+          </View>
+          <View>
+            <Text style={dsty.dateLabel}>Hasta</Text>
+            <Text style={[dsty.dateText, sortBy === 'date_end' && dsty.highlightText]}>{formatDate(item.date_end)}</Text>
+          </View>
+          <Ionicons name="create-outline" size={20} color="#139EDB" />
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    return (
+      <View style={dsty.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={dsty.page}>
+            <View style={dsty.headerRow}>
+              <Text style={dsty.pageTitle}>PROMOCIONES</Text>
+              <TouchableOpacity style={dsty.newButton} onPress={() => navigation.navigate('AdminNuevaPromo')}>
+                <Ionicons name="add" size={18} color="#FFF" />
+                <Text style={dsty.newButtonText}>NUEVA PROMOCIÓN</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={dsty.filtersRow}>
+              <View style={dsty.searchInputWrap}>
+                <Ionicons name="search" size={18} color="#999" style={{ marginRight: 8 }} />
+                <TextInput style={dsty.searchInput} placeholder="Buscar producto..." placeholderTextColor="#999" value={search} onChangeText={setSearch} />
+              </View>
+
+              <TouchableOpacity style={dsty.dropdownButton} onPress={() => setShowMonthPicker(true)}>
+                <Text style={dsty.dropdownText}>{MONTHS[selectedMonth - 1]}</Text>
+                <Ionicons name="chevron-down" size={14} color="#666" />
+              </TouchableOpacity>
+              <TouchableOpacity style={[dsty.dropdownButton, { width: 90 }]} onPress={() => setShowYearPicker(true)}>
+                <Text style={dsty.dropdownText}>{selectedYear}</Text>
+                <Ionicons name="chevron-down" size={14} color="#666" />
+              </TouchableOpacity>
+
+              <TouchableOpacity style={[dsty.statusButton, { backgroundColor: filterStatus === 'active' ? '#E8F5E9' : '#FFEBEE' }]} onPress={toggleStatus}>
+                <Text style={[dsty.statusButtonText, { color: filterStatus === 'active' ? '#4CAF50' : '#F44336' }]}>
+                  {filterStatus === 'active' ? 'ACTIVAS' : 'VENCIDAS'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity style={dsty.sortButton} onPress={toggleSortBy}>
+                <Text style={dsty.sortLabel}>ORDENAR:</Text>
+                <Text style={dsty.sortValue}>{sortBy === 'date_start' ? 'DESDE' : 'HASTA'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={dsty.sortDirBtn} onPress={toggleSortDir}>
+                <Ionicons name={sortDir === 'asc' ? 'arrow-up' : 'arrow-down'} size={16} color="#2B2B2B" />
+              </TouchableOpacity>
+            </View>
+
+            {loading ? (
+              <ActivityIndicator size="large" color="#139EDB" style={{ marginTop: 50 }} />
+            ) : promos.length === 0 ? (
+              <Text style={dsty.emptyText}>No hay promociones {filterStatus === 'active' ? 'activas' : 'vencidas'} en este periodo.</Text>
+            ) : (
+              <View style={dsty.grid}>{promos.map(renderCardD)}</View>
+            )}
+          </View>
+        </ScrollView>
+
+        <Modal visible={showMonthPicker} transparent animationType="fade">
+          <TouchableOpacity style={styles.modalOverlay} onPress={() => setShowMonthPicker(false)}>
+            <View style={styles.pickerContainer}>
+              <FlatList
+                data={MONTHS}
+                keyExtractor={(item) => item}
+                renderItem={({ item, index }) => (
+                  <TouchableOpacity style={styles.pickerItem} onPress={() => { setSelectedMonth(index + 1); setShowMonthPicker(false); }}>
+                    <Text style={[styles.pickerText, selectedMonth === index + 1 && styles.pickerTextActive]}>{item}</Text>
+                  </TouchableOpacity>
+                )}
+              />
+            </View>
+          </TouchableOpacity>
+        </Modal>
+
+        <Modal visible={showYearPicker} transparent animationType="fade">
+          <TouchableOpacity style={styles.modalOverlay} onPress={() => setShowYearPicker(false)}>
+            <View style={styles.pickerContainer}>
+              <FlatList
+                data={YEARS}
+                keyExtractor={(item) => item.toString()}
+                renderItem={({ item }) => (
+                  <TouchableOpacity style={styles.pickerItem} onPress={() => { setSelectedYear(item); setShowYearPicker(false); }}>
+                    <Text style={[styles.pickerText, selectedYear === item && styles.pickerTextActive]}>{item}</Text>
+                  </TouchableOpacity>
+                )}
+              />
+            </View>
+          </TouchableOpacity>
+        </Modal>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -379,4 +507,40 @@ const styles = StyleSheet.create({
   pickerItem: { paddingVertical: 12, alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#F5F5F5' },
   pickerText: { fontSize: 16, fontFamily: 'BarlowCondensed-Medium', color: '#333' },
   pickerTextActive: { color: '#139EDB', fontWeight: 'bold' }
+});
+
+// --- Estilos exclusivos de desktop ---
+const dsty = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', textTransform: 'uppercase' },
+  newButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#139EDB', paddingVertical: 12, paddingHorizontal: 20, borderRadius: 8, gap: 6 },
+  newButtonText: { fontSize: 14, fontFamily: 'BarlowCondensed-Bold', color: '#FFF' },
+
+  filtersRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 28, flexWrap: 'wrap' },
+  searchInputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0', height: 42, paddingHorizontal: 12, width: 260 },
+  searchInput: { flex: 1, fontSize: 14, fontFamily: 'BarlowCondensed-Medium', color: '#333' },
+  dropdownButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#FAFAFA', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0', width: 120 },
+  dropdownText: { fontSize: 13, fontFamily: 'BarlowCondensed-Bold', color: '#333', textTransform: 'uppercase' },
+  statusButton: { paddingVertical: 10, paddingHorizontal: 16, borderRadius: 20 },
+  statusButtonText: { fontSize: 12, fontFamily: 'BarlowCondensed-Bold' },
+  sortButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0', height: 42, paddingHorizontal: 12, gap: 4 },
+  sortLabel: { fontSize: 11, fontFamily: 'BarlowCondensed-Regular', color: '#666' },
+  sortValue: { fontSize: 13, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' },
+  sortDirBtn: { width: 42, height: 42, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FAFAFA', borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0' },
+
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 18 },
+  card: { width: 280, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#ECECEC', padding: 18 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  badge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 4 },
+  badgeText: { color: '#FFF', fontSize: 10, fontFamily: 'BarlowCondensed-Bold' },
+  qtyText: { fontSize: 12, color: '#8A8A8A', fontFamily: 'Rubik' },
+  prodName: { fontSize: 16, fontFamily: 'BarlowCondensed-Bold', color: '#333', lineHeight: 20, minHeight: 40 },
+  price: { fontSize: 22, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B', marginTop: 4, marginBottom: 12 },
+  cardFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderTopColor: '#F5F5F5', paddingTop: 12 },
+  dateLabel: { fontSize: 11, color: '#999', fontFamily: 'Rubik' },
+  dateText: { fontSize: 13, color: '#333', fontFamily: 'BarlowCondensed-Bold', marginTop: 2 },
+  highlightText: { color: '#139EDB' },
+  emptyText: { textAlign: 'center', fontSize: 16, color: '#999', marginTop: 60, fontFamily: 'Rubik' },
 });

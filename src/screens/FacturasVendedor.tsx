@@ -10,6 +10,7 @@ import {
   Linking,
   Alert,
   Platform,
+  ScrollView,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
@@ -24,6 +25,7 @@ import ContenedorFacturaSvg from '../../assets/contenedorFactura.svg';
 import FlechaPedidoSvg from '../../assets/flechaPedido.svg';
 
 import { API_URL } from '../config';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 type ComprobanteItem = {
   numero_factura: string;
@@ -38,6 +40,7 @@ const PAGE_SIZE = 20;
 
 const FacturasVendedor: React.FC = () => {
   const navigation = useNavigation<any>();
+  const isDesktopWeb = useIsDesktopWeb();
 
   // Data State
   const [comprobantes, setComprobantes] = useState<ComprobanteItem[]>([]);
@@ -268,6 +271,87 @@ const FacturasVendedor: React.FC = () => {
     return <View style={{ paddingVertical: 20 }}><ActivityIndicator size="small" color="#0088CC" /></View>;
   };
 
+  const renderRowD = (item: ComprobanteItem, idx: number) => {
+    const isCliente = item.rol === 'CLIENTE';
+    const roleColor = isCliente ? '#1976D2' : '#F57C00';
+    const roleLabel = isCliente ? 'COMO CLIENTE' : 'COMO PROVEEDOR';
+    const isPaid = item.estado_pago === 'paid' || item.estado_pago === 'in_payment';
+    const pagoColor = isPaid ? '#4CAF50' : '#D32F2F';
+    const pagoLabel = isPaid ? 'PAGADO' : 'PENDIENTE';
+
+    return (
+      <View key={item.numero_factura + idx} style={ds.row}>
+        <Text style={[ds.rowCell, { flex: 1.4, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' }]}>{item.numero_factura.replace('FA-A', '#')}</Text>
+        <Text style={[ds.rowCell, { flex: 1.4, color: roleColor, fontFamily: 'BarlowCondensed-Bold' }]}>{roleLabel}</Text>
+        <Text style={[ds.rowCell, { flex: 1 }]}>{formatFecha(item.fecha)}</Text>
+        <Text style={[ds.rowCell, { flex: 1, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' }]}>{item.moneda} {formatCurrency(item.total)}</Text>
+        <View style={{ flex: 1.4, flexDirection: 'row', gap: 6 }}>
+          <View style={[ds.badge, { backgroundColor: pagoColor }]}><Text style={ds.badgeText}>{pagoLabel}</Text></View>
+          <View style={[ds.badge, { backgroundColor: roleColor }]}><Text style={ds.badgeText}>{isCliente ? 'RECIBIDA' : 'EMITIDA'}</Text></View>
+        </View>
+        <View style={{ flex: 0.6, alignItems: 'flex-end' }}>
+          <TouchableOpacity onPress={() => handleDownloadPdf(item.numero_factura)}><Feather name="download" size={18} color="#2B2B2B" /></TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    return (
+      <View style={ds.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={ds.page}>
+            <Text style={ds.pageTitle}>MIS COMPROBANTES</Text>
+
+            <View style={ds.filtersRow}>
+              <View style={ds.searchInputWrap}>
+                <Ionicons name="search" size={18} color="#999" style={{ marginRight: 8 }} />
+                <TextInput style={ds.searchInput} placeholder="Buscar N°..." placeholderTextColor="#999" value={search} onChangeText={setSearch} />
+              </View>
+              <TouchableOpacity style={ds.filterBtn} onPress={() => setShowDatePicker(true)}>
+                <Feather name="calendar" size={14} color="#666" />
+                <Text style={[ds.filterText, !dateFilter && { color: '#999' }]}>{dateFilter ? displayDate : 'Fecha'}</Text>
+              </TouchableOpacity>
+              <View style={ds.filterBtn}>
+                <TextInput style={ds.filterText} placeholder="Estado de pago" placeholderTextColor="#999" value={statusFilter} onChangeText={setStatusFilter} />
+              </View>
+            </View>
+
+            {showDatePicker && <DateTimePicker value={dateFilter || new Date()} mode="date" display="default" onChange={onChangeDate} maximumDate={new Date()} />}
+
+            {loadingInitial ? (
+              <ActivityIndicator size="large" color="#0088CC" style={{ marginTop: 40 }} />
+            ) : error ? (
+              <Text style={ds.emptyText}>{error}</Text>
+            ) : comprobantes.length === 0 ? (
+              <Text style={ds.emptyText}>No se encontraron comprobantes.</Text>
+            ) : (
+              <View style={ds.table}>
+                <View style={ds.tableHeadRow}>
+                  <Text style={[ds.th, { flex: 1.4 }]}>NÚMERO</Text>
+                  <Text style={[ds.th, { flex: 1.4 }]}>TIPO</Text>
+                  <Text style={[ds.th, { flex: 1 }]}>FECHA</Text>
+                  <Text style={[ds.th, { flex: 1 }]}>TOTAL</Text>
+                  <Text style={[ds.th, { flex: 1.4 }]}>ESTADO</Text>
+                  <View style={{ flex: 0.6 }} />
+                </View>
+                {comprobantes.map(renderRowD)}
+                {hasMore && !(search.trim() || dateFilter || statusFilter) && (
+                  <TouchableOpacity onPress={loadMore} style={ds.loadMoreBtn}>
+                    {loadingMore ? <ActivityIndicator size="small" color="#1C9BD8" /> : <Text style={ds.loadMoreText}>Cargar más...</Text>}
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
   return (
     <View style={s.screen}>
       <View style={s.header}>
@@ -348,6 +432,30 @@ const s = StyleSheet.create({
   badgeText: { color: '#FFFFFF', fontSize: 10, fontFamily: 'BarlowCondensed-Bold', textAlign: 'center' },
   actionsRow: { flexDirection: 'row', marginTop: 8, justifyContent: 'flex-end', width: '100%' },
   iconButton: { marginLeft: 15, padding: 8 },
+});
+
+// --- Estilos exclusivos de desktop ---
+const ds = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', marginBottom: 24, textTransform: 'uppercase' },
+
+  filtersRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 24 },
+  searchInputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0', height: 42, paddingHorizontal: 12, width: 260 },
+  searchInput: { flex: 1, fontFamily: 'BarlowCondensed-Medium', fontSize: 14, color: '#2B2B2B' },
+  filterBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FAFAFA', borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0', height: 42, paddingHorizontal: 14, width: 170 },
+  filterText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#2B2B2B' },
+
+  table: { borderWidth: 1, borderColor: '#ECECEC', borderRadius: 12, padding: 8 },
+  tableHeadRow: { flexDirection: 'row', paddingVertical: 10, paddingHorizontal: 12, borderBottomWidth: 2, borderBottomColor: '#F0F0F0' },
+  th: { fontFamily: 'BarlowCondensed-Bold', fontSize: 12, color: '#8A8A8A', letterSpacing: 0.5 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: '#F7F7F7' },
+  rowCell: { fontFamily: 'Rubik', fontSize: 13, color: '#555' },
+  badge: { borderRadius: 12, paddingVertical: 3, paddingHorizontal: 8 },
+  badgeText: { color: '#FFF', fontSize: 10, fontFamily: 'BarlowCondensed-Bold', textAlign: 'center' },
+  emptyText: { textAlign: 'center', color: '#999', fontFamily: 'Rubik', fontSize: 15, marginTop: 60 },
+  loadMoreBtn: { alignItems: 'center', paddingVertical: 16 },
+  loadMoreText: { color: '#8A8A8A', fontFamily: 'Rubik', fontSize: 13 },
 });
 
 export default FacturasVendedor;

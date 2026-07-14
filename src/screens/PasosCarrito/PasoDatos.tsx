@@ -11,6 +11,7 @@ import LayoutRefresh from '../../components/LayoutRefresh';
 import PlaceIcon from '../../../assets/place.svg';
 import RetiroIcon from '../../../assets/retiro.svg';
 import { API_URL } from '../../config';
+import useIsDesktopWeb from '../../hooks/useIsDesktopWeb';
 
 interface Props { onNext: () => void; onBack: () => void; }
 
@@ -18,12 +19,21 @@ type Plazo = { id: number; nombre: string };
 type MetodoEnvio = 'domicilio' | 'sucursal' | null;
 type Address = { id?: number | string; name?: string; street?: string; city?: string; state?: string; zip?: string; source?: 'partner' | 'delivery_child'; };
 
+// En web, require() de una imagen devuelve directamente una URL (string) en vez de un
+// id numérico de asset nativo, y RNImage.resolveAssetSource() no puede resolverla,
+// por lo que necesitamos un fallback con las dimensiones reales del PNG.
+function getImageRatio(source: any, fallbackWidth: number, fallbackHeight: number) {
+  try {
+    const resolved = RNImage.resolveAssetSource(source);
+    if (resolved?.width && resolved?.height) return resolved.width / resolved.height;
+  } catch (e) {}
+  return fallbackWidth / fallbackHeight;
+}
+
 const BG_PICKERS = require('../../../assets/contenedorPicker.png');
-const { width: P_W, height: P_H } = RNImage.resolveAssetSource(BG_PICKERS);
-const PICKER_RATIO = P_W / P_H;
+const PICKER_RATIO = getImageRatio(BG_PICKERS, 361, 119);
 const BG_ENVIO = require('../../../assets/contenedorEnvio.png');
-const { width: E_W, height: E_H } = RNImage.resolveAssetSource(BG_ENVIO);
-const ENVIO_RATIO = E_W / E_H;
+const ENVIO_RATIO = getImageRatio(BG_ENVIO, 344, 264);
 const BG_DIRECCION = require('../../../assets/contenedorDireccion.png');
 
 const SIDE_MARGIN = 10;
@@ -45,7 +55,8 @@ const toNum = (v:any)=> (typeof v==='number'? v : Number(String(v).replace(/\./g
 
 const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
   const insets = useSafeAreaInsets();
-  
+  const isDesktopWeb = useIsDesktopWeb();
+
   // LEEMOS EL CLIENTE DIRECTO DEL PASO 1
   const { items, plazoSeleccionado, clienteSeleccionado } = useCartStore(); 
   const setStore = (useCartStore as any).setState;
@@ -290,68 +301,130 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
     } catch (e) { Alert.alert('Error de conexión', 'Verifica tu internet.'); }
   };
 
+  const direccionBlock = metodoEnvio === 'domicilio' ? (
+    <View style={{ marginTop: isDesktopWeb ? 18 : 14 }}>
+      <Text style={isDesktopWeb ? dstyles.dirTitle : styles.dirTitle}>DIRECCIÓN DE ENVÍO</Text>
+      {isDesktopWeb ? (
+        <View style={dstyles.dirCard}>
+          <View style={dstyles.dirRow}>
+            <PlaceIcon width={20} height={20} style={{ marginRight: 10 }} />
+            <View style={{ flex: 1 }}>
+              {loadingAddress ? <Text style={dstyles.dirLocal}>Buscando dirección...</Text> : <><Text style={dstyles.dirLocal}>{deliveryName}</Text><Text style={dstyles.dirAddress}>{deliveryAddress || '—'}</Text></>}
+            </View>
+            <Pressable style={dstyles.changeBtn} onPress={() => setModal({ open: true, type: 'direccion' })}><Text style={dstyles.changeBtnText}>CAMBIAR DIRECCIÓN</Text></Pressable>
+          </View>
+          {!loadingAddress && deliveryAddress ? (
+            <View style={dstyles.mapWrap}>
+              {/* @ts-ignore: iframe es un elemento DOM válido en web, no existe en RN nativo */}
+              <iframe
+                key={deliveryAddress}
+                title="Ubicación de entrega"
+                src={`https://www.google.com/maps?q=${encodeURIComponent(deliveryAddress)}&output=embed`}
+                style={{ width: '100%', height: '100%', border: 0 }}
+                loading="lazy"
+              />
+            </View>
+          ) : null}
+        </View>
+      ) : (
+        <ImageBackground source={BG_DIRECCION} style={[styles.direccionCard, { width: cardW - 36 }]} resizeMode="stretch">
+          <View style={styles.dirRow}>
+            <PlaceIcon width={20} height={20} style={styles.dirIconSvg} />
+            <View style={{flex:1}}>{loadingAddress ? <Text style={styles.dirLocal}>Buscando dirección...</Text> : <><Text style={styles.dirLocal}>{deliveryName}</Text><Text style={styles.dirAddress}>{deliveryAddress || '—'}</Text></>}</View>
+          </View>
+          <Pressable style={styles.changeBtn} onPress={() => setModal({ open: true, type: 'direccion' })}><Text style={styles.changeBtnText}>CAMBIAR DIRECCIÓN</Text></Pressable>
+        </ImageBackground>
+      )}
+    </View>
+  ) : metodoEnvio === 'sucursal' ? (
+    <View style={{ marginTop: isDesktopWeb ? 18 : 14 }}>
+      <Text style={isDesktopWeb ? dstyles.dirTitle : styles.dirTitle}>DIRECCIÓN DE RETIRO</Text>
+      {isDesktopWeb ? (
+        <View style={dstyles.dirCard}>
+          <View style={dstyles.dirRow}>
+            <RetiroIcon width={20} height={20} style={{ marginRight: 10 }} />
+            <View><Text style={dstyles.dirLocal}>MEDLOG SARANDÍ</Text><Text style={dstyles.dirAddress}>Nicaragua 1651, Sarandí, Buenos Aires B1876</Text></View>
+          </View>
+          <View style={dstyles.mapWrap}>
+            {/* @ts-ignore: iframe es un elemento DOM válido en web, no existe en RN nativo */}
+            <iframe
+              title="Ubicación de retiro - MEDLOG Sarandí"
+              src="https://www.google.com/maps?q=Nicaragua+1651,+Sarand%C3%AD,+Buenos+Aires&output=embed"
+              style={{ width: '100%', height: '100%', border: 0 }}
+              loading="lazy"
+            />
+          </View>
+        </View>
+      ) : (
+        <ImageBackground source={BG_DIRECCION} style={[styles.direccionCard, { width: cardW - 36 }]} resizeMode="stretch">
+          <View style={styles.dirRow}>
+            <RetiroIcon width={20} height={20} style={styles.dirIconSvg} />
+            <View><Text style={styles.dirLocal}>MEDLOG SARANDÍ</Text><Text style={styles.dirAddress}>Nicaragua 1651, Sarandí, Buenos Aires B1876</Text></View>
+          </View>
+        </ImageBackground>
+      )}
+    </View>
+  ) : null;
+
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, isDesktopWeb && dstyles.containerDesktop]}>
       <LayoutRefresh onRecargar={cargarDatos} contentContainerStyle={[styles.scrollContent, { paddingBottom: 10 + insets.bottom }]}>
         <CarritoHeader step={2} onBack={onBack} />
-        
-        <View style={[styles.cardWrap, { width: cardW }]}>
-          <ImageBackground source={BG_PICKERS} style={[styles.cardBg, { width: cardW, height: pickersH }]} resizeMode="stretch">
-            <View style={styles.cardContent}>
-              <View style={styles.plazoInfoBox}>
-                  <Text style={styles.plazoLabel}>PLAZO GENERAL DEL PEDIDO (MÁXIMO):</Text>
-                  <Text style={styles.plazoValue}>{nombrePlazoMaximo}</Text>
-                  <Text style={styles.plazoSub}>Calculado automáticamente según los ítems de tu carrito.</Text>
-              </View>
-            </View>
-          </ImageBackground>
-        </View>
 
-        <View style={[styles.cardWrap, { width: cardW, marginTop: 14 }]}>
-          <ImageBackground source={BG_ENVIO} style={[styles.cardBg, styles.envioBg, { width: cardW, height: envioH }]} resizeMode="stretch">
-            <Text style={styles.envioTitle}>MÉTODO DE ENVÍO</Text>
-            <View style={styles.envioRow}>
-              <OptionPill label={'ENVÍO A\nDOMICILIO'} selected={metodoEnvio === 'domicilio'} dimmed={metodoEnvio === 'sucursal'} onPress={() => setMetodoEnvio('domicilio')} />
-              <View style={{ width: 14 }} />
-              <OptionPill label={'RETIRO EN\nSUCURSAL'} selected={metodoEnvio === 'sucursal'} dimmed={metodoEnvio === 'domicilio'} onPress={() => setMetodoEnvio('sucursal')} />
+        {isDesktopWeb ? (
+          <View style={dstyles.plazoCard}>
+            <Text style={dstyles.plazoLabel}>PLAZO GENERAL DEL PEDIDO (MÁXIMO):</Text>
+            <Text style={dstyles.plazoValue}>{nombrePlazoMaximo}</Text>
+            <Text style={dstyles.plazoSub}>Calculado automáticamente según los ítems de tu carrito.</Text>
+          </View>
+        ) : (
+          <View style={[styles.cardWrap, { width: cardW }]}>
+            <ImageBackground source={BG_PICKERS} style={[styles.cardBg, { width: cardW, height: pickersH }]} resizeMode="stretch">
+              <View style={styles.cardContent}>
+                <View style={styles.plazoInfoBox}>
+                    <Text style={styles.plazoLabel}>PLAZO GENERAL DEL PEDIDO (MÁXIMO):</Text>
+                    <Text style={styles.plazoValue}>{nombrePlazoMaximo}</Text>
+                    <Text style={styles.plazoSub}>Calculado automáticamente según los ítems de tu carrito.</Text>
+                </View>
+              </View>
+            </ImageBackground>
+          </View>
+        )}
+
+        {isDesktopWeb ? (
+          <View style={dstyles.envioCard}>
+            <Text style={dstyles.envioTitle}>MÉTODO DE ENVÍO</Text>
+            <View style={dstyles.envioRow}>
+              <DesktopPill label="ENVÍO A DOMICILIO" selected={metodoEnvio === 'domicilio'} onPress={() => setMetodoEnvio('domicilio')} />
+              <DesktopPill label="RETIRO EN SUCURSAL" selected={metodoEnvio === 'sucursal'} onPress={() => setMetodoEnvio('sucursal')} />
             </View>
-            {metodoEnvio === 'domicilio' && (
-              <View style={{ marginTop: 14 }}>
-                <Text style={styles.dirTitle}>DIRECCIÓN DE ENVÍO</Text>
-                <ImageBackground source={BG_DIRECCION} style={[styles.direccionCard, { width: cardW - 36 }]} resizeMode="stretch">
-                  <View style={styles.dirRow}>
-                    <PlaceIcon width={20} height={20} style={styles.dirIconSvg} />
-                    <View style={{flex:1}}>{loadingAddress ? <Text style={styles.dirLocal}>Buscando dirección...</Text> : <><Text style={styles.dirLocal}>{deliveryName}</Text><Text style={styles.dirAddress}>{deliveryAddress || '—'}</Text></>}</View>
-                  </View>
-                  <Pressable style={styles.changeBtn} onPress={() => setModal({ open: true, type: 'direccion' })}><Text style={styles.changeBtnText}>CAMBIAR DIRECCIÓN</Text></Pressable>
-                </ImageBackground>
+            {direccionBlock}
+          </View>
+        ) : (
+          <View style={[styles.cardWrap, { width: cardW, marginTop: 14 }]}>
+            <ImageBackground source={BG_ENVIO} style={[styles.cardBg, styles.envioBg, { width: cardW, height: envioH }]} resizeMode="stretch">
+              <Text style={styles.envioTitle}>MÉTODO DE ENVÍO</Text>
+              <View style={styles.envioRow}>
+                <OptionPill label={'ENVÍO A\nDOMICILIO'} selected={metodoEnvio === 'domicilio'} dimmed={metodoEnvio === 'sucursal'} onPress={() => setMetodoEnvio('domicilio')} />
+                <View style={{ width: 14 }} />
+                <OptionPill label={'RETIRO EN\nSUCURSAL'} selected={metodoEnvio === 'sucursal'} dimmed={metodoEnvio === 'domicilio'} onPress={() => setMetodoEnvio('sucursal')} />
               </View>
-            )}
-            {metodoEnvio === 'sucursal' && (
-              <View style={{ marginTop: 14 }}>
-                <Text style={styles.dirTitle}>DIRECCIÓN DE RETIRO</Text>
-                <ImageBackground source={BG_DIRECCION} style={[styles.direccionCard, { width: cardW - 36 }]} resizeMode="stretch">
-                  <View style={styles.dirRow}>
-                    <RetiroIcon width={20} height={20} style={styles.dirIconSvg} />
-                    <View><Text style={styles.dirLocal}>MEDLOG SARANDÍ</Text><Text style={styles.dirAddress}>Nicaragua 1651, Sarandí, Buenos Aires B1876</Text></View>
-                  </View>
-                </ImageBackground>
-              </View>
-            )}
-          </ImageBackground>
-        </View>
+              {direccionBlock}
+            </ImageBackground>
+          </View>
+        )}
       </LayoutRefresh>
 
-      <View style={[styles.footerContainer, { paddingBottom: Math.max(20, insets.bottom + 35) }]}>
-        <View style={styles.buttonsRow}>
-            <TouchableOpacity onPress={onBack} style={styles.btnVolver}><Text style={styles.btnTextVolver}>VOLVER</Text></TouchableOpacity>
-            <TouchableOpacity disabled={!ready} onPress={handleContinuar} style={[styles.btnContinuar, !ready && { opacity: 0.5 }]}><Text style={styles.btnTextContinuar}>CONTINUAR</Text></TouchableOpacity>
+      <View style={[styles.footerContainer, isDesktopWeb && dstyles.footerContainer, { paddingBottom: Math.max(20, insets.bottom + 35) }]}>
+        <View style={[styles.buttonsRow, isDesktopWeb && dstyles.buttonsRow]}>
+            <TouchableOpacity onPress={onBack} style={[styles.btnVolver, isDesktopWeb && dstyles.btnVolver]}><Text style={styles.btnTextVolver}>VOLVER</Text></TouchableOpacity>
+            <TouchableOpacity disabled={!ready} onPress={handleContinuar} style={[styles.btnContinuar, isDesktopWeb && dstyles.btnContinuar, !ready && { opacity: 0.5 }]}><Text style={styles.btnTextContinuar}>CONTINUAR</Text></TouchableOpacity>
         </View>
       </View>
 
-      <Modal visible={modal.open} animationType="slide" transparent>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
+      <Modal visible={modal.open} animationType={isDesktopWeb ? 'fade' : 'slide'} transparent>
+        <View style={isDesktopWeb ? styles.modalBackdropDesktop : styles.modalBackdrop}>
+          <View style={isDesktopWeb ? styles.modalCardDesktop : styles.modalCard}>
             <Text style={styles.modalTitle}>Seleccionar dirección</Text>
             <FlatList data={addresses} keyExtractor={(item: any, idx) => String(item.id ?? idx)} renderItem={({ item }: any) => (
                 <Pressable style={styles.modalItem} onPress={() => { setAddrSelected(item); setModal({ open: false, type: null }); }}>
@@ -376,6 +449,14 @@ const OptionPill: React.FC<{ label: string; selected: boolean; dimmed?: boolean;
     </AnimatedPressable>
   );
 };
+
+// Pill de método de envío en desktop: tamaño fijo razonable en vez de flex:1
+// estirado a lo ancho de toda la card, sin la animación de dimming mobile.
+const DesktopPill: React.FC<{ label: string; selected: boolean; onPress: () => void }> = ({ label, selected, onPress }) => (
+  <Pressable onPress={onPress} style={[dstyles.pill, selected && dstyles.pillSelected]}>
+    <Text style={[dstyles.pillText, selected && dstyles.pillTextSelected]}>{label}</Text>
+  </Pressable>
+);
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
@@ -410,11 +491,53 @@ const styles = StyleSheet.create({
   btnTextContinuar: { color: '#fff', fontWeight: '800' },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   modalCard: { backgroundColor: '#fff', maxHeight: '70%', borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingTop: 12 },
+  // Desktop: diálogo centrado y compacto en vez de la hoja mobile que sube desde abajo.
+  modalBackdropDesktop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', alignItems: 'center', justifyContent: 'center' },
+  modalCardDesktop: { backgroundColor: '#fff', width: 440, maxHeight: 520, borderRadius: 16, paddingTop: 16, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 24, shadowOffset: { width: 0, height: 12 } },
   modalTitle: { fontSize: 16, fontWeight: '700', paddingHorizontal: 16, paddingBottom: 8 },
   modalItem: { paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#E7EAED' },
   modalItemText: { fontSize: 16 },
   modalClose: { alignSelf: 'center', marginVertical: 12, paddingHorizontal: 16, paddingVertical: 10 },
   modalCloseText: { fontWeight: '700', color: '#1C9BD8' },
+});
+
+// --- Estilos exclusivos de desktop: cards planas con borde, sin los PNG
+// de fondo pensados/recortados para el ancho de un celular. ---
+const dstyles = StyleSheet.create({
+  containerDesktop: { width: '100%', maxWidth: 900, alignSelf: 'center' },
+  plazoCard: {
+    backgroundColor: '#F3F4F6', borderRadius: 12, borderWidth: 1, borderColor: '#E5E7EB',
+    padding: 16, marginTop: 16,
+  },
+  plazoLabel: { fontSize: 11, fontFamily: 'BarlowCondensed-Bold', color: '#6B7280' },
+  plazoValue: { fontSize: 20, fontFamily: 'BarlowCondensed-Bold', color: '#1C9BD8', marginTop: 2 },
+  plazoSub: { fontSize: 11, fontFamily: 'BarlowCondensed-Regular', color: '#9CA3AF', marginTop: 2 },
+  envioCard: {
+    backgroundColor: '#FFFFFF', borderRadius: 14, borderWidth: 1, borderColor: '#ECECEC',
+    padding: 20, marginTop: 16,
+  },
+  envioTitle: { fontSize: 20, fontFamily: 'BarlowCondensed-Bold', fontWeight: '800', color: '#2B2B2B', marginBottom: 14 },
+  envioRow: { flexDirection: 'row', gap: 14 },
+  pill: {
+    width: 240, paddingVertical: 18, borderRadius: 12,
+    backgroundColor: '#F3F4F6', borderWidth: 1, borderColor: '#E7EAED',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  pillSelected: { backgroundColor: '#1C9BD8', borderColor: '#1C9BD8' },
+  pillText: { fontSize: 15, fontFamily: 'BarlowCondensed-Bold', fontWeight: '800', color: '#2B2B2B', letterSpacing: 0.3 },
+  pillTextSelected: { color: '#FFFFFF' },
+  dirTitle: { fontSize: 15, fontFamily: 'BarlowCondensed-Bold', fontWeight: '800', color: '#2B2B2B', marginBottom: 8 },
+  dirCard: { backgroundColor: '#F9FAFB', borderRadius: 12, borderWidth: 1, borderColor: '#ECECEC', padding: 16 },
+  mapWrap: { marginTop: 14, height: 240, borderRadius: 10, overflow: 'hidden', borderWidth: 1, borderColor: '#E5E7EB' },
+  dirRow: { flexDirection: 'row', alignItems: 'center' },
+  dirLocal: { fontSize: 14, fontFamily: 'BarlowCondensed-Bold', fontWeight: '800', color: '#2B2B2B' },
+  dirAddress: { fontSize: 13, color: '#666', marginTop: 2 },
+  changeBtn: { backgroundColor: '#E6E7EA', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 },
+  changeBtnText: { fontSize: 11, fontFamily: 'BarlowCondensed-Bold', fontWeight: '800', color: '#333' },
+  footerContainer: { paddingHorizontal: 0 },
+  buttonsRow: { justifyContent: 'center', paddingHorizontal: 0 },
+  btnVolver: { flexGrow: 0, flexShrink: 0, flexBasis: 'auto' as any, width: 140 },
+  btnContinuar: { flexGrow: 0, flexShrink: 0, flexBasis: 'auto' as any, width: 220 },
 });
 
 export default PasoDatos;

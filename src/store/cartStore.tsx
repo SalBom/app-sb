@@ -91,7 +91,8 @@ type CartState = {
   addToCart: (product: ProductoBase) => void;
   updateQuantity: (productId: number, quantity: number) => void;
   updateDiscount: (productId: number, descuentos: { discount1?: number; discount2?: number; discount3?: number }) => void;
-  updateItemPaymentTerm: (productId: number, termId: number) => void; 
+  updateItemPaymentTerm: (productId: number, termId: number) => void;
+  setGlobalPaymentTerm: (term: PlazoSel) => void;
   updateMaxPaymentTerm: () => void;
   removeFromCart: (productId: number) => void;
   clearCart: () => void;
@@ -177,6 +178,20 @@ export const useCartStore = create<CartState>((set, get) => ({
         return { items: newItems };
     });
     get().updateMaxPaymentTerm();
+  },
+
+  // Plazo de pago GENERAL del pedido: aplica el mismo term_id a todos los ítems
+  // (así la lógica de descuentos por ítem, que lee item.payment_term_id, queda
+  // idéntica) y fija plazoSeleccionado, que es lo que viaja como payment_term_id
+  // a nivel de la orden en el paso 3.
+  setGlobalPaymentTerm: (term) => {
+    set((state) => {
+      const newItems = state.items.map((item) =>
+        item.product_id === PRODUCTO_TRANSPORTE_ID ? item : { ...item, payment_term_id: term.id }
+      );
+      syncCartToBackend(newItems);
+      return { items: newItems, plazoSeleccionado: term };
+    });
   },
 
   removeFromCart: (productId) => {

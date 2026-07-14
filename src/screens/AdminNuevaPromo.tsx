@@ -11,11 +11,13 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
 
 import { API_URL } from '../config';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 export default function AdminNuevaPromo() {
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const route = useRoute<any>();
+  const isDesktopWeb = useIsDesktopWeb();
 
   const editPromo = route.params?.promo;
   const isEditing = !!editPromo;
@@ -200,6 +202,131 @@ export default function AdminNuevaPromo() {
       return `${d.getDate()}/${d.getMonth()+1}/${d.getFullYear()} ${d.getHours()}:${pad(d.getMinutes())}`;
   };
 
+  const selectionModal = (
+      <Modal visible={modalVisible} animationType="slide">
+          <View style={[styles.modalContainer, { paddingTop: insets.top }]}>
+              <View style={styles.modalHeader}>
+                  <Text style={styles.modalTitle}>Seleccionar {targetType === 'category' ? 'Categoría' : 'Producto'}</Text>
+                  <TouchableOpacity onPress={() => setModalVisible(false)}>
+                      <Ionicons name="close" size={28} color="#333" />
+                  </TouchableOpacity>
+              </View>
+              <View style={styles.modalSearch}>
+                  <Ionicons name="search" size={20} color="#999" />
+                  <TextInput
+                      style={styles.modalSearchInput}
+                      placeholder="Buscar..."
+                      value={modalSearch}
+                      onChangeText={setModalSearch}
+                  />
+              </View>
+              {modalLoading ? (
+                  <ActivityIndicator size="large" color="#139EDB" style={{ marginTop: 50 }} />
+              ) : (
+                  <FlatList
+                      data={filteredList}
+                      keyExtractor={(item) => item.id.toString()}
+                      renderItem={({ item }) => (
+                          <TouchableOpacity
+                              style={styles.modalItem}
+                              onPress={() => {
+                                  setSelectedTarget(item);
+                                  setModalVisible(false);
+                                  setModalSearch('');
+                              }}
+                          >
+                              <Text style={styles.modalItemText}>{item.name}</Text>
+                              <Ionicons name="chevron-forward" size={20} color="#CCC" />
+                          </TouchableOpacity>
+                      )}
+                  />
+              )}
+          </View>
+      </Modal>
+  );
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    return (
+      <View style={dsty.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={dsty.page}>
+            <View style={dsty.headerRow}>
+              <Text style={dsty.pageTitle}>{isEditing ? 'EDITAR PROMOCIÓN' : 'NUEVA PROMOCIÓN'}</Text>
+              {isEditing && (
+                <TouchableOpacity onPress={handleEliminar} style={dsty.deleteBtn}>
+                  {deleting ? <ActivityIndicator size="small" color="#E53935" /> : <><Ionicons name="trash-outline" size={16} color="#E53935" /><Text style={dsty.deleteBtnText}>Eliminar</Text></>}
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <View style={dsty.card}>
+              <Text style={dsty.label}>APLICAR SOBRE</Text>
+              <View style={dsty.typeSelector}>
+                <TouchableOpacity style={[dsty.typeOption, targetType === 'product' && dsty.typeOptionActive]} onPress={() => { setTargetType('product'); setSelectedTarget(null); }}>
+                  <Text style={[dsty.typeText, targetType === 'product' && dsty.typeTextActive]}>PRODUCTO</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[dsty.typeOption, targetType === 'category' && dsty.typeOptionActive]} onPress={() => { setTargetType('category'); setSelectedTarget(null); }}>
+                  <Text style={[dsty.typeText, targetType === 'category' && dsty.typeTextActive]}>CATEGORÍA</Text>
+                </TouchableOpacity>
+              </View>
+
+              <Text style={dsty.label}>SELECCIONAR {targetType === 'category' ? 'CATEGORÍA' : 'PRODUCTO'}</Text>
+              <TouchableOpacity style={dsty.dropdownButton} onPress={openSelectionModal}>
+                <Text style={[dsty.dropdownText, !selectedTarget && { color: '#999' }]}>{selectedTarget ? selectedTarget.name : 'Hacé clic para seleccionar...'}</Text>
+                <Ionicons name="chevron-down" size={18} color="#666" />
+              </TouchableOpacity>
+
+              <View style={{ flexDirection: 'row', gap: 20 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={dsty.label}>PRECIO FIJO (USD)</Text>
+                  <TextInput style={dsty.input} keyboardType="numeric" placeholder="0.00" value={price} onChangeText={setPrice} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={dsty.label}>CANTIDAD MÍNIMA</Text>
+                  <TextInput style={dsty.input} keyboardType="numeric" placeholder="0" value={minQty} onChangeText={setMinQty} />
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 20 }}>
+                <View style={{ flex: 1 }}>
+                  <Text style={dsty.label}>DESDE (día y hora)</Text>
+                  <TouchableOpacity style={dsty.dateInput} onPress={() => startPicking('start')}>
+                    <Text style={dsty.dateText}>{displayDateTime(dateStart)}</Text>
+                    <Ionicons name="calendar-outline" size={16} color="#666" />
+                  </TouchableOpacity>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={dsty.label}>HASTA (día y hora)</Text>
+                  <TouchableOpacity style={dsty.dateInput} onPress={() => startPicking('end')}>
+                    <Text style={dsty.dateText}>{displayDateTime(dateEnd)}</Text>
+                    <Ionicons name="calendar-outline" size={16} color="#666" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {showPicker && (
+                <DateTimePicker value={activeField === 'start' ? dateStart : dateEnd} mode={pickerMode} display="default" is24Hour onChange={onPickerChange} />
+              )}
+
+              <View style={dsty.footerRow}>
+                <TouchableOpacity style={dsty.btnBack} onPress={() => navigation.goBack()}>
+                  <Text style={dsty.btnBackText}>VOLVER</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[dsty.btnConfirm, saving && { opacity: 0.7 }]} onPress={handleGuardar} disabled={saving}>
+                  {saving ? <ActivityIndicator color="#FFF" /> : <Text style={dsty.btnConfirmText}>{isEditing ? 'ACTUALIZAR' : 'CONFIRMAR'}</Text>}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </ScrollView>
+        {selectionModal}
+      </View>
+    );
+  }
+
   return (
     <View style={styles.container}>
       
@@ -302,46 +429,7 @@ export default function AdminNuevaPromo() {
           </TouchableOpacity>
       </View>
 
-      <Modal visible={modalVisible} animationType="slide">
-          <View style={[styles.modalContainer, { paddingTop: insets.top }]}>
-              <View style={styles.modalHeader}>
-                  <Text style={styles.modalTitle}>Seleccionar {targetType === 'category' ? 'Categoría' : 'Producto'}</Text>
-                  <TouchableOpacity onPress={() => setModalVisible(false)}>
-                      <Ionicons name="close" size={28} color="#333" />
-                  </TouchableOpacity>
-              </View>
-              <View style={styles.modalSearch}>
-                  <Ionicons name="search" size={20} color="#999" />
-                  <TextInput 
-                      style={styles.modalSearchInput} 
-                      placeholder="Buscar..." 
-                      value={modalSearch}
-                      onChangeText={setModalSearch}
-                  />
-              </View>
-              {modalLoading ? (
-                  <ActivityIndicator size="large" color="#139EDB" style={{ marginTop: 50 }} />
-              ) : (
-                  <FlatList
-                      data={filteredList}
-                      keyExtractor={(item) => item.id.toString()}
-                      renderItem={({ item }) => (
-                          <TouchableOpacity 
-                              style={styles.modalItem}
-                              onPress={() => {
-                                  setSelectedTarget(item);
-                                  setModalVisible(false);
-                                  setModalSearch('');
-                              }}
-                          >
-                              <Text style={styles.modalItemText}>{item.name}</Text>
-                              <Ionicons name="chevron-forward" size={20} color="#CCC" />
-                          </TouchableOpacity>
-                      )}
-                  />
-              )}
-          </View>
-      </Modal>
+      {selectionModal}
 
     </View>
   );
@@ -383,4 +471,33 @@ const styles = StyleSheet.create({
   modalSearchInput: { flex: 1, marginLeft: 10, fontSize: 16, fontFamily: 'BarlowCondensed-Regular' },
   modalItem: { flexDirection: 'row', justifyContent: 'space-between', padding: 16, borderBottomWidth: 1, borderBottomColor: '#F9F9F9' },
   modalItemText: { fontSize: 16, fontFamily: 'BarlowCondensed-Regular', color: '#333' }
+});
+
+// --- Estilos exclusivos de desktop ---
+const dsty = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 26 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', textTransform: 'uppercase' },
+  deleteBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FDEEEE', paddingVertical: 10, paddingHorizontal: 16, borderRadius: 8 },
+  deleteBtnText: { color: '#E53935', fontFamily: 'BarlowCondensed-Bold', fontSize: 13 },
+
+  card: { width: '100%', maxWidth: 640, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#ECECEC', padding: 28, gap: 4 },
+  label: { fontSize: 12, fontFamily: 'BarlowCondensed-Bold', color: '#8A8A8A', letterSpacing: 0.5, marginBottom: 8, marginTop: 16 },
+  typeSelector: { flexDirection: 'row', backgroundColor: '#F3F4F6', borderRadius: 8, padding: 4 },
+  typeOption: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 6 },
+  typeOptionActive: { backgroundColor: '#FFFFFF', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 4, shadowOffset: { width: 0, height: 1 } },
+  typeText: { fontFamily: 'BarlowCondensed-Bold', color: '#666', fontSize: 13 },
+  typeTextActive: { color: '#139EDB' },
+  dropdownButton: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: '#DDD', borderRadius: 8, padding: 12, backgroundColor: '#FAFAFA' },
+  dropdownText: { fontSize: 15, fontFamily: 'Rubik', color: '#333' },
+  input: { borderWidth: 1, borderColor: '#DDD', borderRadius: 8, padding: 12, fontSize: 16, fontFamily: 'BarlowCondensed-Bold', color: '#333', backgroundColor: '#FAFAFA' },
+  dateInput: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: '#DDD', borderRadius: 8, padding: 12, backgroundColor: '#FAFAFA' },
+  dateText: { fontSize: 14, fontFamily: 'Rubik', color: '#333' },
+
+  footerRow: { flexDirection: 'row', gap: 12, marginTop: 28 },
+  btnBack: { flex: 1, paddingVertical: 13, borderRadius: 8, borderWidth: 1, borderColor: '#DDD', alignItems: 'center' },
+  btnBackText: { fontFamily: 'BarlowCondensed-Bold', color: '#333' },
+  btnConfirm: { flex: 1, paddingVertical: 13, borderRadius: 8, backgroundColor: '#1C9BD8', alignItems: 'center' },
+  btnConfirmText: { fontFamily: 'BarlowCondensed-Bold', color: '#FFF' },
 });

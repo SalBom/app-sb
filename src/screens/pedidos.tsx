@@ -12,7 +12,8 @@ import {
   Alert,
   Platform,
   Modal,
-  Pressable
+  Pressable,
+  ScrollView
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
@@ -24,6 +25,8 @@ import ContenedorFacturaSvg from '../../assets/contenedorFactura.svg';
 import FlechaPedidoSvg from '../../assets/flechaPedido.svg';
 
 import { API_URL } from '../config';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
+import { useCartStore } from '../store/cartStore';
 
 type PedidoItem = {
   pedido_id?: number;
@@ -31,9 +34,10 @@ type PedidoItem = {
   cliente: string;
   fecha: string;
   total: number;
-  estado: string; 
-  estado_facturacion?: string; 
-  invoice_status?: string; 
+  estado: string;
+  estado_facturacion?: string;
+  invoice_status?: string;
+  moneda?: string | null;
 };
 
 const PAGE_SIZE = 20;
@@ -55,8 +59,9 @@ const FACTURACION_OPCIONES = [
 
 const Pedidos: React.FC = () => {
   const navigation = useNavigation<any>();
-  const route = useRoute<any>(); 
-  const { cuitOverride } = route.params || {}; 
+  const route = useRoute<any>();
+  const isDesktopWeb = useIsDesktopWeb();
+  const { cuitOverride } = route.params || {};
 
   const [pedidos, setPedidos] = useState<PedidoItem[]>([]);
   const [loadingInitial, setLoadingInitial] = useState(true);
@@ -244,7 +249,67 @@ const Pedidos: React.FC = () => {
     );
   };
 
+  // ───────────────────────── Editar Pedido (solo PRESUPUESTO) ─────────────────────────
+  // Reutiliza el flujo del carrito: precarga el pedido (items, cliente, plazo) en el
+  // store, marca orderId para que el paso 3 ACTUALICE ese pedido (order_id_to_update)
+  // en vez de crear uno nuevo, y navega al carrito para agregar/quitar items y cambiar
+  // cliente/plazo con la misma UI de siempre.
+  const handleEditOrder = async (item: PedidoItem) => {
+    if (item.estado !== 'draft' && item.estado !== 'sent') {
+      Alert.alert('Aviso', 'Solo se pueden editar pedidos en estado PRESUPUESTO.');
+      return;
+    }
+    try {
+      const baseUrl = getBaseUrl();
+      const res = await fetch(`${baseUrl}/pedido/${item.pedido_id}/detalle-edicion`);
+      const json = await res.json();
+      if (!res.ok) {
+        Alert.alert('No se puede editar', json?.error || 'No se pudo cargar el pedido.');
+        return;
+      }
+
+      const cartItems = (json.items || []).map((it: any) => ({
+        product_id: it.product_id,
+        name: it.name,
+        price_unit: Number(it.price_unit) || 0,
+        default_code: it.default_code || '',
+        list_price: Number(it.list_price) || 0,
+        product_uom_qty: Number(it.product_uom_qty) || 1,
+        discount1: Number(it.discount1) || 0,
+        discount2: Number(it.discount2) || 0,
+        discount3: Number(it.discount3) || 0,
+        payment_term_id: it.payment_term_id || 1,
+        image_thumb_url: null,
+      }));
+
+      const store = useCartStore.getState();
+      // Limpiamos estado de envío/observaciones de una edición/sesión previa,
+      // sin perder el pedido que estamos por cargar.
+      store.setEnvio(null);
+      store.setTransporteObj(null);
+      store.setTransporte(null);
+      store.setDireccionEntrega(null);
+      store.setNotas(null);
+      store.setConsultaResumen(null);
+
+      store.setItems(cartItems);
+      if (json.cliente) {
+        store.setCliente({ id: json.cliente.id, name: json.cliente.name, vat: json.cliente.vat });
+      }
+      if (json.payment_term_id) {
+        store.setPlazo({ id: json.payment_term_id, nombre: json.payment_term_name });
+      }
+      store.setOrderId(item.pedido_id ?? null);
+
+      navigation.navigate('MainTabs', { screen: 'Carrito' });
+    } catch (e) {
+      Alert.alert('Error', 'No se pudo cargar el pedido para editar.');
+    }
+  };
+
   const formatCurrency = (value: number) => value.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  // Muestra el total en la moneda en la que está cargado el pedido (ej. "USD 1.234,56").
+  const formatMonto = (item: PedidoItem) => `${item.moneda ? item.moneda + ' ' : '$ '}${formatCurrency(item.total)}`;
   
   const getEstadoInfo = (estado: string) => {
     switch (estado) {
@@ -289,7 +354,7 @@ const Pedidos: React.FC = () => {
                   <View style={s.infoColumn}>
                       <Text style={s.infoRow}><Text style={s.label}>CLIENTE: </Text><Text style={s.value} numberOfLines={1}>{item.cliente}</Text></Text>
                       <Text style={s.infoRow}><Text style={s.label}>FECHA: </Text><Text style={s.value}>{formatFecha(item.fecha)}</Text></Text>
-                      <Text style={s.infoRow}><Text style={s.label}>TOTAL: </Text><Text style={s.value}>$ {formatCurrency(item.total)}</Text></Text>
+                      <Text style={s.infoRow}><Text style={s.label}>TOTAL: </Text><Text style={s.value}>{formatMonto(item)}</Text></Text>
                   </View>
                   <View style={s.statusColumn}>
                       {/* Estado del Pedido */}
@@ -306,6 +371,12 @@ const Pedidos: React.FC = () => {
                           <TouchableOpacity style={s.iconButton} onPress={() => handleDownloadPdf(item.numero_pedido)}>
                               <Feather name="download" size={20} color="#2B2B2B" />
                           </TouchableOpacity>
+
+                          {isPresupuesto && (
+                              <TouchableOpacity style={s.iconButton} onPress={() => handleEditOrder(item)}>
+                                  <Feather name="edit-2" size={20} color="#1C9BD8" />
+                              </TouchableOpacity>
+                          )}
 
                           {isPresupuesto && (
                               <TouchableOpacity style={s.iconButton} onPress={() => handleCancelOrder(item)}>
@@ -329,6 +400,159 @@ const Pedidos: React.FC = () => {
     if (isFiltering || !loadingMore) return <View style={{ height: 20 }} />;
     return <View style={{ paddingVertical: 20 }}><ActivityIndicator size="small" color="#0088CC" /></View>;
   };
+
+  const filterModals = (
+    <>
+      {/* MODAL DE ESTADOS */}
+      <Modal visible={showStatusModal} animationType="fade" transparent>
+        <View style={[s.modalBackdrop, isDesktopWeb && ds.modalBackdropD]}>
+          <View style={[s.modalCard, isDesktopWeb && ds.modalCardD]}>
+            <Text style={s.modalTitle}>Filtrar por Estado</Text>
+            <FlatList
+                data={ESTADOS_OPCIONES}
+                keyExtractor={(item) => item.value}
+                renderItem={({ item }) => (
+                    <Pressable
+                        style={[s.modalItem, statusFilter === item.value && s.modalItemSelected]}
+                        onPress={() => {
+                            setStatusFilter(item.value);
+                            setShowStatusModal(false);
+                        }}
+                    >
+                        <Text style={[s.modalItemText, statusFilter === item.value && s.modalItemTextSelected]}>
+                            {item.label}
+                        </Text>
+                        {statusFilter === item.value && <Ionicons name="checkmark-circle" size={20} color="#1C9BD8" />}
+                    </Pressable>
+                )}
+            />
+            <Pressable style={s.modalClose} onPress={() => setShowStatusModal(false)}>
+                <Text style={s.modalCloseText}>CERRAR</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {/* MODAL DE FACTURACIÓN */}
+      <Modal visible={showInvoiceModal} animationType="fade" transparent>
+        <View style={[s.modalBackdrop, isDesktopWeb && ds.modalBackdropD]}>
+          <View style={[s.modalCard, isDesktopWeb && ds.modalCardD]}>
+            <Text style={s.modalTitle}>Filtrar por Facturación</Text>
+            <FlatList
+                data={FACTURACION_OPCIONES}
+                keyExtractor={(item) => item.value}
+                renderItem={({ item }) => (
+                    <Pressable
+                        style={[s.modalItem, invoiceFilter === item.value && s.modalItemSelected]}
+                        onPress={() => {
+                            setInvoiceFilter(item.value);
+                            setShowInvoiceModal(false);
+                        }}
+                    >
+                        <Text style={[s.modalItemText, invoiceFilter === item.value && s.modalItemTextSelected]}>
+                            {item.label}
+                        </Text>
+                        {invoiceFilter === item.value && <Ionicons name="checkmark-circle" size={20} color="#1C9BD8" />}
+                    </Pressable>
+                )}
+            />
+            <Pressable style={s.modalClose} onPress={() => setShowInvoiceModal(false)}>
+                <Text style={s.modalCloseText}>CERRAR</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+    </>
+  );
+
+  const renderRowD = (item: PedidoItem, idx: number) => {
+    const estadoInfo = getEstadoInfo(item.estado);
+    const rawInvStatus = item.estado_facturacion || item.invoice_status || 'no';
+    const facturacionInfo = getFacturacionInfo(rawInvStatus);
+    const isPresupuesto = item.estado === 'draft' || item.estado === 'sent';
+
+    return (
+      <View key={item.numero_pedido + idx} style={ds.row}>
+        <Text style={[ds.rowCell, { flex: 1.4, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' }]}>{item.numero_pedido.replace('S', 'PEDIDO #')}</Text>
+        <Text style={[ds.rowCell, { flex: 1.8 }]} numberOfLines={1}>{item.cliente}</Text>
+        <Text style={[ds.rowCell, { flex: 1 }]}>{formatFecha(item.fecha)}</Text>
+        <Text style={[ds.rowCell, { flex: 1, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' }]}>{formatMonto(item)}</Text>
+        <View style={{ flex: 1.4, flexDirection: 'row', gap: 6 }}>
+          <View style={[ds.badge, { backgroundColor: estadoInfo.color }]}><Text style={ds.badgeText}>{estadoInfo.label}</Text></View>
+          <View style={[ds.badge, { backgroundColor: facturacionInfo.color }]}><Text style={ds.badgeText}>{facturacionInfo.label}</Text></View>
+        </View>
+        <View style={{ flex: 0.6, flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}>
+          <TouchableOpacity onPress={() => handleDownloadPdf(item.numero_pedido)}><Feather name="download" size={18} color="#2B2B2B" /></TouchableOpacity>
+          {isPresupuesto && (
+            <TouchableOpacity onPress={() => handleEditOrder(item)}><Feather name="edit-2" size={18} color="#1C9BD8" /></TouchableOpacity>
+          )}
+          {isPresupuesto && (
+            <TouchableOpacity onPress={() => handleCancelOrder(item)}><Feather name="x-circle" size={18} color="#CC0000" /></TouchableOpacity>
+          )}
+        </View>
+      </View>
+    );
+  };
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    return (
+      <View style={ds.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={ds.page}>
+            <Text style={ds.pageTitle}>PEDIDOS</Text>
+
+            <View style={ds.filtersRow}>
+              <View style={ds.searchInputWrap}>
+                <Ionicons name="search" size={18} color="#999" style={{ marginRight: 8 }} />
+                <TextInput style={ds.searchInput} placeholder="Buscar..." placeholderTextColor="#999" value={search} onChangeText={setSearch} />
+              </View>
+              <TouchableOpacity style={ds.filterBtn} onPress={() => setShowDatePicker(true)}>
+                <Feather name="calendar" size={14} color="#666" />
+                <Text style={[ds.filterText, !dateFilter && { color: '#999' }]} numberOfLines={1}>{dateFilter ? displayDate : 'Fecha'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={ds.filterBtn} onPress={() => setShowStatusModal(true)}>
+                <Text style={[ds.filterText, !statusFilter && { color: '#999' }]} numberOfLines={1}>{ESTADOS_OPCIONES.find(e => e.value === statusFilter)?.label || 'Estado'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={ds.filterBtn} onPress={() => setShowInvoiceModal(true)}>
+                <Text style={[ds.filterText, !invoiceFilter && { color: '#999' }]} numberOfLines={1}>{FACTURACION_OPCIONES.find(e => e.value === invoiceFilter)?.label || 'Facturación'}</Text>
+              </TouchableOpacity>
+            </View>
+
+            {showDatePicker && <DateTimePicker value={dateFilter || new Date()} mode="date" display="default" onChange={onChangeDate} maximumDate={new Date()} />}
+
+            {loadingInitial ? (
+              <ActivityIndicator size="large" color="#0088CC" style={{ marginTop: 40 }} />
+            ) : error ? (
+              <Text style={ds.emptyText}>{error}</Text>
+            ) : pedidos.length === 0 ? (
+              <Text style={ds.emptyText}>No se encontraron pedidos.</Text>
+            ) : (
+              <View style={ds.table}>
+                <View style={ds.tableHeadRow}>
+                  <Text style={[ds.th, { flex: 1.4 }]}>NÚMERO</Text>
+                  <Text style={[ds.th, { flex: 1.8 }]}>CLIENTE</Text>
+                  <Text style={[ds.th, { flex: 1 }]}>FECHA</Text>
+                  <Text style={[ds.th, { flex: 1 }]}>TOTAL</Text>
+                  <Text style={[ds.th, { flex: 1.4 }]}>ESTADO</Text>
+                  <View style={{ flex: 0.6 }} />
+                </View>
+                {pedidos.map(renderRowD)}
+                {hasMore && !(search.trim() || dateFilter || statusFilter || invoiceFilter) && (
+                  <TouchableOpacity onPress={loadMore} style={ds.loadMoreBtn}>
+                    {loadingMore ? <ActivityIndicator size="small" color="#1C9BD8" /> : <Text style={ds.loadMoreText}>Cargar más...</Text>}
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+          </View>
+        </ScrollView>
+        {filterModals}
+      </View>
+    );
+  }
 
   return (
     <View style={s.screen}>
@@ -387,65 +611,7 @@ const Pedidos: React.FC = () => {
 
       {showDatePicker && <DateTimePicker value={dateFilter || new Date()} mode="date" display="default" onChange={onChangeDate} maximumDate={new Date()} />}
 
-      {/* MODAL DE ESTADOS */}
-      <Modal visible={showStatusModal} animationType="slide" transparent>
-        <View style={s.modalBackdrop}>
-          <View style={s.modalCard}>
-            <Text style={s.modalTitle}>Filtrar por Estado</Text>
-            <FlatList 
-                data={ESTADOS_OPCIONES} 
-                keyExtractor={(item) => item.value} 
-                renderItem={({ item }) => (
-                    <Pressable 
-                        style={[s.modalItem, statusFilter === item.value && s.modalItemSelected]} 
-                        onPress={() => { 
-                            setStatusFilter(item.value); 
-                            setShowStatusModal(false); 
-                        }}
-                    >
-                        <Text style={[s.modalItemText, statusFilter === item.value && s.modalItemTextSelected]}>
-                            {item.label}
-                        </Text>
-                        {statusFilter === item.value && <Ionicons name="checkmark-circle" size={20} color="#1C9BD8" />}
-                    </Pressable>
-                )} 
-            />
-            <Pressable style={s.modalClose} onPress={() => setShowStatusModal(false)}>
-                <Text style={s.modalCloseText}>CERRAR</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
-
-      {/* MODAL DE FACTURACIÓN */}
-      <Modal visible={showInvoiceModal} animationType="slide" transparent>
-        <View style={s.modalBackdrop}>
-          <View style={s.modalCard}>
-            <Text style={s.modalTitle}>Filtrar por Facturación</Text>
-            <FlatList 
-                data={FACTURACION_OPCIONES} 
-                keyExtractor={(item) => item.value} 
-                renderItem={({ item }) => (
-                    <Pressable 
-                        style={[s.modalItem, invoiceFilter === item.value && s.modalItemSelected]} 
-                        onPress={() => { 
-                            setInvoiceFilter(item.value); 
-                            setShowInvoiceModal(false); 
-                        }}
-                    >
-                        <Text style={[s.modalItemText, invoiceFilter === item.value && s.modalItemTextSelected]}>
-                            {item.label}
-                        </Text>
-                        {invoiceFilter === item.value && <Ionicons name="checkmark-circle" size={20} color="#1C9BD8" />}
-                    </Pressable>
-                )} 
-            />
-            <Pressable style={s.modalClose} onPress={() => setShowInvoiceModal(false)}>
-                <Text style={s.modalCloseText}>CERRAR</Text>
-            </Pressable>
-          </View>
-        </View>
-      </Modal>
+      {filterModals}
 
       {loadingInitial ? (
           <ActivityIndicator size="large" color="#0088CC" style={{ marginTop: 40 }} />
@@ -512,6 +678,33 @@ const s = StyleSheet.create({
   modalItemTextSelected: { color: '#1C9BD8' },
   modalClose: { alignSelf: 'center', marginVertical: 16, paddingHorizontal: 16, paddingVertical: 10 },
   modalCloseText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#1C9BD8' },
+});
+
+// --- Estilos exclusivos de desktop ---
+const ds = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', marginBottom: 24, textTransform: 'uppercase' },
+
+  filtersRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 24, flexWrap: 'wrap' },
+  searchInputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0', height: 42, paddingHorizontal: 12, width: 240 },
+  searchInput: { flex: 1, fontFamily: 'BarlowCondensed-Medium', fontSize: 14, color: '#2B2B2B' },
+  filterBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FAFAFA', borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0', height: 42, paddingHorizontal: 14, width: 170 },
+  filterText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#2B2B2B' },
+
+  table: { borderWidth: 1, borderColor: '#ECECEC', borderRadius: 12, padding: 8 },
+  tableHeadRow: { flexDirection: 'row', paddingVertical: 10, paddingHorizontal: 12, borderBottomWidth: 2, borderBottomColor: '#F0F0F0' },
+  th: { fontFamily: 'BarlowCondensed-Bold', fontSize: 12, color: '#8A8A8A', letterSpacing: 0.5 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: '#F7F7F7' },
+  rowCell: { fontFamily: 'Rubik', fontSize: 13, color: '#555' },
+  badge: { borderRadius: 12, paddingVertical: 3, paddingHorizontal: 8 },
+  badgeText: { color: '#FFF', fontSize: 10, fontFamily: 'BarlowCondensed-Bold', textAlign: 'center' },
+  emptyText: { textAlign: 'center', color: '#999', fontFamily: 'Rubik', fontSize: 15, marginTop: 60 },
+  loadMoreBtn: { alignItems: 'center', paddingVertical: 16 },
+  loadMoreText: { color: '#8A8A8A', fontFamily: 'Rubik', fontSize: 13 },
+
+  modalBackdropD: { justifyContent: 'center', alignItems: 'center' },
+  modalCardD: { width: 420, maxWidth: '90%', maxHeight: '70%', borderTopLeftRadius: 16, borderTopRightRadius: 16, borderBottomLeftRadius: 16, borderBottomRightRadius: 16 },
 });
 
 export default Pedidos;

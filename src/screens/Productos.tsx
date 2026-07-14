@@ -13,10 +13,13 @@ import {
   TouchableOpacity,
   Keyboard,
   Dimensions,
-  TouchableWithoutFeedback
+  TouchableWithoutFeedback,
+  TextInput,
+  Animated
 } from 'react-native';
 import axios from 'axios';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -33,14 +36,16 @@ import { API_URL } from '../config';
 
 import TarjetaProductoListado from '../components/TarjetaProductoListado';
 import TarjetaProductoKanban from '../components/TarjetaProductoKanban';
-import SkeletonProduct from '../components/SkeletonProduct'; 
-import EmptyState from '../components/EmptyState'; 
+import TarjetaProductoDesktop from '../components/TarjetaProductoDesktop';
+import SkeletonProduct from '../components/SkeletonProduct';
+import EmptyState from '../components/EmptyState';
 import FlechaProductosSvg from '../../assets/flechaProductos.svg';
 
 // --- ASSETS ---
-const BANNER_BG = require('../../assets/carrusel.jpg'); 
+const BANNER_BG = require('../../assets/carrusel.jpg');
 import ProductoDestacadoBannerSvg from '../../assets/productoDestacadoBanner.svg';
-import ShLogoSvg from '../../assets/sh.svg'; 
+import ShLogoSvg from '../../assets/sh.svg';
+const WebProductosHero = require('../../assets/web-home/photo_nosotros.png');
 
 // --- HELPERS ---
 function withAltMedia(u?: string | null): string | null {
@@ -83,6 +88,7 @@ type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'ProductoDet
 type SortOption = 'default' | 'price_asc' | 'price_desc' | 'name_asc';
 
 const LIMITE = 20;
+const DESKTOP_LIMITE = 28; // desktop tiene más espacio en pantalla: cargamos más productos por página
 const HEADER_PAD = 12;
 const SEARCH_TO_CAROUSEL_GAP = 16;
 const EDGE_KISS = 19; 
@@ -163,9 +169,34 @@ const FilterPill = ({ label, IconStart, IconEnd, onPress, active }: { label: str
 );
 
 const Productos = () => {
-  const route = useRoute<any>(); 
+  const route = useRoute<any>();
   const navigation = useNavigation<NavigationProp>();
   const insets = useSafeAreaInsets();
+  const isDesktopWeb = useIsDesktopWeb();
+
+  // --- ANIMACIÓN "PRODUCTO VOLANDO AL CARRITO" (solo desktop) ---
+  const flyAnim = useRef(new Animated.Value(0)).current;
+  const [flyItem, setFlyItem] = useState<{ uri: string; startX: number; startY: number; w: number; h: number; dx: number; dy: number } | null>(null);
+
+  const triggerFlyToCart = (uri: string | null | undefined, event?: any) => {
+    if (!uri) return;
+    const pageX = event?.nativeEvent?.pageX;
+    const pageY = event?.nativeEvent?.pageY;
+    if (typeof pageX !== 'number' || typeof pageY !== 'number') return;
+
+    const winW = Dimensions.get('window').width;
+    const targetX = winW - 90;
+    const targetY = 34;
+    const size = 90;
+    const startX = pageX - size / 2;
+    const startY = pageY - size / 2;
+
+    flyAnim.setValue(0);
+    setFlyItem({ uri, startX, startY, w: size, h: size, dx: targetX - startX - size / 2, dy: targetY - startY - size / 2 });
+    Animated.timing(flyAnim, { toValue: 1, duration: 650, useNativeDriver: true }).start(() => {
+      setFlyItem(null);
+    });
+  };
 
   const [productos, setProductos] = useState<Producto[]>([]);
   const [marcas, setMarcas] = useState<Marca[]>([]);
@@ -176,9 +207,11 @@ const Productos = () => {
   const [isFetchingMas, setIsFetchingMas] = useState(false);
   const [loading, setLoading] = useState<boolean>(true);
   
-  // --- NUEVO SISTEMA DE BÚSQUEDA ---
+  // --- SISTEMA DE BÚSQUEDA ---
   const [searchTerm, setSearchTerm] = useState(''); // Lo que el usuario escribe
   const [debouncedSearch, setDebouncedSearch] = useState(''); // Lo que se envía a la API
+  const searchInputRef = useRef<TextInput | null>(null);
+  const suppressNextSuggestionRef = useRef(false);
   
   const [marcaSeleccionada, setMarcaSeleccionada] = useState('');
   const [categoriaSeleccionada, setCategoriaSeleccionada] = useState('');
@@ -202,10 +235,15 @@ const Productos = () => {
   const [sugerenciasProd, setSugerenciasProd] = useState<Producto[]>([]);
   const [sugerenciasCat, setSugerenciasCat] = useState<Categoria[]>([]);
   const [showSugerencias, setShowSugerencias] = useState(false);
+  const [searchFocused, setSearchFocused] = useState(false);
   const [loadingSugerencias, setLoadingSugerencias] = useState(false);
   const [modalHeight, setModalHeight] = useState(350);
 
   const [parentCat, setParentCat] = useState<Categoria | null>(null);
+
+  // En desktop el menú de filtros/orden es un dropdown compacto, no una hoja
+  // casi-a-lo-ancho-de-pantalla como en mobile.
+  const modalW = isDesktopWeb ? 380 : MODAL_W;
 
   const addToCart = useCartStore((s) => s.addToCart);
   const updateQuantity = useCartStore((s) => s.updateQuantity);
@@ -216,8 +254,8 @@ const Productos = () => {
   const removeFavorite = useFavoritesStore((state) => state.removeFavorite);
 
   const modalBgPath = useMemo(() => {
-    return `M ${MODAL_CUT},0 H ${MODAL_W - MODAL_CUT} L ${MODAL_W},${MODAL_CUT} V ${modalHeight - MODAL_CUT} L ${MODAL_W - MODAL_CUT},${modalHeight} H ${MODAL_CUT} L 0,${modalHeight - MODAL_CUT} V ${MODAL_CUT} Z`;
-  }, [modalHeight]);
+    return `M ${MODAL_CUT},0 H ${modalW - MODAL_CUT} L ${modalW},${MODAL_CUT} V ${modalHeight - MODAL_CUT} L ${modalW - MODAL_CUT},${modalHeight} H ${MODAL_CUT} L 0,${modalHeight - MODAL_CUT} V ${MODAL_CUT} Z`;
+  }, [modalHeight, modalW]);
 
   // --- EFECTO DEBOUCING PARA BÚSQUEDA ---
   useEffect(() => {
@@ -264,7 +302,10 @@ const Productos = () => {
       if (!append) setLoading(true);
       if (append) setIsFetchingMas(true);
       const params: any = {
-        limit: LIMITE,
+        // La carga inicial (append=false) en desktop trae más productos de
+        // una vez ya que hay más espacio en pantalla; el scroll infinito de
+        // mobile (append=true) sigue usando el límite original sin cambios.
+        limit: (!append && isDesktopWeb) ? DESKTOP_LIMITE : LIMITE,
         offset: append ? pagina * LIMITE : 0,
         search: currentFilters.search,
         marca_id: currentFilters.marca_id,
@@ -367,27 +408,98 @@ const Productos = () => {
 
   // --- ESCUCHA A SEARCHTERM PARA LAS SUGERENCIAS ---
   useEffect(() => {
-    if (!searchTerm || searchTerm.length < 2) { setShowSugerencias(false); return; }
+    if (suppressNextSuggestionRef.current) {
+      suppressNextSuggestionRef.current = false;
+      return;
+    }
+    if (!searchFocused) { setShowSugerencias(false); return; }
+    if (!searchTerm || searchTerm.trim().length < 2) {
+      setShowSugerencias(false);
+      setSugerenciasProd([]);
+      setSugerenciasCat([]);
+      return;
+    }
+
+    let cancelled = false;
+    const ctrl = new AbortController();
+
     const timer = setTimeout(async () => {
-        setLoadingSugerencias(true); setShowSugerencias(true);
-        const term = normalizeText(searchTerm);
-        const catsFiltradas = categorias.filter(c => normalizeText(c.name).includes(term)).slice(0, 3);
+        if (cancelled) return;
+        setLoadingSugerencias(true);
+        setShowSugerencias(true);
+
+        const term = normalizeText(searchTerm.trim());
+        const catsFiltradas = categorias
+            .filter(c => normalizeText(c.name).includes(term))
+            .slice(0, 3);
         setSugerenciasCat(catsFiltradas);
+
         try {
-            const res = await axios.get(`${API_URL}/productos`, { params: { search: searchTerm, limit: 8 } });
-            const prods = Array.isArray(res.data) ? res.data : (res.data?.items ?? []);
-            setSugerenciasProd(prods);
-        } catch { setSugerenciasProd([]); } finally { setLoadingSugerencias(false); }
-    }, 300); // 300ms para las sugerencias
-    return () => clearTimeout(timer);
-  }, [searchTerm, categorias]);
+            const res = await axios.get(`${API_URL}/productos`, {
+                params: { search: searchTerm.trim(), limit: 8 },
+                signal: ctrl.signal,
+            });
+            if (cancelled) return;
+            const prods: Producto[] = Array.isArray(res.data) ? res.data : (res.data?.items ?? []);
+
+            // Ranking: match exacto en SKU > prefix SKU > prefix nombre > incluye SKU > incluye nombre
+            const ranked = [...prods].sort((a: Producto, b: Producto) => {
+                const an = normalizeText(a.name || '');
+                const bn = normalizeText(b.name || '');
+                const ac = normalizeText(a.default_code || '');
+                const bc = normalizeText(b.default_code || '');
+                const score = (name: string, code: string) => {
+                    if (code === term) return 0;
+                    if (code.startsWith(term)) return 1;
+                    if (name.startsWith(term)) return 2;
+                    if (code.includes(term)) return 3;
+                    if (name.includes(term)) return 4;
+                    return 5;
+                };
+                return score(an, ac) - score(bn, bc);
+            });
+
+            setSugerenciasProd(ranked);
+        } catch (err: any) {
+            if (!axios.isCancel?.(err) && err?.name !== 'CanceledError') {
+                setSugerenciasProd([]);
+            }
+        } finally {
+            if (!cancelled) setLoadingSugerencias(false);
+        }
+    }, 250);
+
+    return () => {
+        cancelled = true;
+        ctrl.abort();
+        clearTimeout(timer);
+    };
+  }, [searchTerm, categorias, searchFocused]);
+
+  // --- HELPERS DE CIERRE Y SUBMIT ---
+  const closeSuggestions = useCallback(() => {
+    setShowSugerencias(false);
+    setSearchFocused(false);
+    Keyboard.dismiss();
+    searchInputRef.current?.blur();
+  }, []);
+
+  const handleSubmitSearch = useCallback(() => {
+    setDebouncedSearch(searchTerm.trim());
+    closeSuggestions();
+  }, [searchTerm, closeSuggestions]);
 
   const handleSelectCategorySuggestion = (cat: Categoria) => {
+      suppressNextSuggestionRef.current = true;
       setCategoriaSeleccionada(cat.id.toString());
-      setSearchTerm(''); setDebouncedSearch(''); setShowSugerencias(false); Keyboard.dismiss();
+      setSearchTerm('');
+      setDebouncedSearch('');
+      closeSuggestions();
   };
   const handleSelectProductSuggestion = (prod: Producto) => {
-      setShowSugerencias(false); 
+      suppressNextSuggestionRef.current = true;
+      setSearchTerm('');
+      closeSuggestions();
       navigation.navigate('ProductoDetalle', { id: prod.id, preload: prod } as any);
   };
 
@@ -420,24 +532,25 @@ const Productos = () => {
       }
   };
 
-  const renderItem = useCallback(({ item }: { item: Producto }) => {
+  // Handlers compartidos entre la card mobile/kanban y la card desktop.
+  const buildItemHandlers = useCallback((item: Producto) => {
     const isFav = favorites.some(f => f.id === item.id);
     const finalPrice = (item.price_offer && item.price_offer > 0) ? item.price_offer : item.list_price;
     const handlePressDetalle = () => navigation.navigate('ProductoDetalle', { id: item.id, preload: item } as any);
-    
+
     const handlePressAgregar = (quantity: number) => {
         const existing = itemsInCart.find(it => it.product_id === item.id);
         if (existing) {
             updateQuantity(item.id, existing.product_uom_qty + quantity);
         } else if (quantity > 0) {
             addToCart({
-                product_id: item.id, 
-                name: item.name, 
-                price_unit: finalPrice, 
+                product_id: item.id,
+                name: item.name,
+                price_unit: finalPrice,
                 list_price: item.list_price,
-                product_uom_qty: quantity, 
-                default_code: item.default_code || '', 
-                image_md_url: item.image_md_url ?? null, 
+                product_uom_qty: quantity,
+                default_code: item.default_code || '',
+                image_md_url: item.image_md_url ?? null,
                 image_thumb_url: item.image_thumb_url ?? null,
             } as any);
         }
@@ -463,12 +576,17 @@ const Productos = () => {
         }
     };
 
+    return { isFav, handlePressDetalle, handlePressAgregar, handleToggleFav };
+  }, [addToCart, updateQuantity, itemsInCart, favorites, navigation, addFavorite, removeFavorite]);
+
+  const renderItem = useCallback(({ item }: { item: Producto }) => {
+    const { isFav, handlePressDetalle, handlePressAgregar, handleToggleFav } = buildItemHandlers(item);
     if (viewMode === 'kanban') {
       const cardWidth = (SCREEN_W - (HEADER_PAD * 2) - 12) / 2;
       return <TarjetaProductoKanban producto={item} isFavorite={isFav} onPressDetalle={handlePressDetalle} onPressAgregar={handlePressAgregar} onToggleFavorito={handleToggleFav} width={cardWidth} />;
     }
     return <TarjetaProductoListado producto={item} isFavorite={isFav} onPressDetalle={handlePressDetalle} onPressAgregar={handlePressAgregar} onToggleFavorito={handleToggleFav} />;
-  }, [addToCart, updateQuantity, itemsInCart, favorites, navigation, addFavorite, removeFavorite, viewMode]);
+  }, [buildItemHandlers, viewMode]);
 
   const handleScrollCarousel = (event: any) => {
     const scrollPosition = event.nativeEvent.contentOffset.x;
@@ -522,15 +640,227 @@ const Productos = () => {
     return categorias.filter(c => c.name.startsWith(prefix));
   }, [categorias, parentCat]);
 
+  // --- PAGINACIÓN DESKTOP: navegación por página (‹ 01 ›), independiente del
+  // scroll infinito que usa mobile, para no tocar su lógica de pagina/hasMas. ---
+  const [desktopPage, setDesktopPage] = useState(1);
+  const [desktopHasMore, setDesktopHasMore] = useState(true);
+  const [showAllCategorias, setShowAllCategorias] = useState(false);
+
+  const goToDesktopPage = useCallback(async (page: number) => {
+    if (page < 1) return;
+    setLoading(true);
+    try {
+      const params: any = {
+        limit: DESKTOP_LIMITE,
+        offset: (page - 1) * DESKTOP_LIMITE,
+        search: debouncedSearch,
+        marca_id: marcaSeleccionada,
+        categ_id: categoriaSeleccionada,
+      };
+      const response = await axios.get(`${API_URL}/productos`, { params });
+      const nuevos: Producto[] = Array.isArray(response.data) ? response.data : (response.data?.items ?? []);
+      setProductos(nuevos);
+      setDesktopHasMore(nuevos.length === DESKTOP_LIMITE);
+      setDesktopPage(page);
+    } catch (e) {
+      setProductos([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [debouncedSearch, marcaSeleccionada, categoriaSeleccionada]);
+
+  // Cuando cambian los filtros, tanto mobile (pagina/hasMas) como el indicador
+  // de página desktop deben volver a foja 1.
+  useEffect(() => {
+    setDesktopPage(1);
+    setDesktopHasMore(true);
+  }, [debouncedSearch, marcaSeleccionada, categoriaSeleccionada]);
+
+  const topLevelCategorias = useMemo(() => categorias.filter(c => !c.name.includes('/')), [categorias]);
+  const visibleCategorias = showAllCategorias ? topLevelCategorias : topLevelCategorias.slice(0, 8);
+
+  const activeFilterLabel = useMemo(() => {
+    if (categoriaSeleccionada) {
+      const cat = categorias.find(c => String(c.id) === categoriaSeleccionada);
+      if (cat) return cat.name.split(' / ').pop()!.toUpperCase();
+    }
+    if (marcaSeleccionada) {
+      const m = marcas.find(mm => String(mm.id) === marcaSeleccionada);
+      if (m) return m.name.toUpperCase();
+    }
+    if (debouncedSearch) return `"${debouncedSearch}"`;
+    return 'DESTACADOS';
+  }, [categoriaSeleccionada, marcaSeleccionada, debouncedSearch, categorias, marcas]);
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB — calco del diseño Figma "Productos - 4": hero oscuro +
+  // sidebar de categorías/marcas (datos reales del sistema) + grilla de productos.
+  // ===========================================================================
+  if (isDesktopWeb) {
+    return (
+      <View style={dsty.screen}>
+      <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 40 }} showsVerticalScrollIndicator={false}>
+        <View style={dsty.hero}>
+          <Image source={WebProductosHero} style={StyleSheet.absoluteFillObject as any} contentFit="cover" />
+          <View style={dsty.heroOverlay} />
+          <View style={dsty.heroInner}>
+            <Text style={dsty.heroTag}>¡Conocé los mejores productos del grupo Sal-Bom!</Text>
+            <Text style={dsty.heroTitle}>PRODUCTOS</Text>
+          </View>
+        </View>
+
+        <View style={dsty.body}>
+          <View style={dsty.sidebar}>
+            <Text style={dsty.sidebarHeading}>CATEGORÍAS</Text>
+            <View style={{ gap: 10, marginBottom: 22 }}>
+              {visibleCategorias.map((cat) => {
+                const active = String(cat.id) === categoriaSeleccionada;
+                return (
+                  <Pressable key={cat.id} onPress={() => setCategoriaSeleccionada(active ? '' : String(cat.id))}>
+                    <Text style={[dsty.sidebarItem, active && dsty.sidebarItemActive]} numberOfLines={1}>{cat.name}</Text>
+                  </Pressable>
+                );
+              })}
+              {topLevelCategorias.length > 8 && (
+                <Pressable onPress={() => setShowAllCategorias(v => !v)}>
+                  <Text style={dsty.sidebarMore}>{showAllCategorias ? 'Mostrar menos' : 'Mostrar más'}</Text>
+                </Pressable>
+              )}
+            </View>
+
+            <Text style={dsty.sidebarHeading}>MARCAS</Text>
+            <View style={{ gap: 10 }}>
+              {marcas.map((m) => {
+                const active = String(m.id) === marcaSeleccionada;
+                return (
+                  <Pressable key={m.id} onPress={() => setMarcaSeleccionada(active ? '' : String(m.id))}>
+                    <Text style={[dsty.sidebarItem, active && dsty.sidebarItemActive]} numberOfLines={1}>{m.name}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+
+          <View style={dsty.main}>
+            <View style={dsty.toolbar}>
+              <Text style={dsty.toolbarLabel}>{activeFilterLabel}</Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 20 }}>
+                <TextInput
+                  value={searchTerm}
+                  onChangeText={setSearchTerm}
+                  placeholder="Buscar nombre o código"
+                  placeholderTextColor="#B3B3B3"
+                  style={dsty.searchInput}
+                  onSubmitEditing={handleSubmitSearch}
+                  returnKeyType="search"
+                />
+                <Pressable style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }} onPress={() => setSortModalVisible(true)}>
+                  <Text style={dsty.toolbarSortLabel}>Ordenar por</Text>
+                  <Text style={dsty.toolbarSortValue}>{getSortLabel() === 'ORDENAR' ? 'Más relevantes' : getSortLabel()}</Text>
+                  <IconChevronDown stroke="#636363" />
+                </Pressable>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <Pressable onPress={() => desktopPage > 1 && goToDesktopPage(desktopPage - 1)} disabled={desktopPage <= 1} hitSlop={6}>
+                    <Feather name="chevron-left" size={18} color={desktopPage > 1 ? '#313131' : '#D9D9D9'} />
+                  </Pressable>
+                  <Text style={dsty.toolbarPage}>{String(desktopPage).padStart(2, '0')}</Text>
+                  <Pressable onPress={() => desktopHasMore && goToDesktopPage(desktopPage + 1)} disabled={!desktopHasMore} hitSlop={6}>
+                    <Feather name="chevron-right" size={18} color={desktopHasMore ? '#313131' : '#D9D9D9'} />
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+
+            {loading ? (
+              <View style={dsty.grid}>
+                {[1,2,3,4,5,6,7,8].map(i => <View key={i} style={[dsty.gridCell, { height: 260, backgroundColor: '#F5F5F5', borderRadius: 12 }]} />)}
+              </View>
+            ) : productosProcesados.length === 0 ? (
+              <EmptyState title="No se encontraron productos" message="Intenta ajustar los filtros o buscar con otro término." icon="search" />
+            ) : (
+              <View style={dsty.grid}>
+                {productosProcesados.map((item) => {
+                  const { isFav, handlePressDetalle, handlePressAgregar, handleToggleFav } = buildItemHandlers(item);
+                  return (
+                    <View key={item.id} style={dsty.gridCell}>
+                      <TarjetaProductoDesktop
+                        producto={item}
+                        isFavorite={isFav}
+                        onPressDetalle={handlePressDetalle}
+                        onPressAgregar={(qty, e) => { handlePressAgregar(qty); triggerFlyToCart(item.image_md_url || item.image_thumb_url, e); }}
+                        onToggleFavorito={handleToggleFav}
+                      />
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+          </View>
+        </View>
+      </ScrollView>
+
+        <Modal animationType="fade" transparent={true} visible={sortModalVisible}>
+            <TouchableWithoutFeedback onPress={() => setSortModalVisible(false)}>
+                <View style={styles.modalOverlay}>
+                    <View style={[styles.modalWrapper, { width: modalW }]}>
+                        <View style={StyleSheet.absoluteFill}>
+                            <Svg width="100%" height="100%"><Path d={modalBgPath} fill="#FFFFFF" stroke="#E5E7EB" strokeWidth={2} /></Svg>
+                        </View>
+                        <View style={styles.modalInner}>
+                            <View style={styles.modalHeaderRow}>
+                                <Feather name="list" size={22} color="#374151" />
+                                <Text style={styles.modalNewTitle}>ORDENAR POR</Text>
+                            </View>
+                            {[ { id: 'default', label: 'POR DEFECTO' }, { id: 'price_asc', label: 'MENOR PRECIO' }, { id: 'price_desc', label: 'MAYOR PRECIO' }, { id: 'name_asc', label: 'NOMBRE (A-Z)' } ].map((opt) => (
+                                <TouchableOpacity key={opt.id} style={styles.modalNewItem} onPress={() => { setSortOption(opt.id as SortOption); setSortModalVisible(false); }}>
+                                    <Text style={[styles.modalItemText, sortOption === opt.id && { color: '#139EDB', fontFamily: 'BarlowCondensed-Bold' }]}>{opt.label}</Text>
+                                    {sortOption === opt.id && <IconCheck />}
+                                </TouchableOpacity>
+                            ))}
+                        </View>
+                    </View>
+                </View>
+            </TouchableWithoutFeedback>
+        </Modal>
+
+        {flyItem && (
+          <Modal transparent visible animationType="none">
+            <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+              <Animated.View
+                style={[
+                  dsty.flyItem,
+                  {
+                    left: flyItem.startX,
+                    top: flyItem.startY,
+                    width: flyItem.w,
+                    height: flyItem.h,
+                    opacity: flyAnim.interpolate({ inputRange: [0, 0.8, 1], outputRange: [1, 1, 0] }),
+                    transform: [
+                      { translateX: flyAnim.interpolate({ inputRange: [0, 1], outputRange: [0, flyItem.dx] }) },
+                      { translateY: flyAnim.interpolate({ inputRange: [0, 1], outputRange: [0, flyItem.dy] }) },
+                      { scale: flyAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.15] }) },
+                    ],
+                  },
+                ]}
+              >
+                <Image source={{ uri: flyItem.uri }} style={{ width: '100%', height: '100%' }} contentFit="contain" />
+              </Animated.View>
+            </View>
+          </Modal>
+        )}
+      </View>
+    );
+  }
+
   return (
-    <TouchableWithoutFeedback onPress={() => { setShowSugerencias(false); Keyboard.dismiss(); }}>
+    <TouchableWithoutFeedback onPress={closeSuggestions}>
         <View style={{ flex: 1, backgroundColor: '#ffffff' }}>
-        
+
         {/* CABECERA FIJA - AQUÍ MOVIMOS EL SEARCHBAR */}
         <View style={[styles.fixedHeader, { zIndex: 10 }]}>
             <View style={[styles.titleRow, { marginLeft: -(HEADER_PAD + EDGE_KISS), height: Math.max(ARROW_H, TITLE_SIZE) }]}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                    <FlechaProductosSvg width={ARROW_W} height={ARROW_H} style={{ transform: [{ translateY: ARROW_BASELINE }] }} />
+                    {!isDesktopWeb && <FlechaProductosSvg width={ARROW_W} height={ARROW_H} style={{ transform: [{ translateY: ARROW_BASELINE }] }} />}
                     <View style={{ height: ARROW_H, justifyContent: 'center', marginLeft: TITLE_GAP }}>
                         <Text style={[styles.titleText, { fontSize: TITLE_SIZE, lineHeight: TITLE_SIZE, transform: [{ translateY: TITLE_BASELINE }] }]}>PRODUCTOS</Text>
                     </View>
@@ -542,13 +872,20 @@ const Productos = () => {
 
             <View style={{ zIndex: 20, marginTop: 4, marginBottom: 8 }}>
                 <SearchBar 
+                    ref={searchInputRef}
                     value={searchTerm} 
                     onChangeText={setSearchTerm} 
-                    onClear={() => { setSearchTerm(''); setShowSugerencias(false); }} 
+                    onClear={() => { setSearchTerm(''); closeSuggestions(); }} 
                     placeholder="BUSCAR NOMBRE O CÓDIGO" 
                     variant="hero" 
                     rightIcon 
-                    containerStyle={{ marginHorizontal: 0 }} 
+                    containerStyle={{ marginHorizontal: 0 }}
+                    onFocus={() => setSearchFocused(true)}
+                    onSubmitEditing={handleSubmitSearch}
+                    returnKeyType="search"
+                    autoCorrect={false}
+                    autoCapitalize="none"
+                    blurOnSubmit={true}
                 />
             </View>
         </View>
@@ -593,29 +930,45 @@ const Productos = () => {
 
             {/* CAJA DE SUGERENCIAS ALINEADA CORRECTAMENTE DEBAJO DEL HEADER FIJO */}
             {showSugerencias && (
-                <View style={[styles.suggestionsOverlay, { top: 0 }]}> 
-                    <ScrollView keyboardShouldPersistTaps="handled" style={{ flex: 1 }}>
-                        {loadingSugerencias && (<ActivityIndicator size="small" color="#139EDB" style={{ margin: 20 }} />)}
-                        {sugerenciasCat.length > 0 && (
-                            <View style={styles.suggestionSection}>
-                                <Text style={styles.suggestionTitle}>CATEGORÍAS</Text>
-                                {sugerenciasCat.map(cat => ( <TouchableOpacity key={cat.id} style={styles.suggestionRow} onPress={() => handleSelectCategorySuggestion(cat)}><IconTag /><Text style={styles.suggestionText}>{cat.name}</Text></TouchableOpacity> ))}
-                            </View>
-                        )}
-                        {sugerenciasProd.length > 0 && (
-                            <View style={styles.suggestionSection}>
-                                <Text style={styles.suggestionTitle}>PRODUCTOS</Text>
-                                {sugerenciasProd.map(prod => ( <TouchableOpacity key={prod.id} style={styles.suggestionRow} onPress={() => handleSelectProductSuggestion(prod)}><IconSearchSmall /><View style={{ marginLeft: 10, flex: 1 }}><Text numberOfLines={1} style={styles.suggestionText}>{prod.name}</Text>{prod.default_code ? <Text style={styles.suggestionSubText}>{prod.default_code}</Text> : null}</View></TouchableOpacity> ))}
-                            </View>
-                        )}
-                    </ScrollView>
-                </View>
+                <>
+                    {/* Backdrop invisible: tocar fuera cierra el overlay */}
+                    <Pressable
+                        style={styles.suggestionsBackdrop}
+                        onPress={closeSuggestions}
+                    />
+                    <View style={[styles.suggestionsOverlay, { top: 0 }]}> 
+                        <ScrollView 
+                            keyboardShouldPersistTaps="handled" 
+                            keyboardDismissMode="on-drag"
+                            style={{ flex: 1 }}
+                        >
+                            {loadingSugerencias && (<ActivityIndicator size="small" color="#139EDB" style={{ margin: 20 }} />)}
+                            
+                            {!loadingSugerencias && sugerenciasCat.length === 0 && sugerenciasProd.length === 0 && (
+                                <Text style={styles.suggestionEmpty}>Sin resultados para "{searchTerm}"</Text>
+                            )}
+
+                            {sugerenciasCat.length > 0 && (
+                                <View style={styles.suggestionSection}>
+                                    <Text style={styles.suggestionTitle}>CATEGORÍAS</Text>
+                                    {sugerenciasCat.map(cat => ( <TouchableOpacity key={cat.id} style={styles.suggestionRow} onPress={() => handleSelectCategorySuggestion(cat)}><IconTag /><Text style={styles.suggestionText}>{cat.name}</Text></TouchableOpacity> ))}
+                                </View>
+                            )}
+                            {sugerenciasProd.length > 0 && (
+                                <View style={styles.suggestionSection}>
+                                    <Text style={styles.suggestionTitle}>PRODUCTOS</Text>
+                                    {sugerenciasProd.map(prod => ( <TouchableOpacity key={prod.id} style={styles.suggestionRow} onPress={() => handleSelectProductSuggestion(prod)}><IconSearchSmall /><View style={{ marginLeft: 10, flex: 1 }}><Text numberOfLines={1} style={styles.suggestionText}>{prod.name}</Text>{prod.default_code ? <Text style={styles.suggestionSubText}>{prod.default_code}</Text> : null}</View></TouchableOpacity> ))}
+                                </View>
+                            )}
+                        </ScrollView>
+                    </View>
+                </>
             )}
         </View>
 
         <Modal visible={pickerModal !== null} transparent animationType="fade">
             <Pressable style={styles.modalOverlay} onPress={() => setPickerModal(null)}>
-                <View style={[styles.modalWrapper, { width: MODAL_W }]}>
+                <View style={[styles.modalWrapper, { width: modalW }]}>
                     <View style={StyleSheet.absoluteFill}>
                         <Svg width="100%" height="100%">
                             <Defs><Filter id="shadow" x="-20%" y="-20%" width="140%" height="140%"><FeGaussianBlur in="SourceAlpha" stdDeviation={3} /></Filter></Defs>
@@ -680,7 +1033,7 @@ const Productos = () => {
         <Modal animationType="slide" transparent={true} visible={sortModalVisible}>
             <TouchableWithoutFeedback onPress={() => setSortModalVisible(false)}>
                 <View style={styles.modalOverlay}>
-                    <View style={[styles.modalWrapper, { width: MODAL_W }]}>
+                    <View style={[styles.modalWrapper, { width: modalW }]}>
                         <View style={StyleSheet.absoluteFill}>
                             <Svg width="100%" height="100%"><Path d={modalBgPath} fill="#FFFFFF" stroke="#E5E7EB" strokeWidth={2} /></Svg>
                         </View>
@@ -753,13 +1106,51 @@ const styles = StyleSheet.create({
   sortTextActive: { fontFamily: 'BarlowCondensed-Bold', color: '#1C9BD8' }, 
 
   suggestionsOverlay: { position: 'absolute', left: HEADER_PAD, right: HEADER_PAD, maxHeight: 300, backgroundColor: '#fff', borderRadius: 8, borderWidth: 1, borderColor: '#E5E7EB', elevation: 10, zIndex: 999 },
+  suggestionsBackdrop: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'transparent', zIndex: 998 },
   suggestionSection: { paddingVertical: 8 },
   suggestionTitle: { fontSize: 11, fontFamily: 'BarlowCondensed-Bold', color: '#9CA3AF', paddingHorizontal: 12, marginBottom: 4, letterSpacing: 0.5 },
   suggestionRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 12, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#F3F4F6' },
   suggestionText: { marginLeft: 8, fontSize: 15, fontFamily: 'BarlowCondensed-Regular', color: '#1F2937' },
   suggestionSubText: { fontSize: 12, color: '#9CA3AF', fontFamily: 'BarlowCondensed-Light' },
+  suggestionEmpty: { fontFamily: 'BarlowCondensed-Regular', fontSize: 14, color: '#9CA3AF', textAlign: 'center', padding: 20 },
   emptyContainer: { alignItems: 'center', marginTop: 50 },
   emptyText: { color: '#999', fontSize: 16 }
+});
+
+const WEB_MAXW = 1440;
+
+// --- Estilos exclusivos de la versión desktop, calcados del Figma
+// "Productos - 4": hero oscuro + sidebar azul + grilla. Mobile no usa nada
+// de este StyleSheet. ---
+const dsty = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  flyItem: { position: 'absolute', zIndex: 9999 },
+  hero: { width: '100%', height: 220, backgroundColor: '#1E1E1E', overflow: 'hidden', position: 'relative' },
+  heroOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(20,20,20,0.55)' },
+  heroInner: { flex: 1, maxWidth: WEB_MAXW, width: '100%', alignSelf: 'center', justifyContent: 'center', paddingHorizontal: 54 },
+  heroTag: { fontFamily: 'Rubik', fontSize: 15, color: '#FFFFFF', marginBottom: 6 },
+  heroTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 68, lineHeight: 64, color: '#FFFFFF' },
+
+  // El sidebar va pegado al borde izquierdo real de la pantalla (después de la
+  // barra lateral de navegación de la app), sin maxWidth ni bordes redondeados.
+  body: { flexDirection: 'row', width: '100%', alignItems: 'stretch' },
+
+  sidebar: { width: 250, backgroundColor: '#1C9BD8', padding: 24, paddingTop: 30 },
+  sidebarHeading: { fontFamily: 'BarlowCondensed-Bold', fontSize: 20, color: '#FFFFFF', marginBottom: 12 },
+  sidebarItem: { fontFamily: 'Rubik', fontSize: 13, color: 'rgba(255,255,255,0.85)', paddingVertical: 2 },
+  sidebarItemActive: { fontFamily: 'Rubik', fontWeight: '700', color: '#FFFFFF', textDecorationLine: 'underline' },
+  sidebarMore: { fontFamily: 'Rubik', fontSize: 13, color: '#FFFFFF', fontWeight: '700', marginTop: 4 },
+
+  main: { flex: 1, minWidth: 0, paddingHorizontal: 40, paddingTop: 30, paddingBottom: 60 },
+  toolbar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },
+  toolbarLabel: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#636363', letterSpacing: 0.5 },
+  searchInput: { width: 220, height: 34, borderRadius: 8, borderWidth: 1, borderColor: '#E5E5E5', backgroundColor: '#FAFAFA', paddingHorizontal: 12, fontSize: 13, color: '#333' },
+  toolbarSortLabel: { fontFamily: 'Rubik', fontSize: 13, color: '#636363' },
+  toolbarSortValue: { fontFamily: 'Rubik', fontWeight: '700', fontSize: 13, color: '#313131' },
+  toolbarPage: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#313131' },
+
+  grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 18 },
+  gridCell: { width: '23.5%', minWidth: 240 },
 });
 
 export default Productos;

@@ -34,6 +34,7 @@ import * as ImagePicker from 'expo-image-picker';
 
 import authStorage from '../utils/authStorage';
 import { API_URL } from '../config';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 const FS = FileSystem as any;
 
@@ -123,6 +124,7 @@ const CONFIG_ESTADOS: Record<string, { title: string; color: string }> = {
 const ListadoClientes = () => {
   const route = useRoute<any>();
   const insets = useSafeAreaInsets();
+  const isDesktopWeb = useIsDesktopWeb();
 
   const { 
     estadoId = 'perdidos', 
@@ -430,6 +432,207 @@ const ListadoClientes = () => {
     </TouchableOpacity>
   );
 
+  const sharedModals = (
+    <>
+      {/* MODAL FILTROS */}
+      <Modal visible={!!modalType} transparent animationType="fade" onRequestClose={() => setModalType(null)}>
+        <Pressable style={s.modalOverlay} onPress={() => setModalType(null)}>
+            <View style={[s.modalContent, isDesktopWeb && ds.modalContentD]}>
+                <Text style={s.modalTitle}>Seleccionar {modalType === 'state' ? 'Provincia' : 'Ciudad'}</Text>
+                <ScrollView style={{ maxHeight: 300 }}>
+                    {(modalType === 'state' ? uniqueStates : uniqueCities).map((item, idx) => (
+                        <TouchableOpacity key={idx} style={s.modalItem} onPress={() => { if (modalType === 'state') setSelectedState(item as string); else setSelectedCity(item as string); setModalType(null); }}>
+                            <Text style={s.modalItemText}>{item || 'Desconocido'}</Text>
+                        </TouchableOpacity>
+                    ))}
+                    {(modalType === 'state' ? uniqueStates : uniqueCities).length === 0 && <Text style={s.emptyText}>No hay opciones disponibles.</Text>}
+                </ScrollView>
+                <TouchableOpacity style={s.modalCloseBtn} onPress={() => setModalType(null)}><Text style={s.modalCloseText}>Cerrar</Text></TouchableOpacity>
+            </View>
+        </Pressable>
+      </Modal>
+
+      {/* MODAL NOTA INTERNA */}
+      <Modal visible={noteModalVisible} transparent animationType="fade" onRequestClose={() => setNoteModalVisible(false)}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+          <Pressable style={s.modalOverlay} onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); }}>
+            <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+              <View style={[s.modalContent, { width: '90%' }, isDesktopWeb && ds.modalContentD]}>
+                <Text style={s.modalTitle}>Agregar Nota</Text>
+                <Text style={{textAlign:'center', marginBottom:15, color:'#666', fontFamily: 'BarlowCondensed-Regular'}}>Cliente: {selectedClientForNote?.name}</Text>
+                <TextInput style={s.noteInput} placeholder="Escribe un comentario..." placeholderTextColor="#999" multiline numberOfLines={4} value={noteText} onChangeText={setNoteText} textAlignVertical="top" />
+
+                <TouchableOpacity style={s.attachBtn} onPress={pickFile}>
+                  <Ionicons name="camera-outline" size={20} color="#666" />
+                  <Text style={s.attachText} numberOfLines={1}>{selectedFile ? selectedFile.name : 'Tomar Foto o Adjuntar'}</Text>
+                </TouchableOpacity>
+                {selectedFile && (
+                    <TouchableOpacity onPress={() => setSelectedFile(null)} style={{alignSelf: 'flex-end', marginBottom: 10}}><Text style={{color: '#D32F2F', fontSize: 12, fontFamily: 'BarlowCondensed-Bold'}}>Quitar archivo</Text></TouchableOpacity>
+                )}
+
+                <View style={s.noteButtonsRow}>
+                    <TouchableOpacity style={s.noteCancelBtn} onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); }} disabled={isSavingNote}><Text style={s.noteCancelText}>Cancelar</Text></TouchableOpacity>
+                    <TouchableOpacity style={[s.noteSaveBtn, { backgroundColor: config.color }]} onPress={handleSaveNote} disabled={isSavingNote || (!noteText.trim() && !selectedFile)}>
+                        {isSavingNote ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={s.noteSaveText}>Guardar</Text>}
+                    </TouchableOpacity>
+                </View>
+              </View>
+            </TouchableWithoutFeedback>
+          </Pressable>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* MODAL HISTORIAL DE NOTAS */}
+      <Modal visible={historyModalVisible} transparent animationType="fade" onRequestClose={() => setHistoryModalVisible(false)}>
+        <Pressable style={s.modalOverlay} onPress={() => setHistoryModalVisible(false)}>
+          <Pressable style={[s.modalContent, { width: '95%', maxHeight: '85%', padding: 15, backgroundColor: '#F8F9FA' }, isDesktopWeb && ds.modalContentHistoryD]} onPress={e => e.stopPropagation()}>
+            <Text style={[s.modalTitle, {marginBottom: 5}]}>Historial de Contacto</Text>
+            <Text style={{textAlign:'center', marginBottom:15, color:'#1C9BD8', fontFamily: 'BarlowCondensed-SemiBold'}}>{selectedClientForNote?.name}</Text>
+
+            {loadingHistory ? (
+               <ActivityIndicator size="large" color={config.color} style={{ marginVertical: 30 }} />
+            ) : (
+               <ScrollView style={s.chatScrollContainer} showsVerticalScrollIndicator={false}>
+
+                 {historyMessages.map((msg, idx) => {
+                     const isOdoo = msg.author.includes('Odoo');
+                     const msgText = cleanHtml(msg.body);
+
+                     return (
+                         <View key={msg.id || idx} style={s.chatRow}>
+                             <View style={[s.chatAvatar, isOdoo && {backgroundColor: '#6C757D'}]}>
+                                 <Text style={s.chatAvatarText}>{msg.author.charAt(0).toUpperCase()}</Text>
+                             </View>
+                             <View style={s.chatBubble}>
+                                 <View style={s.chatHeaderInfo}>
+                                     <Text style={s.chatAuthorName} numberOfLines={1}>{msg.author}</Text>
+                                     <Text style={s.chatTime}>{formatChatDate(msg.date)}</Text>
+                                 </View>
+
+                                 {/* Texto de la nota */}
+                                 {!!msgText && (
+                                     <Text style={s.chatMessageText}>{msgText}</Text>
+                                 )}
+
+                                 {/* Archivos Adjuntos */}
+                                 {msg.attachments && msg.attachments.length > 0 && (
+                                     <View style={s.attachmentsWrapper}>
+                                         {msg.attachments.map((att: any) => (
+                                             <TouchableOpacity
+                                                 key={att.id}
+                                                 style={s.attachmentPill}
+                                                 onPress={() => handleDownloadAttachment(att.id)}
+                                                 activeOpacity={0.7}
+                                             >
+                                                 <Ionicons name="document-attach-outline" size={18} color="#1C9BD8" />
+                                                 <Text style={s.attachmentName} numberOfLines={1}>{att.name}</Text>
+                                             </TouchableOpacity>
+                                         ))}
+                                     </View>
+                                 )}
+                             </View>
+                         </View>
+                     );
+                 })}
+
+                 {historyMessages.length === 0 && (
+                     <Text style={s.emptyChatText}>No hay interacciones registradas con este cliente.</Text>
+                 )}
+               </ScrollView>
+            )}
+
+            <TouchableOpacity style={s.closeChatBtn} onPress={() => setHistoryModalVisible(false)}>
+                <Text style={s.closeChatText}>Cerrar</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
+  );
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    const renderRowD = (item: Cliente) => (
+      <View key={item.id} style={dsty.row}>
+        <TouchableOpacity style={{ flex: 2 }} onPress={() => handleOpenHistoryModal(item)}>
+          <Text style={dsty.clientName} numberOfLines={1}>{item.name}</Text>
+          <Text style={dsty.clientMeta}>CUIT: {item.vat || '—'}</Text>
+        </TouchableOpacity>
+        <Text style={[dsty.rowCell, { flex: 1.5 }]} numberOfLines={1}>
+          {[item.city, item.state].filter(Boolean).join(', ') || 'Sin ubicación'}
+        </Text>
+        <View style={dsty.actionsCol}>
+          <TouchableOpacity style={[dsty.iconBtn, { backgroundColor: '#FFF3E0' }]} onPress={() => handleOpenNoteModal(item)}><IconNote /></TouchableOpacity>
+          {item.phone && (
+            <>
+              <TouchableOpacity style={dsty.iconBtn} onPress={() => handleCall(item.phone!)}><IconPhone /></TouchableOpacity>
+              <TouchableOpacity style={[dsty.iconBtn, { backgroundColor: '#F0FFF4' }]} onPress={() => handleWhatsApp(item.phone!)}><IconWhatsApp /></TouchableOpacity>
+            </>
+          )}
+          {item.email && (
+            <TouchableOpacity style={dsty.iconBtn} onPress={() => handleEmail(item.email!)}><IconMail /></TouchableOpacity>
+          )}
+        </View>
+      </View>
+    );
+
+    return (
+      <View style={dsty.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={dsty.page}>
+            <View style={dsty.headerRow}>
+              <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 8 }}>
+                <Text style={[dsty.pageTitle, { color: config.color }]}>{config.title}</Text>
+                <Text style={dsty.countText}>({filteredClientes.length})</Text>
+              </View>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <TouchableOpacity style={[dsty.exportBtn, { borderColor: '#2E7D32', backgroundColor: '#E8F5E9' }]} onPress={handleDownloadExcel}>
+                  <IconExcel /><Text style={[dsty.exportText, { color: '#2E7D32' }]}>XLS</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[dsty.exportBtn, { borderColor: '#C62828', backgroundColor: '#FFEBEE' }]} onPress={handleDownloadPdf}>
+                  <IconPdf /><Text style={[dsty.exportText, { color: '#C62828' }]}>PDF</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={dsty.filtersRow}>
+              <View style={dsty.searchInputWrap}>
+                <Ionicons name="search" size={18} color="#999" style={{ marginRight: 8 }} />
+                <TextInput style={dsty.searchInput} placeholder="Buscar cliente o CUIT" placeholderTextColor="#999" value={search} onChangeText={setSearch} />
+              </View>
+              <TouchableOpacity style={dsty.filterBtn} onPress={() => setModalType('state')}>
+                <Text style={[dsty.filterText, !selectedState && { color: '#999' }]} numberOfLines={1}>{selectedState || 'Provincia'}</Text>
+                <Ionicons name="chevron-down" size={14} color="#999" />
+              </TouchableOpacity>
+              <TouchableOpacity style={dsty.filterBtn} onPress={() => setModalType('city')}>
+                <Text style={[dsty.filterText, !selectedCity && { color: '#999' }]} numberOfLines={1}>{selectedCity || 'Ciudad'}</Text>
+                <Ionicons name="chevron-down" size={14} color="#999" />
+              </TouchableOpacity>
+              {selectedState && <TouchableOpacity onPress={() => setSelectedState(null)} style={dsty.chip}><Text style={dsty.chipText}>{selectedState} ✕</Text></TouchableOpacity>}
+              {selectedCity && <TouchableOpacity onPress={() => setSelectedCity(null)} style={dsty.chip}><Text style={dsty.chipText}>{selectedCity} ✕</Text></TouchableOpacity>}
+            </View>
+
+            {loading && !refreshing ? (
+              <ActivityIndicator size="large" color={config.color} style={{ marginTop: 40 }} />
+            ) : error ? (
+              <View style={{ marginTop: 40, alignItems: 'center' }}>
+                <Text style={s.errorText}>{error}</Text>
+                <TouchableOpacity onPress={() => fetchClientes()} style={[s.retryBtn, { backgroundColor: config.color }]}><Text style={s.retryText}>Reintentar</Text></TouchableOpacity>
+              </View>
+            ) : filteredClientes.length === 0 ? (
+              <Text style={dsty.emptyText}>No se encontraron clientes.</Text>
+            ) : (
+              <View style={dsty.table}>{filteredClientes.map(renderRowD)}</View>
+            )}
+          </View>
+        </ScrollView>
+        {sharedModals}
+      </View>
+    );
+  }
+
   return (
     <View style={[s.container, { paddingTop: insets.top }]}>
       <View style={s.headerRow}>
@@ -490,119 +693,7 @@ const ListadoClientes = () => {
         />
       )}
 
-      {/* MODAL FILTROS */}
-      <Modal visible={!!modalType} transparent animationType="fade" onRequestClose={() => setModalType(null)}>
-        <Pressable style={s.modalOverlay} onPress={() => setModalType(null)}>
-            <View style={s.modalContent}>
-                <Text style={s.modalTitle}>Seleccionar {modalType === 'state' ? 'Provincia' : 'Ciudad'}</Text>
-                <ScrollView style={{ maxHeight: 300 }}>
-                    {(modalType === 'state' ? uniqueStates : uniqueCities).map((item, idx) => (
-                        <TouchableOpacity key={idx} style={s.modalItem} onPress={() => { if (modalType === 'state') setSelectedState(item as string); else setSelectedCity(item as string); setModalType(null); }}>
-                            <Text style={s.modalItemText}>{item || 'Desconocido'}</Text>
-                        </TouchableOpacity>
-                    ))}
-                    {(modalType === 'state' ? uniqueStates : uniqueCities).length === 0 && <Text style={s.emptyText}>No hay opciones disponibles.</Text>}
-                </ScrollView>
-                <TouchableOpacity style={s.modalCloseBtn} onPress={() => setModalType(null)}><Text style={s.modalCloseText}>Cerrar</Text></TouchableOpacity>
-            </View>
-        </Pressable>
-      </Modal>
-
-      {/* MODAL NOTA INTERNA */}
-      <Modal visible={noteModalVisible} transparent animationType="fade" onRequestClose={() => setNoteModalVisible(false)}>
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-          <Pressable style={s.modalOverlay} onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); }}>
-            <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
-              <View style={[s.modalContent, { width: '90%' }]}>
-                <Text style={s.modalTitle}>Agregar Nota</Text>
-                <Text style={{textAlign:'center', marginBottom:15, color:'#666', fontFamily: 'BarlowCondensed-Regular'}}>Cliente: {selectedClientForNote?.name}</Text>
-                <TextInput style={s.noteInput} placeholder="Escribe un comentario..." placeholderTextColor="#999" multiline numberOfLines={4} value={noteText} onChangeText={setNoteText} textAlignVertical="top" />
-                
-                <TouchableOpacity style={s.attachBtn} onPress={pickFile}>
-                  <Ionicons name="camera-outline" size={20} color="#666" />
-                  <Text style={s.attachText} numberOfLines={1}>{selectedFile ? selectedFile.name : 'Tomar Foto o Adjuntar'}</Text>
-                </TouchableOpacity>
-                {selectedFile && (
-                    <TouchableOpacity onPress={() => setSelectedFile(null)} style={{alignSelf: 'flex-end', marginBottom: 10}}><Text style={{color: '#D32F2F', fontSize: 12, fontFamily: 'BarlowCondensed-Bold'}}>Quitar archivo</Text></TouchableOpacity>
-                )}
-                
-                <View style={s.noteButtonsRow}>
-                    <TouchableOpacity style={s.noteCancelBtn} onPress={() => { Keyboard.dismiss(); setNoteModalVisible(false); }} disabled={isSavingNote}><Text style={s.noteCancelText}>Cancelar</Text></TouchableOpacity>
-                    <TouchableOpacity style={[s.noteSaveBtn, { backgroundColor: config.color }]} onPress={handleSaveNote} disabled={isSavingNote || (!noteText.trim() && !selectedFile)}>
-                        {isSavingNote ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={s.noteSaveText}>Guardar</Text>}
-                    </TouchableOpacity>
-                </View>
-              </View>
-            </TouchableWithoutFeedback>
-          </Pressable>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* MODAL HISTORIAL DE NOTAS */}
-      <Modal visible={historyModalVisible} transparent animationType="fade" onRequestClose={() => setHistoryModalVisible(false)}>
-        <Pressable style={s.modalOverlay} onPress={() => setHistoryModalVisible(false)}>
-          <Pressable style={[s.modalContent, { width: '95%', maxHeight: '85%', padding: 15, backgroundColor: '#F8F9FA' }]} onPress={e => e.stopPropagation()}>
-            <Text style={[s.modalTitle, {marginBottom: 5}]}>Historial de Contacto</Text>
-            <Text style={{textAlign:'center', marginBottom:15, color:'#1C9BD8', fontFamily: 'BarlowCondensed-SemiBold'}}>{selectedClientForNote?.name}</Text>
-
-            {loadingHistory ? (
-               <ActivityIndicator size="large" color={config.color} style={{ marginVertical: 30 }} />
-            ) : (
-               <ScrollView style={s.chatScrollContainer} showsVerticalScrollIndicator={false}>
-
-                 {historyMessages.map((msg, idx) => {
-                     const isOdoo = msg.author.includes('Odoo');
-                     const msgText = cleanHtml(msg.body); 
-                     
-                     return (
-                         <View key={msg.id || idx} style={s.chatRow}>
-                             <View style={[s.chatAvatar, isOdoo && {backgroundColor: '#6C757D'}]}>
-                                 <Text style={s.chatAvatarText}>{msg.author.charAt(0).toUpperCase()}</Text>
-                             </View>
-                             <View style={s.chatBubble}>
-                                 <View style={s.chatHeaderInfo}>
-                                     <Text style={s.chatAuthorName} numberOfLines={1}>{msg.author}</Text>
-                                     <Text style={s.chatTime}>{formatChatDate(msg.date)}</Text>
-                                 </View>
-                                 
-                                 {/* Texto de la nota */}
-                                 {!!msgText && (
-                                     <Text style={s.chatMessageText}>{msgText}</Text>
-                                 )}
-                                 
-                                 {/* Archivos Adjuntos */}
-                                 {msg.attachments && msg.attachments.length > 0 && (
-                                     <View style={s.attachmentsWrapper}>
-                                         {msg.attachments.map((att: any) => (
-                                             <TouchableOpacity 
-                                                 key={att.id} 
-                                                 style={s.attachmentPill} 
-                                                 onPress={() => handleDownloadAttachment(att.id)}
-                                                 activeOpacity={0.7}
-                                             >
-                                                 <Ionicons name="document-attach-outline" size={18} color="#1C9BD8" />
-                                                 <Text style={s.attachmentName} numberOfLines={1}>{att.name}</Text>
-                                             </TouchableOpacity>
-                                         ))}
-                                     </View>
-                                 )}
-                             </View>
-                         </View>
-                     );
-                 })}
-
-                 {historyMessages.length === 0 && (
-                     <Text style={s.emptyChatText}>No hay interacciones registradas con este cliente.</Text>
-                 )}
-               </ScrollView>
-            )}
-
-            <TouchableOpacity style={s.closeChatBtn} onPress={() => setHistoryModalVisible(false)}>
-                <Text style={s.closeChatText}>Cerrar</Text>
-            </TouchableOpacity>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      {sharedModals}
 
     </View>
   );
@@ -681,6 +772,41 @@ const s = StyleSheet.create({
   attachmentsWrapper: { marginTop: 8, gap: 6 },
   attachmentPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#E1F5FE', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 6, borderWidth: 1, borderColor: '#B3E5FC' },
   attachmentName: { marginLeft: 6, color: '#0277BD', fontSize: 12, fontFamily: 'BarlowCondensed-SemiBold', flex: 1 }
+});
+
+// Overrides desktop para los modales compartidos (mobile usa width:'90%'/'95%'
+// sobre un overlay ya centrado; en desktop eso quedaría gigante, así que fijamos un ancho máximo).
+const ds = StyleSheet.create({
+  modalContentD: { width: 460, maxWidth: '90%' },
+  modalContentHistoryD: { width: 560, maxWidth: '90%', maxHeight: '80%' },
+});
+
+// --- Estilos exclusivos de desktop (listado principal) ---
+const dsty = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 34, textTransform: 'uppercase' },
+  countText: { color: '#999', fontSize: 18, fontFamily: 'Rubik' },
+  exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, borderWidth: 1 },
+  exportText: { fontSize: 12, fontFamily: 'BarlowCondensed-Bold' },
+
+  filtersRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 24, flexWrap: 'wrap' },
+  searchInputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0', height: 42, paddingHorizontal: 12, width: 280 },
+  searchInput: { flex: 1, fontFamily: 'BarlowCondensed-Medium', fontSize: 14, color: '#2B2B2B' },
+  filterBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, backgroundColor: '#FAFAFA', borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0', height: 42, paddingHorizontal: 14, width: 160 },
+  filterText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#2B2B2B' },
+  chip: { backgroundColor: '#E3F2FD', borderRadius: 20, paddingHorizontal: 12, paddingVertical: 9 },
+  chipText: { fontSize: 12, color: '#1565C0', fontFamily: 'BarlowCondensed-Bold' },
+
+  table: { borderWidth: 1, borderColor: '#ECECEC', borderRadius: 12, overflow: 'hidden' },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 18, borderBottomWidth: 1, borderBottomColor: '#F3F4F6' },
+  clientName: { fontSize: 15, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' },
+  clientMeta: { fontSize: 12, color: '#8A8A8A', fontFamily: 'Rubik', marginTop: 2 },
+  rowCell: { fontSize: 13, color: '#555', fontFamily: 'Rubik' },
+  actionsCol: { flexDirection: 'row', gap: 8 },
+  iconBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#F7F8FA', alignItems: 'center', justifyContent: 'center' },
+  emptyText: { textAlign: 'center', color: '#999', fontFamily: 'Rubik', fontSize: 15, marginTop: 60 },
 });
 
 export default ListadoClientes;

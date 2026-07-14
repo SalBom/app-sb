@@ -11,6 +11,7 @@ import {
   Linking,
   Alert,
   Platform,
+  ScrollView,
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
@@ -31,6 +32,7 @@ import FlechaPedidoSvg from '../../assets/flechaPedido.svg';
 import Svg, { Path } from 'react-native-svg';
 
 import { API_URL } from '../config';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 const FS = FileSystem as any;
 
@@ -68,8 +70,9 @@ const PAGE_SIZE = 20;
 
 const Facturas: React.FC = () => {
   const navigation = useNavigation<any>();
-  const route = useRoute<any>(); 
-  const { cuitOverride } = route.params || {}; 
+  const route = useRoute<any>();
+  const isDesktopWeb = useIsDesktopWeb();
+  const { cuitOverride } = route.params || {};
 
   const [facturas, setFacturas] = useState<FacturaItem[]>([]);
   const [loadingInitial, setLoadingInitial] = useState(true);
@@ -268,6 +271,103 @@ const Facturas: React.FC = () => {
     );
   };
 
+  const renderRowD = (item: FacturaItem, idx: number) => {
+    const pagoInfo = (item.estado_pago === 'paid' || item.estado_pago === 'in_payment' ? { label: 'PAGADO', color: '#CC0000' } : item.estado_pago === 'partial' ? { label: 'PARCIAL', color: '#FF9800' } : { label: 'NO PAGADO', color: '#CC0000' });
+    const entregaInfo = (item.fecha && item.fecha !== 'Sin fecha' ? { label: 'ENTREGADO', color: '#4CAF50' } : { label: 'PENDIENTE', color: '#9E9E9E' });
+    return (
+      <View key={item.numero_factura + idx} style={ds.row}>
+        <Text style={[ds.rowCell, { flex: 1.4, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' }]}>{item.numero_factura.replace('FA-A', '#')}</Text>
+        <Text style={[ds.rowCell, { flex: 1.8 }]} numberOfLines={1}>{item.cliente}</Text>
+        <Text style={[ds.rowCell, { flex: 1 }]}>{formatFecha(item.fecha)}</Text>
+        <Text style={[ds.rowCell, { flex: 1, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' }]}>$ {formatCurrency(item.total)}</Text>
+        <View style={{ flex: 1.2, flexDirection: 'row', gap: 6 }}>
+          <View style={[ds.badge, { backgroundColor: pagoInfo.color }]}><Text style={ds.badgeText}>{pagoInfo.label}</Text></View>
+          <View style={[ds.badge, { backgroundColor: entregaInfo.color }]}><Text style={ds.badgeText}>{entregaInfo.label}</Text></View>
+        </View>
+        <View style={{ flex: 0.6, alignItems: 'flex-end' }}>
+          <TouchableOpacity
+            onPress={() => {
+              const baseUrl = getBaseUrl();
+              const url = item.factura_id
+                ? `${baseUrl}/factura_pdf?id=${item.factura_id}`
+                : `${baseUrl}/factura_pdf?facturaId=${encodeURIComponent(item.numero_factura)}`;
+              Linking.openURL(url);
+            }}
+          >
+            <Feather name="download" size={18} color="#2B2B2B" />
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  };
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    return (
+      <View style={ds.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={ds.page}>
+            <View style={ds.headerRow}>
+              <Text style={ds.pageTitle}>FACTURAS</Text>
+              <View style={{ flexDirection: 'row', gap: 10 }}>
+                <TouchableOpacity style={[ds.exportBtn, { borderColor: '#2E7D32', backgroundColor: '#E8F5E9' }]} onPress={handleDownloadExcel}>
+                  <IconExcel /><Text style={[ds.exportText, { color: '#2E7D32' }]}>XLS</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[ds.exportBtn, { borderColor: '#C62828', backgroundColor: '#FFEBEE' }]} onPress={handleDownloadPdf}>
+                  <IconPdf /><Text style={[ds.exportText, { color: '#C62828' }]}>PDF</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={ds.filtersRow}>
+              <View style={ds.searchInputWrap}>
+                <Ionicons name="search" size={18} color="#999" style={{ marginRight: 8 }} />
+                <TextInput style={ds.searchInput} placeholder="Buscar..." placeholderTextColor="#999" value={search} onChangeText={setSearch} />
+              </View>
+              <TouchableOpacity style={ds.filterBtn} onPress={() => setShowDatePicker(true)}>
+                <Feather name="calendar" size={14} color="#666" />
+                <Text style={[ds.filterText, !dateFilter && { color: '#999' }]}>{dateFilter ? dateFilter.toLocaleDateString('es-AR') : 'Fecha'}</Text>
+              </TouchableOpacity>
+              <View style={ds.filterBtn}>
+                <TextInput style={ds.filterText} placeholder="Estado" placeholderTextColor="#999" value={statusFilter} onChangeText={setStatusFilter} />
+              </View>
+            </View>
+
+            {showDatePicker && <DateTimePicker value={dateFilter || new Date()} mode="date" display="default" onChange={(e, d) => { setShowDatePicker(false); if (d) setDateFilter(d); }} maximumDate={new Date()} />}
+
+            {loadingInitial ? (
+              <ActivityIndicator size="large" color="#0088CC" style={{ marginTop: 40 }} />
+            ) : facturas.length === 0 ? (
+              <Text style={ds.emptyText}>No se encontraron facturas.</Text>
+            ) : (
+              <View style={ds.table}>
+                <View style={ds.tableHeadRow}>
+                  <Text style={[ds.th, { flex: 1.4 }]}>NÚMERO</Text>
+                  <Text style={[ds.th, { flex: 1.8 }]}>CLIENTE</Text>
+                  <Text style={[ds.th, { flex: 1 }]}>FECHA</Text>
+                  <Text style={[ds.th, { flex: 1 }]}>TOTAL</Text>
+                  <Text style={[ds.th, { flex: 1.2 }]}>ESTADO</Text>
+                  <View style={{ flex: 0.6 }} />
+                </View>
+                {facturas.map(renderRowD)}
+                {hasMore && (
+                  <TouchableOpacity
+                    onPress={() => !loadingMore && fetchFacturas(offset + PAGE_SIZE)}
+                    style={ds.loadMoreBtn}
+                  >
+                    {loadingMore ? <ActivityIndicator size="small" color="#1C9BD8" /> : <Text style={ds.loadMoreText}>Cargar más...</Text>}
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
   return (
     <View style={s.screen}>
       <View style={s.header}>
@@ -360,6 +460,33 @@ const s = StyleSheet.create({
   badgeText: { color: '#FFF', fontSize: 11, fontFamily: 'BarlowCondensed-Bold', textAlign: 'center' },
   actionsRow: { flexDirection: 'row', marginTop: 8 },
   iconButton: { marginLeft: 15 }
+});
+
+// --- Estilos exclusivos de desktop ---
+const ds = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', textTransform: 'uppercase' },
+  exportBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 8, borderWidth: 1 },
+  exportText: { fontSize: 12, fontFamily: 'BarlowCondensed-Bold' },
+
+  filtersRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 24 },
+  searchInputWrap: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FAFAFA', borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0', height: 42, paddingHorizontal: 12, width: 260 },
+  searchInput: { flex: 1, fontFamily: 'BarlowCondensed-Medium', fontSize: 14, color: '#2B2B2B' },
+  filterBtn: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FAFAFA', borderRadius: 8, borderWidth: 1, borderColor: '#E0E0E0', height: 42, paddingHorizontal: 14, width: 160 },
+  filterText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#2B2B2B' },
+
+  table: { borderWidth: 1, borderColor: '#ECECEC', borderRadius: 12, padding: 8 },
+  tableHeadRow: { flexDirection: 'row', paddingVertical: 10, paddingHorizontal: 12, borderBottomWidth: 2, borderBottomColor: '#F0F0F0' },
+  th: { fontFamily: 'BarlowCondensed-Bold', fontSize: 12, color: '#8A8A8A', letterSpacing: 0.5 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, paddingHorizontal: 12, borderBottomWidth: 1, borderBottomColor: '#F7F7F7' },
+  rowCell: { fontFamily: 'Rubik', fontSize: 13, color: '#555' },
+  badge: { borderRadius: 12, paddingVertical: 3, paddingHorizontal: 8 },
+  badgeText: { color: '#FFF', fontSize: 10, fontFamily: 'BarlowCondensed-Bold', textAlign: 'center' },
+  emptyText: { textAlign: 'center', color: '#999', fontFamily: 'Rubik', fontSize: 15, marginTop: 60 },
+  loadMoreBtn: { alignItems: 'center', paddingVertical: 16 },
+  loadMoreText: { color: '#8A8A8A', fontFamily: 'Rubik', fontSize: 13 },
 });
 
 export default Facturas;

@@ -6,6 +6,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useCartStore } from '../store/cartStore';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 // Screens
 import Home from '../screens/Home';
@@ -75,9 +76,14 @@ const ScaleButton = ({ onPress, onLongPress, children, style, scaleTo = 0.85 }: 
 };
 
 const MainTabs = () => {
+  const isDesktopWeb = useIsDesktopWeb();
+
   return (
     <View style={{ flex: 1, backgroundColor: '#fff' }}>
-      <Tab.Navigator screenOptions={{ headerShown: false }} tabBar={(p) => <CustomTabBar {...p} />}>
+      <Tab.Navigator
+        screenOptions={{ headerShown: false }}
+        tabBar={isDesktopWeb ? () => null : (p) => <CustomTabBar {...p} />}
+      >
         <Tab.Screen name="Home" component={Home} />
         <Tab.Screen name="Carrito" component={Carrito} />
         <Tab.Screen name="MisVentas" component={MisVentas} />

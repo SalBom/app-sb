@@ -12,7 +12,8 @@ import {
   Animated,
   FlatList,
   Modal,
-  Pressable
+  Pressable,
+  Platform
 } from 'react-native';
 import { Image } from 'expo-image'; 
 import { useRoute, useNavigation } from '@react-navigation/native';
@@ -32,7 +33,6 @@ import StockSemaphore from '../components/StockSemaphore';
 
 // SVGs existentes
 import AgregarCarritoSvg from '../../assets/agregarCarrito.svg';
-import ComprarAhoraSvg   from '../../assets/comprarAhora.svg';
 import ContenedorQtySvg  from '../../assets/contenedorCantidad.svg';
 import MasSvg            from '../../assets/masCantidad.svg';
 import MenosSvg          from '../../assets/menosCantidad.svg';
@@ -44,6 +44,8 @@ import DownloadSvg         from '../../assets/download.svg';
 
 // Tarjeta KANBAN
 import TarjetaProductoKanban from '../components/TarjetaProductoKanban';
+import TarjetaProductoDesktop from '../components/TarjetaProductoDesktop';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 type CategOdoo = string | [number, string];
 
@@ -101,14 +103,16 @@ function bestImageUri(p?: ProductoLite | null): string {
 function ProductoDetalle() {
   const route = useRoute();
   const navigation = useNavigation<any>();
+  const isDesktopWeb = useIsDesktopWeb();
   // @ts-ignore
   const { id, preload } = route.params || {};
   const numericId = typeof id === 'string' ? Number(id) : id;
 
   const [producto, setProducto] = useState<ProductoLite | null>(preload || null);
-  const [loading, setLoading] = useState(!preload); 
+  const [loading, setLoading] = useState(!preload);
   const [cantidad, setCantidad] = useState(1);
   const [tab, setTab] = useState<'carac' | 'desc'>('carac');
+  const [desktopTab, setDesktopTab] = useState<'desc' | 'acc' | 'res'>('desc');
   const [relacionados, setRelacionados] = useState<any[]>([]);
   const [loadingRel, setLoadingRel] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -127,7 +131,6 @@ function ProductoDetalle() {
   const { isFavorite, addFavorite, removeFavorite } = useFavoritesStore(); 
 
   const scaleAnimAgregar = useRef(new Animated.Value(1)).current;
-  const scaleAnimComprar = useRef(new Animated.Value(1)).current;
 
   const animatePress = (scaleValue: Animated.Value) => {
     Animated.sequence([
@@ -135,6 +138,40 @@ function ProductoDetalle() {
       Animated.spring(scaleValue, { toValue: 1, friction: 4, useNativeDriver: true }),
     ]).start();
   };
+
+  // --- ANIMACIÓN "PRODUCTO VOLANDO AL CARRITO" (solo desktop) ---
+  const mainImgRef = useRef<View>(null);
+  const flyAnim = useRef(new Animated.Value(0)).current;
+  const [flyItem, setFlyItem] = useState<{ uri: string; startX: number; startY: number; w: number; h: number; dx: number; dy: number } | null>(null);
+
+  const triggerFlyToCart = (uri: string) => {
+    const node = mainImgRef.current as any;
+    if (!node || !node.measureInWindow || !uri) return;
+    node.measureInWindow((x: number, y: number, w: number, h: number) => {
+      if (!w || !h) return;
+      const winW = Dimensions.get('window').width;
+      const targetX = winW - 90;
+      const targetY = 34;
+      // Volamos solo un thumbnail chico del PNG (no la caja gris completa),
+      // centrado sobre la imagen principal.
+      const size = 110;
+      const startX = x + w / 2 - size / 2;
+      const startY = y + h / 2 - size / 2;
+      flyAnim.setValue(0);
+      setFlyItem({ uri, startX, startY, w: size, h: size, dx: targetX - startX - size / 2, dy: targetY - startY - size / 2 });
+    });
+  };
+
+  // Arranca la animación recién en el efecto, una vez que el Modal/Animated.View
+  // del ítem volador ya está montado (si se llama .start() en el mismo tick que
+  // el setFlyItem, el driver nativo no llega a "engancharse" al nodo y la
+  // animación queda congelada en el frame inicial).
+  useEffect(() => {
+    if (!flyItem) return;
+    const anim = Animated.timing(flyAnim, { toValue: 1, duration: 700, useNativeDriver: false });
+    anim.start(() => setFlyItem(null));
+    return () => anim.stop();
+  }, [flyItem]);
 
   // 1. RESET DE ESTADOS AL CAMBIAR DE ID
   useEffect(() => {
@@ -316,6 +353,21 @@ function ProductoDetalle() {
   };
 
   const handleDownloadDirect = async (url: string, filename: string) => {
+    if (Platform.OS === 'web') {
+      try {
+        const res = await fetch(url);
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        return true;
+      } catch (e) { return false; }
+    }
     const { status } = await MediaLibrary.requestPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('Permiso denegado', 'Necesitamos acceso a la galería.');
@@ -368,11 +420,26 @@ function ProductoDetalle() {
       setLoadingRel(true);
       try {
         const { data } = await axios.get(`${API_URL}/producto/${numericId}/relacionados`, { params: { limit: 10 } });
-        setRelacionados(Array.isArray(data) ? data : data?.items || []);
+        let items = Array.isArray(data) ? data : data?.items || [];
+
+        // FALLBACK: si el backend no tiene relaciones cargadas para este producto,
+        // completamos con productos de la misma categoría.
+        if (items.length === 0) {
+          const categId = Array.isArray(producto?.categ_id) ? producto.categ_id[0] : null;
+          if (categId) {
+            try {
+              const resCat = await axios.get(`${API_URL}/productos`, { params: { categ_id: categId, limit: 11 } });
+              const catItems = Array.isArray(resCat.data) ? resCat.data : resCat.data?.items || [];
+              items = catItems.filter((p: any) => p.id !== numericId).slice(0, 10);
+            } catch (e) {}
+          }
+        }
+
+        setRelacionados(items);
       } catch (e) { setRelacionados([]); } finally { setLoadingRel(false); }
     }
     fetchRelacionados();
-  }, [numericId]);
+  }, [numericId, producto?.categ_id]);
 
   // --- LÓGICA DE FORMATEO DE MONEDA ---
   const formatMoney = (v?: number) => {
@@ -388,6 +455,291 @@ function ProductoDetalle() {
   }
 
   const isMainFav = isFavorite(producto.id);
+
+  const getBrandString = () => {
+    const raw = producto?.marca_name || producto?.brand || producto?.marca;
+    if (Array.isArray(raw) && (raw as any).length > 1) return String((raw as any)[1]);
+    if (typeof raw === 'string') return raw;
+    return '';
+  };
+  const categTxt = Array.isArray(producto?.categ_id) ? producto?.categ_id[1] : (producto?.categ_id || 'PRODUCTO');
+  const brandTxt = getBrandString();
+
+  const modalBodyContent = (
+    <>
+      <View style={styles.modalHeader}>
+        <Feather name={modalType === 'precios' ? "dollar-sign" : modalType === 'imagenes' ? "image" : "file-text"} size={24} color="#374151" />
+        <Text style={styles.modalNewTitle}>{modalType === 'precios' ? 'PRECIOS POR PLAZO' : 'DISPONIBLES'}</Text>
+      </View>
+      <ScrollView style={{ maxHeight: 300 }} showsVerticalScrollIndicator={false}>
+        {modalType === 'precios' && (
+            <View style={styles.tableHead}>
+                <Text style={[styles.th, { flex: 2.2 }]}>PLAZO</Text>
+                <Text style={[styles.th, { flex: 1, textAlign: 'center' }]}>DTO%</Text>
+                <Text style={[styles.th, { flex: 1.5, textAlign: 'center' }]}>MIN. USD</Text>
+                <Text style={[styles.th, { flex: 1.5, textAlign: 'right' }]}>TOTAL</Text>
+            </View>
+        )}
+        {modalType === 'precios' ? (
+          plazosFiltrados.map((term) => {
+            const rule = discountRules[term.id] || {};
+            const finalPrice = calculateFinalPrice(term.id);
+            const permiteOferta = rule.oferta === true || rule.oferta === 'true' || rule.oferta === 1 || rule.oferta === '1';
+            const totalDto = parseFloat(rule.descuento || 0) + parseFloat(rule.descuento2 || 0);
+            let dtoText = totalDto > 0 ? `-${totalDto}%` : '—';
+            let dtoColor = '#10B981';
+            if (esOferta) {
+                if (permiteOferta) { dtoText = 'OFERTA'; dtoColor = '#D32F2F'; }
+            }
+            return (
+                <View key={term.id} style={styles.modalNewItem}>
+                    <Text style={[styles.td, { flex: 2.2 }]} numberOfLines={1}>{term.nombre}</Text>
+                    <Text style={[styles.td, { flex: 1, textAlign: 'center', color: dtoColor, fontFamily: 'BarlowCondensed-Bold' }]}>{dtoText}</Text>
+                    <Text style={[styles.td, { flex: 1.5, textAlign: 'center' }]}>${formatMoney(rule.min_compra)}</Text>
+                    <Text style={[styles.tdPrice, { flex: 1.5, textAlign: 'right' }]}>${formatMoney(finalPrice)}</Text>
+                </View>
+            );
+          })
+        ) : (
+          (modalType === 'imagenes' ? validGallery : [0]).map((uri, idx) => {
+            const isSelected = !!selectedItems[idx];
+            return (
+              <TouchableOpacity key={idx} style={styles.modalNewItem} onPress={() => toggleItemSelection(idx)}>
+                  <View style={styles.itemThumbWrap}>{modalType === 'imagenes' ? <Image source={{ uri: typeof uri === 'string' ? uri : undefined }} style={styles.modalMiniThumb} /> : <Feather name="file" size={20} style={{alignSelf:'center', marginTop:12}} />}</View>
+                  <Text style={styles.modalNewItemText}>{modalType === 'imagenes' ? `${producto.default_code}${idx > 0 ? '_'+idx : ''}.webp` : `${producto.default_code}_ficha.webp`}</Text>
+                  <View style={[styles.radioButtonOuter, isSelected && styles.radioButtonOuterSelected]}>{isSelected && <View style={styles.radioButtonInner} />}</View>
+              </TouchableOpacity>
+            );
+          })
+        )}
+      </ScrollView>
+      <View style={styles.modalButtonsRow}>
+        <TouchableOpacity style={[styles.btnModal, styles.btnVolverModal]} onPress={() => setModalType(null)}><Text style={styles.btnModalText}>VOLVER</Text></TouchableOpacity>
+        {modalType !== 'precios' && (
+            <TouchableOpacity style={[styles.btnModal, styles.btnDownloadModal, isDownloading && { opacity: 0.7 }]} onPress={handleBulkDownload} disabled={isDownloading}>
+            {isDownloading ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={styles.btnModalText}>DESCARGAR</Text>}
+            </TouchableOpacity>
+        )}
+      </View>
+    </>
+  );
+
+  const sharedModal = (
+    <Modal visible={modalType !== null} transparent animationType="fade">
+        <Pressable style={styles.modalOverlay} onPress={() => setModalType(null)}>
+            <View style={[styles.modalWrapper, { width: MODAL_W }]}>
+                <View style={StyleSheet.absoluteFill}><Svg width="100%" height="100%"><Path d={modalBgPath} fill="#FFFFFF" stroke="#E5E7EB" strokeWidth={3} /></Svg></View>
+                <View style={styles.modalInner} onLayout={(e) => { if(e.nativeEvent.layout.height > 50) setModalHeight(e.nativeEvent.layout.height) }}>
+                    {modalBodyContent}
+                </View>
+            </View>
+        </Pressable>
+    </Modal>
+  );
+
+  // Modal desktop: mismo contenido, tarjeta compacta y centrada (no estirada al 92% del viewport como en mobile).
+  const desktopModal = (
+    <Modal visible={modalType !== null} transparent animationType="fade">
+        <Pressable style={styles.modalOverlay} onPress={() => setModalType(null)}>
+            <Pressable style={dstyles.dModalCard} onPress={(e: any) => e.stopPropagation?.()}>
+                {modalBodyContent}
+            </Pressable>
+        </Pressable>
+    </Modal>
+  );
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB — calco del Figma "Productos - 5"
+  // ===========================================================================
+  if (isDesktopWeb) {
+    const mainImgUri = validGallery[currentImgIndex] || bestImageUri(producto);
+    return (
+      <View style={dstyles.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={dstyles.page}>
+            <Text style={dstyles.breadcrumb} numberOfLines={1}>
+              {[categTxt, producto.name, brandTxt, producto.default_code].filter(Boolean).join(' // ')}
+            </Text>
+
+            <View style={dstyles.topRow}>
+              <View style={dstyles.topRowLeft}>
+                <Text style={dstyles.titleD}>{producto.name}</Text>
+                <Text style={dstyles.codeD}>{producto.default_code || ''}</Text>
+
+                <View style={dstyles.mainRow}>
+                  <View style={dstyles.imageSection}>
+                    <View style={{ flexDirection: 'row', gap: 24 }}>
+                      <View style={dstyles.thumbCol}>
+                        {validGallery.map((uri, i) => (
+                          <Pressable key={i} onPress={() => setCurrentImgIndex(i)} style={[dstyles.thumb, i === currentImgIndex && dstyles.thumbActive]}>
+                            <Image source={{ uri }} style={dstyles.thumbImg} contentFit="contain" />
+                          </Pressable>
+                        ))}
+                      </View>
+
+                      <View style={dstyles.mainImgBox} ref={mainImgRef}>
+                        {mainImgUri ? <Image source={{ uri: mainImgUri }} style={dstyles.mainImg} contentFit="contain" /> : null}
+                      </View>
+                    </View>
+
+                    <View style={dstyles.imgActionsRow}>
+                      <Feather name="camera" size={20} color="#3F3F3F" />
+                      <View style={{ flexDirection: 'row', gap: 18 }}>
+                        <Feather name="share-2" size={18} color="#3F3F3F" />
+                        <Feather name="printer" size={18} color="#3F3F3F" />
+                      </View>
+                    </View>
+                  </View>
+
+                  <View style={dstyles.specsCol}>
+                    <Text style={dstyles.specsTitle}>Características</Text>
+                    {producto.attributes?.map((s, i) => (
+                      <View key={i} style={dstyles.specRowD}>
+                        <Text style={dstyles.specKeyD}>{s.k}</Text>
+                        <Text style={dstyles.specValD}>{s.v}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              </View>
+
+              <View style={dstyles.actionPanel}>
+                <View style={dstyles.starsRow}>
+                  {[0, 1, 2, 3, 4].map((i) => <Feather key={i} name="star" size={22} color="#3F3F3F" style={{ marginRight: 4 }} />)}
+                </View>
+                <Text style={dstyles.reviewsText}>+500 Reseñas</Text>
+
+                {esOferta && <Text style={dstyles.oldPriceD}>${formatMoney(producto?.list_price)}</Text>}
+                <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                  <Text style={[dstyles.priceD, esOferta && { color: '#D32F2F' }]}>${formatMoney(precioBase)}</Text>
+                  {esOferta && <View style={styles.offerBadge}><Text style={styles.offerBadgeText}>OFERTA</Text></View>}
+                </View>
+                <TouchableOpacity onPress={() => setModalType('precios')}>
+                  <Text style={dstyles.paymentsLinkD}>Ver precios según plazo</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={dstyles.btnAgregarD}
+                  onPress={() => { handleAddToCartFlow(); triggerFlyToCart(mainImgUri); }}
+                  activeOpacity={0.85}
+                >
+                  <Text style={dstyles.btnAgregarTextD}>Agregar al carrito</Text>
+                  <Feather name="shopping-cart" size={18} color="#FFFFFF" />
+                </TouchableOpacity>
+
+                <View style={dstyles.qtyRowD}>
+                  <Text style={dstyles.qtyLabelD}>Cantidad</Text>
+                  <View style={dstyles.qtyBoxD}>
+                    <TouchableOpacity onPress={() => setCantidad(c => Math.max(1, c - 1))} style={dstyles.qtyBtnWrapD}>
+                      <Feather name="chevron-left" size={16} color="#8A8A8A" />
+                    </TouchableOpacity>
+                    <View style={dstyles.qtyValBadgeD}><Text style={dstyles.qtyValD}>{cantidad}</Text></View>
+                    <TouchableOpacity onPress={() => setCantidad(c => c + 1)} style={dstyles.qtyBtnWrapD}>
+                      <Feather name="chevron-right" size={16} color="#8A8A8A" />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                <View style={dstyles.compareRowD}>
+                  <TouchableOpacity style={dstyles.compareBtnD}>
+                    <Text style={dstyles.compareTextD}>Comparar</Text>
+                    <Feather name="repeat" size={15} color="#1C9BD8" />
+                  </TouchableOpacity>
+                  <TouchableOpacity style={dstyles.compareBtnD} onPress={() => handleToggleFav(producto)}>
+                    <Text style={dstyles.compareTextD}>Guardar</Text>
+                    <Feather name="heart" size={15} color="#1C9BD8" style={isMainFav ? { opacity: 1 } : { opacity: 0.5 }} />
+                  </TouchableOpacity>
+                </View>
+
+                <View style={dstyles.dividerD} />
+                <View style={dstyles.downloadHeaderRowD}>
+                  <Text style={dstyles.downloadTitleD}>Descargar</Text>
+                  <Feather name="download" size={20} color="#313131" />
+                </View>
+                <TouchableOpacity onPress={() => { setSelectedItems({}); setModalType('ficha'); }}>
+                  <Text style={dstyles.downloadLinkD}>Ficha Técnica</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={handleDownloadManual}>
+                  <Text style={dstyles.downloadLinkD}>Manual</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => { setSelectedItems({}); setModalType('imagenes'); }}>
+                  <Text style={dstyles.downloadLinkD}>Imágenes</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            <View style={dstyles.tabsRowD}>
+              <TouchableOpacity onPress={() => setDesktopTab('desc')}><Text style={[dstyles.tabTextD, desktopTab === 'desc' && dstyles.tabTextActiveD]}>DESCRIPCIÓN</Text></TouchableOpacity>
+              <TouchableOpacity onPress={() => setDesktopTab('acc')}><Text style={[dstyles.tabTextD, desktopTab === 'acc' && dstyles.tabTextActiveD]}>ACCESORIOS</Text></TouchableOpacity>
+              <TouchableOpacity onPress={() => setDesktopTab('res')}><Text style={[dstyles.tabTextD, desktopTab === 'res' && dstyles.tabTextActiveD]}>RESEÑAS</Text></TouchableOpacity>
+            </View>
+            <View style={dstyles.tabDividerD} />
+            <View style={dstyles.tabContentD}>
+              {desktopTab === 'desc' && <Text style={dstyles.descTextD}>{producto.description?.replace(/<[^>]*>?/gm, '') || 'Sin descripción.'}</Text>}
+              {desktopTab === 'acc' && <Text style={dstyles.descTextD}>Sin accesorios disponibles para este producto.</Text>}
+              {desktopTab === 'res' && <Text style={dstyles.descTextD}>Aún no hay reseñas para este producto.</Text>}
+            </View>
+
+            {(loadingRel || relacionados.length > 0) && (
+              <>
+                <Text style={dstyles.relTitleD}>PRODUCTOS RELACIONADOS</Text>
+                {loadingRel ? (
+                  <ActivityIndicator color="#1C9BD8" style={{ marginVertical: 30 }} />
+                ) : (
+                <View style={dstyles.relGridD}>
+                  {relacionados.slice(0, 5).map((p) => {
+                    const relPrecioBase = (p.price_offer && p.price_offer > 0) ? p.price_offer : p.list_price;
+                    return (
+                      <View key={p.id} style={dstyles.relCellD}>
+                        <TarjetaProductoDesktop
+                          producto={p}
+                          isFavorite={isFavorite(p.id)}
+                          onToggleFavorito={() => handleToggleFav(p)}
+                          onPressDetalle={() => navigation.push('ProductoDetalle', { id: p.id, preload: p })}
+                          onPressAgregar={(qty: number) => {
+                            const exist = items.find(it => it.product_id === p.id);
+                            if (exist) updateQuantity(p.id, exist.product_uom_qty + qty);
+                            else addToCart({ ...p, product_id: p.id, product_uom_qty: qty, price_unit: relPrecioBase, default_code: p.default_code || '' });
+                          }}
+                        />
+                      </View>
+                    );
+                  })}
+                </View>
+                )}
+              </>
+            )}
+          </View>
+        </ScrollView>
+        {desktopModal}
+        {flyItem && (
+          <Modal transparent visible animationType="none">
+            <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+              <Animated.View
+                style={[
+                  dstyles.flyItem,
+                  {
+                    left: flyItem.startX,
+                    top: flyItem.startY,
+                    width: flyItem.w,
+                    height: flyItem.h,
+                    opacity: flyAnim.interpolate({ inputRange: [0, 0.8, 1], outputRange: [1, 1, 0] }),
+                    transform: [
+                      { translateX: flyAnim.interpolate({ inputRange: [0, 1], outputRange: [0, flyItem.dx] }) },
+                      { translateY: flyAnim.interpolate({ inputRange: [0, 1], outputRange: [0, flyItem.dy] }) },
+                      { scale: flyAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.15] }) },
+                    ],
+                  },
+                ]}
+              >
+                <Image source={{ uri: flyItem.uri }} style={{ width: '100%', height: '100%' }} contentFit="contain" />
+              </Animated.View>
+            </View>
+          </Modal>
+        )}
+      </View>
+    );
+  }
 
   return (
     <ScrollView contentContainerStyle={[styles.container, { paddingBottom: 160 }]} bounces={false}>
@@ -471,9 +823,6 @@ function ProductoDetalle() {
       <Animated.View style={{ transform: [{ scale: scaleAnimAgregar }] }}>
         <TouchableOpacity onPress={() => { animatePress(scaleAnimAgregar); handleAddToCartFlow(); }} style={{ marginTop: 12 }} activeOpacity={0.9}><AgregarCarritoSvg width="100%" height={46} /></TouchableOpacity>
       </Animated.View>
-      <Animated.View style={{ transform: [{ scale: scaleAnimComprar }] }}>
-        <TouchableOpacity onPress={() => { animatePress(scaleAnimComprar); handleAddToCartFlow(); }} style={{ marginTop: 10 }} activeOpacity={0.9}><ComprarAhoraSvg width="100%" height={46} /></TouchableOpacity>
-      </Animated.View>
 
       <View style={styles.tabsRow}>
         <PillButton label="CARACTERÍSTICAS" active={tab === 'carac'} onPress={() => setTab('carac')} />
@@ -514,83 +863,7 @@ function ProductoDetalle() {
         <HexagonButton label="DESCARGAR IMÁGENES" onPress={() => { setSelectedItems({}); setModalType('imagenes'); }} variant="blue" />
       </View>
 
-      <Modal visible={modalType !== null} transparent animationType="fade">
-          <Pressable style={styles.modalOverlay} onPress={() => setModalType(null)}>
-              <View style={[styles.modalWrapper, { width: MODAL_W }]}>
-                  <View style={StyleSheet.absoluteFill}><Svg width="100%" height="100%"><Path d={modalBgPath} fill="#FFFFFF" stroke="#E5E7EB" strokeWidth={3} /></Svg></View>
-                  <View style={styles.modalInner} onLayout={(e) => { if(e.nativeEvent.layout.height > 50) setModalHeight(e.nativeEvent.layout.height) }}>
-                      <View style={styles.modalHeader}>
-                        <Feather name={modalType === 'precios' ? "dollar-sign" : modalType === 'imagenes' ? "image" : "file-text"} size={24} color="#374151" />
-                        <Text style={styles.modalNewTitle}>{modalType === 'precios' ? 'PRECIOS POR PLAZO' : 'DISPONIBLES'}</Text>
-                      </View>
-                      <ScrollView style={{ maxHeight: 300 }} showsVerticalScrollIndicator={false}>
-                        {modalType === 'precios' && (
-                            <View style={styles.tableHead}>
-                                <Text style={[styles.th, { flex: 2.2 }]}>PLAZO</Text>
-                                <Text style={[styles.th, { flex: 1, textAlign: 'center' }]}>DTO%</Text>
-                                <Text style={[styles.th, { flex: 1.5, textAlign: 'center' }]}>MIN. USD</Text>
-                                <Text style={[styles.th, { flex: 1.5, textAlign: 'right' }]}>TOTAL</Text>
-                            </View>
-                        )}
-                        {modalType === 'precios' ? (
-                          plazosFiltrados.map((term) => {
-                            const rule = discountRules[term.id] || {};
-                            
-                            // 1. Usamos la lógica blindada y estricta
-                            const finalPrice = calculateFinalPrice(term.id);
-                            const permiteOferta = rule.oferta === true || rule.oferta === 'true' || rule.oferta === 1 || rule.oferta === '1';
-                            
-                            const totalDto = parseFloat(rule.descuento || 0) + parseFloat(rule.descuento2 || 0);
-                            let dtoText = totalDto > 0 ? `-${totalDto}%` : '—';
-                            let dtoColor = '#10B981';
-
-                            // 2. Si es un producto en oferta, mostramos el texto correcto en la columna DTO%
-                            if (esOferta) {
-                                if (permiteOferta) {
-                                    // Mantiene la oferta pura
-                                    dtoText = 'OFERTA';
-                                    dtoColor = '#D32F2F';
-                                } else {
-                                    // Pierde la oferta y usa el descuento del plazo.
-                                    // Opcionalmente podrías cambiar el color aquí para notar que perdió la oferta, 
-                                    // pero dejaremos el % verde que es el comportamiento esperado.
-                                }
-                            }
-
-                            return (
-                                <View key={term.id} style={styles.modalNewItem}>
-                                    <Text style={[styles.td, { flex: 2.2 }]} numberOfLines={1}>{term.nombre}</Text>
-                                    <Text style={[styles.td, { flex: 1, textAlign: 'center', color: dtoColor, fontFamily: 'BarlowCondensed-Bold' }]}>{dtoText}</Text>
-                                    <Text style={[styles.td, { flex: 1.5, textAlign: 'center' }]}>${formatMoney(rule.min_compra)}</Text>
-                                    <Text style={[styles.tdPrice, { flex: 1.5, textAlign: 'right' }]}>${formatMoney(finalPrice)}</Text>
-                                </View>
-                            );
-                          })
-                        ) : (
-                          (modalType === 'imagenes' ? validGallery : [0]).map((uri, idx) => {
-                            const isSelected = !!selectedItems[idx];
-                            return (
-                              <TouchableOpacity key={idx} style={styles.modalNewItem} onPress={() => toggleItemSelection(idx)}>
-                                  <View style={styles.itemThumbWrap}>{modalType === 'imagenes' ? <Image source={{ uri: typeof uri === 'string' ? uri : undefined }} style={styles.modalMiniThumb} /> : <Feather name="file" size={20} style={{alignSelf:'center', marginTop:12}} />}</View>
-                                  <Text style={styles.modalNewItemText}>{modalType === 'imagenes' ? `${producto.default_code}${idx > 0 ? '_'+idx : ''}.webp` : `${producto.default_code}_ficha.webp`}</Text>
-                                  <View style={[styles.radioButtonOuter, isSelected && styles.radioButtonOuterSelected]}>{isSelected && <View style={styles.radioButtonInner} />}</View>
-                              </TouchableOpacity>
-                            );
-                          })
-                        )}
-                      </ScrollView>
-                      <View style={styles.modalButtonsRow}>
-                        <TouchableOpacity style={[styles.btnModal, styles.btnVolverModal]} onPress={() => setModalType(null)}><Text style={styles.btnModalText}>VOLVER</Text></TouchableOpacity>
-                        {modalType !== 'precios' && (
-                            <TouchableOpacity style={[styles.btnModal, styles.btnDownloadModal, isDownloading && { opacity: 0.7 }]} onPress={handleBulkDownload} disabled={isDownloading}>
-                            {isDownloading ? <ActivityIndicator size="small" color="#FFF" /> : <Text style={styles.btnModalText}>DESCARGAR</Text>}
-                            </TouchableOpacity>
-                        )}
-                      </View>
-                  </View>
-              </View>
-          </Pressable>
-      </Modal>
+      {sharedModal}
     </ScrollView>
   );
 }
@@ -728,6 +1001,78 @@ const styles = StyleSheet.create({
   btnVolverModal: { backgroundColor: '#8FA2AF' },
   btnDownloadModal: { backgroundColor: '#139EDB' },
   btnModalText: { color: '#FFF', fontFamily: 'BarlowCondensed-Bold', fontSize: 14 }
+});
+
+// --- Estilos exclusivos de desktop: calco del Figma "Productos - 5" ---
+const dstyles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  breadcrumb: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#636363', marginBottom: 10, textTransform: 'uppercase' },
+
+  topRow: { flexDirection: 'row', alignItems: 'stretch' },
+  topRowLeft: { flex: 3 },
+
+  titleD: { fontFamily: 'BarlowCondensed-Bold', fontSize: 60, lineHeight: 62, color: '#636363', textTransform: 'uppercase' },
+  codeD: { fontFamily: 'BarlowCondensed-Light', fontSize: 26, color: '#636363', marginTop: 2, marginBottom: 22 },
+
+  mainRow: { flexDirection: 'row', alignItems: 'stretch' },
+  imageSection: { flex: 2, paddingRight: 24 },
+  thumbCol: { gap: 10 },
+  thumb: { width: 74, height: 74, borderRadius: 8, backgroundColor: '#F3F3F3', borderWidth: 1, borderColor: '#EFEFEF', alignItems: 'center', justifyContent: 'center' },
+  thumbActive: { borderColor: '#1C9BD8', borderWidth: 2 },
+  thumbImg: { width: '80%', height: '80%' },
+  mainImgBox: { flex: 1, height: 460, borderRadius: 10, backgroundColor: '#F3F3F3', alignItems: 'center', justifyContent: 'center' },
+  mainImg: { width: '85%', height: '85%' },
+  imgActionsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 16, paddingHorizontal: 4 },
+
+  specsCol: { flex: 1, paddingHorizontal: 24, borderLeftWidth: 1, borderLeftColor: '#EFEFEF' },
+  specsTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 30, color: '#3F3F3F', marginBottom: 14, textTransform: 'uppercase' },
+  specRowD: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 7, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
+  specKeyD: { fontFamily: 'Rubik', fontWeight: '600', fontSize: 15, color: '#3F3F3F', flex: 1 },
+  specValD: { fontFamily: 'Rubik', fontWeight: '300', fontSize: 15, color: '#3F3F3F' },
+
+  actionPanel: { flex: 1, paddingLeft: 24, paddingTop: 4, borderLeftWidth: 1, borderLeftColor: '#EFEFEF' },
+  starsRow: { flexDirection: 'row' },
+  reviewsText: { fontFamily: 'Rubik', fontWeight: '700', fontSize: 14, color: '#3F3F3F', marginTop: 6 },
+  oldPriceD: { fontFamily: 'BarlowCondensed-Bold', fontSize: 18, color: '#9CA3AF', textDecorationLine: 'line-through', marginTop: 16 },
+  priceD: { fontFamily: 'BarlowCondensed-Bold', fontSize: 42, color: '#3F3F3F', marginTop: 4 },
+  paymentsLinkD: { fontFamily: 'Rubik', fontSize: 12, color: '#1C9BD8', textDecorationLine: 'underline', marginTop: 4, marginBottom: 16 },
+
+  qtyRowD: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14, marginBottom: 14 },
+  qtyLabelD: { fontFamily: 'Rubik', fontWeight: '700', fontSize: 17, color: '#3F3F3F' },
+  qtyBoxD: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F3F4F6', borderRadius: 999, padding: 4, gap: 4 },
+  qtyBtnWrapD: { width: 26, height: 26, alignItems: 'center', justifyContent: 'center' },
+  qtyValBadgeD: { minWidth: 32, height: 32, borderRadius: 16, backgroundColor: '#139EDB', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
+  qtyValD: { fontFamily: 'Rubik', fontWeight: '700', fontSize: 15, color: '#FFFFFF' },
+
+  btnAgregarD: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', height: 50, borderRadius: 10, backgroundColor: '#1C9BD8', paddingHorizontal: 20, marginBottom: 16 },
+  btnAgregarTextD: { fontFamily: 'BarlowCondensed-Bold', fontSize: 19, color: '#FFFFFF' },
+
+  compareRowD: { flexDirection: 'row', gap: 10 },
+  compareBtnD: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, height: 44, borderRadius: 8, backgroundColor: '#F3F4F6' },
+  compareTextD: { fontFamily: 'Rubik', fontWeight: '600', fontSize: 15, color: '#1C9BD8' },
+
+  dividerD: { height: 1, backgroundColor: '#EFEFEF', marginVertical: 16 },
+  downloadHeaderRowD: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 },
+  downloadTitleD: { fontFamily: 'BarlowCondensed-Bold', fontSize: 24, color: '#313131' },
+  downloadLinkD: { fontFamily: 'Rubik', fontSize: 15, color: '#313131', paddingVertical: 4 },
+
+  tabsRowD: { flexDirection: 'row', gap: 40, marginTop: 40 },
+  tabTextD: { fontFamily: 'BarlowCondensed-Bold', fontSize: 26, color: '#9CA3AF', paddingBottom: 12, letterSpacing: 0.5 },
+  tabTextActiveD: { color: '#1C9BD8', borderBottomWidth: 2, borderBottomColor: '#1C9BD8' },
+  tabDividerD: { height: 1, backgroundColor: '#EFEFEF', marginTop: -1, marginBottom: 20 },
+  tabContentD: { maxWidth: 720 },
+  descTextD: { fontFamily: 'Rubik', fontSize: 15, lineHeight: 24, color: '#3F3F3F' },
+
+  relTitleD: { fontFamily: 'BarlowCondensed-Bold', fontSize: 46, color: '#1C9BD8', marginTop: 50, marginBottom: 18, textTransform: 'uppercase' },
+  relGridD: { flexDirection: 'row', flexWrap: 'wrap', gap: 18 },
+  relCellD: { width: 205 },
+
+  // Modal compacto para desktop (precios por plazo / ficha técnica / imágenes)
+  dModalCard: { width: 460, maxWidth: '90%', maxHeight: '80%', backgroundColor: '#FFFFFF', borderRadius: 16, padding: 24, shadowColor: '#000', shadowOpacity: 0.15, shadowOffset: { width: 0, height: 8 }, shadowRadius: 24, elevation: 8 },
+
+  // Animación "producto volando al carrito"
+  flyItem: { position: 'absolute', zIndex: 9999 },
 });
 
 export default ProductoDetalle;

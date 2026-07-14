@@ -14,12 +14,14 @@ import { Ionicons } from '@expo/vector-icons';
 import axios from 'axios';
 
 import { API_URL } from '../config';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 // ⚠️ LISTA EXACTA SOLICITADA
 const ALLOWED_IDS = [1, 21, 22, 24, 31];
 
 export default function AdminPlazos() {
   const navigation = useNavigation();
+  const isDesktopWeb = useIsDesktopWeb();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [plazos, setPlazos] = useState<any[]>([]);
@@ -97,6 +99,99 @@ export default function AdminPlazos() {
   const otrosPlazos = plazos.filter(p => p.id !== 1);
 
   if (loading) return <View style={styles.loadingContainer}><ActivityIndicator size="large" color="#1C9BD8" /></View>;
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    return (
+      <View style={ds.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={ds.page}>
+            <View style={ds.headerRow}>
+              <Text style={ds.pageTitle}>PLAZOS Y DESCUENTOS</Text>
+              <TouchableOpacity style={[ds.saveBtn, saving && { opacity: 0.7 }]} onPress={handleSave} disabled={saving}>
+                {saving ? <ActivityIndicator color="#FFF" /> : <Text style={ds.saveBtnText}>GUARDAR CAMBIOS</Text>}
+              </TouchableOpacity>
+            </View>
+
+            {plazoContado && (
+              <View style={ds.card}>
+                <Text style={ds.sectionTitle}>PAGO CONTADO (ID: 1)</Text>
+                <View style={{ flexDirection: 'row', gap: 40, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <View style={ds.fieldRow}>
+                    <Text style={ds.label}>1° Descuento (%)</Text>
+                    <TextInput
+                      style={ds.inputSingle}
+                      keyboardType="numeric"
+                      value={formValues[1]?.descuento || ''}
+                      onChangeText={(t) => handleInputChange(1, 'descuento', t)}
+                      placeholder="0"
+                    />
+                  </View>
+                  <View style={ds.fieldRow}>
+                    <Text style={ds.label}>2° Descuento (%)</Text>
+                    <TextInput
+                      style={ds.inputSingle}
+                      keyboardType="numeric"
+                      value={formValues[1]?.descuento2 || ''}
+                      onChangeText={(t) => handleInputChange(1, 'descuento2', t)}
+                      placeholder="0"
+                    />
+                  </View>
+                  <TouchableOpacity style={ds.fieldRow} onPress={() => toggleOferta(1)}>
+                    <Text style={ds.label}>Habilitado en Ofertas</Text>
+                    <Ionicons name={formValues[1]?.oferta ? 'checkbox' : 'square-outline'} size={24} color={formValues[1]?.oferta ? '#1C9BD8' : '#999'} />
+                  </TouchableOpacity>
+                </View>
+                <Text style={ds.helperText}>Aplica siempre sin mínimo. Escalado: (Precio - Dto1) - Dto2.</Text>
+              </View>
+            )}
+
+            <View style={ds.card}>
+              <Text style={ds.sectionTitle}>OTROS PLAZOS</Text>
+              <View style={ds.table}>
+                <View style={ds.tableHeadRow}>
+                  <Text style={[ds.th, { flex: 2.5 }]}>PLAZO</Text>
+                  <Text style={[ds.th, { flex: 1, textAlign: 'center' }]}>DESC. %</Text>
+                  <Text style={[ds.th, { flex: 1.5, textAlign: 'center' }]}>MÍNIMO</Text>
+                  <Text style={[ds.th, { flex: 1, textAlign: 'center' }]}>OFERTA</Text>
+                </View>
+                {otrosPlazos.map((item) => (
+                  <View key={item.id} style={ds.row}>
+                    <Text style={[ds.rowName, { flex: 2.5 }]}>{item.nombre}</Text>
+                    <View style={{ flex: 1, alignItems: 'center' }}>
+                      <TextInput
+                        style={ds.inputTable}
+                        keyboardType="numeric"
+                        value={formValues[item.id]?.descuento || ''}
+                        onChangeText={(t) => handleInputChange(item.id, 'descuento', t)}
+                        placeholder="0"
+                        textAlign="center"
+                      />
+                    </View>
+                    <View style={{ flex: 1.5, alignItems: 'center' }}>
+                      <TextInput
+                        style={ds.inputTable}
+                        keyboardType="numeric"
+                        value={formValues[item.id]?.min_compra || ''}
+                        onChangeText={(t) => handleInputChange(item.id, 'min_compra', t)}
+                        placeholder="0"
+                        textAlign="center"
+                      />
+                    </View>
+                    <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} onPress={() => toggleOferta(item.id)}>
+                      <Ionicons name={formValues[item.id]?.oferta ? 'checkbox' : 'square-outline'} size={22} color={formValues[item.id]?.oferta ? '#1C9BD8' : '#CCC'} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            </View>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -230,4 +325,28 @@ const styles = StyleSheet.create({
   footer: { position: 'absolute', bottom: 0, left: 0, right: 0, backgroundColor: '#FFF', padding: 16, borderTopWidth: 1, borderTopColor: '#EEE' },
   saveButton: { backgroundColor: '#1C9BD8', borderRadius: 8, paddingVertical: 14, alignItems: 'center' },
   saveButtonText: { color: '#FFF', fontFamily: 'BarlowCondensed-Bold', fontSize: 18, letterSpacing: 1 }
+});
+
+// --- Estilos exclusivos de desktop ---
+const ds = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 30 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', textTransform: 'uppercase' },
+  saveBtn: { backgroundColor: '#1C9BD8', borderRadius: 8, paddingVertical: 12, paddingHorizontal: 24 },
+  saveBtnText: { color: '#FFF', fontFamily: 'BarlowCondensed-Bold', fontSize: 15, letterSpacing: 0.5 },
+
+  card: { backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#ECECEC', padding: 24, marginBottom: 24 },
+  sectionTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 20, color: '#1C9BD8', marginBottom: 18, paddingBottom: 10, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
+  fieldRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  label: { fontFamily: 'Rubik', fontSize: 14, color: '#555' },
+  inputSingle: { borderWidth: 1, borderColor: '#DDD', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, width: 90, fontSize: 15, fontFamily: 'BarlowCondensed-Bold', color: '#333', textAlign: 'center' },
+  helperText: { fontSize: 13, color: '#8A8A8A', fontStyle: 'italic', marginTop: 18 },
+
+  table: {},
+  tableHeadRow: { flexDirection: 'row', paddingBottom: 10, borderBottomWidth: 2, borderBottomColor: '#F0F0F0', marginBottom: 4 },
+  th: { fontFamily: 'BarlowCondensed-Bold', fontSize: 12, color: '#8A8A8A', letterSpacing: 0.5 },
+  row: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#F7F7F7' },
+  rowName: { fontFamily: 'Rubik', fontSize: 14, color: '#333' },
+  inputTable: { borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 6, width: 90, height: 36, fontSize: 14, fontFamily: 'BarlowCondensed-Medium', color: '#333', backgroundColor: '#FAFAFA' },
 });

@@ -1554,8 +1554,8 @@ def get_mis_pedidos():
 
         pedidos = client.env["sale.order"].search_read(
             domain,
-            # 3. LE PEDIMOS A ODOO QUE NOS TRAIGA ESE CAMPO
-            ["name", "partner_id", "date_order", "amount_total", "state", "invoice_status"],
+            # 3. LE PEDIMOS A ODOO QUE NOS TRAIGA ESE CAMPO (+ moneda del pedido)
+            ["name", "partner_id", "date_order", "amount_total", "state", "invoice_status", "currency_id"],
             order="date_order desc",
             limit=limit,
             offset=offset
@@ -1569,7 +1569,9 @@ def get_mis_pedidos():
             "total": p["amount_total"] or 0,
             "estado": p["state"],
             # 4. LO MANDAMOS DE VUELTA A LA APP
-            "estado_facturacion": p.get("invoice_status")
+            "estado_facturacion": p.get("invoice_status"),
+            # Moneda en la que está cargado el pedido (ej. "USD", "ARS")
+            "moneda": p["currency_id"][1] if p.get("currency_id") else None
         } for p in pedidos]
 
         return jsonify({"items": items})
@@ -2576,8 +2578,136 @@ def get_pedido_totales(pedido_id):
         log.error(f"❌ Error en /pedido/{pedido_id}/totales: {e}")
         return jsonify({"error": str(e)}), 500
 
+
+@app.route('/pedido/<int:pedido_id>/detalle-edicion', methods=['GET'])
+def get_pedido_detalle_edicion(pedido_id):
+    """
+    Devuelve el detalle de un pedido para PRECARGARLO en el carrito y editarlo.
+    Solo es editable si el pedido está en estado presupuesto (draft / sent).
+    Los items se devuelven con product_id = product_tmpl_id (que es lo que el
+    carrito y _upsert_order_logic esperan) y sin las secciones ni la línea de flete.
+    """
+    FLETE_ID = 33627
+
+    def logic(client):
+        orders = client.env['sale.order'].search_read(
+            [('id', '=', pedido_id)],
+            ['name', 'state', 'partner_id', 'payment_term_id', 'currency_id',
+             'carrier_id', 'partner_shipping_id', 'order_line']
+        )
+        if not orders:
+            return jsonify({"error": "Pedido no encontrado"}), 404
+
+        o = orders[0]
+        estado = o.get('state')
+        editable = estado in ('draft', 'sent')
+        if not editable:
+            return jsonify({
+                "error": "Solo se pueden editar pedidos en estado presupuesto.",
+                "editable": False,
+                "estado": estado
+            }), 409
+
+        # Datos del cliente (para precargar clienteSeleccionado)
+        cliente = None
+        if o.get('partner_id'):
+            partner_id = o['partner_id'][0]
+            prc = client.env['res.partner'].search_read(
+                [('id', '=', partner_id)], ['id', 'name', 'vat']
+            )
+            if prc:
+                cliente = {"id": prc[0]['id'], "name": prc[0]['name'], "vat": prc[0].get('vat') or None}
+
+        payment_term_id = o['payment_term_id'][0] if o.get('payment_term_id') else None
+        payment_term_name = o['payment_term_id'][1] if o.get('payment_term_id') else None
+        moneda = o['currency_id'][1] if o.get('currency_id') else None
+
+        # Líneas del pedido
+        line_ids = o.get('order_line') or []
+        items = []
+        if line_ids:
+            line_fields = ['product_id', 'product_uom_qty', 'price_unit', 'name', 'display_type']
+            # discount1/2/3 son campos custom escritos por la app; los pedimos aparte
+            # con tolerancia por si el entorno no los tiene.
+            try:
+                lines = client.env['sale.order.line'].search_read(
+                    [('id', 'in', line_ids)],
+                    line_fields + ['discount1', 'discount2', 'discount3']
+                )
+                has_disc = True
+            except Exception:
+                lines = client.env['sale.order.line'].search_read(
+                    [('id', 'in', line_ids)], line_fields
+                )
+                has_disc = False
+
+            # Mapa variante -> (tmpl_id, default_code, lst_price)
+            variant_ids = [l['product_id'][0] for l in lines if l.get('product_id')]
+            vmap = {}
+            if variant_ids:
+                try:
+                    variants = client.env['product.product'].read(
+                        list(set(variant_ids)), ['product_tmpl_id', 'default_code', 'lst_price']
+                    )
+                    for v in variants:
+                        vmap[v['id']] = {
+                            "tmpl_id": v['product_tmpl_id'][0] if v.get('product_tmpl_id') else None,
+                            "default_code": v.get('default_code') or "",
+                            "lst_price": float(v.get('lst_price') or 0.0),
+                        }
+                except Exception as e:
+                    log.error(f"Error leyendo variantes en detalle-edicion: {e}")
+
+            for l in lines:
+                # Saltamos secciones/notas (display_type) y líneas sin producto
+                if l.get('display_type'):
+                    continue
+                if not l.get('product_id'):
+                    continue
+                variant_id = l['product_id'][0]
+                vinfo = vmap.get(variant_id, {})
+                tmpl_id = vinfo.get('tmpl_id')
+                if not tmpl_id:
+                    continue
+                # La línea de flete no se precarga: el envío se recalcula en el paso 2/3
+                if tmpl_id == FLETE_ID or variant_id == FLETE_ID:
+                    continue
+
+                items.append({
+                    "product_id": tmpl_id,
+                    "name": l.get('name') or l['product_id'][1],
+                    "default_code": vinfo.get('default_code', ""),
+                    "product_uom_qty": float(l.get('product_uom_qty') or 1),
+                    "price_unit": float(l.get('price_unit') or 0.0),
+                    "list_price": vinfo.get('lst_price', 0.0),
+                    "discount1": float(l.get('discount1') or 0.0) if has_disc else 0.0,
+                    "discount2": float(l.get('discount2') or 0.0) if has_disc else 0.0,
+                    "discount3": float(l.get('discount3') or 0.0) if has_disc else 0.0,
+                    "payment_term_id": payment_term_id,
+                })
+
+        return jsonify({
+            "pedido_id": pedido_id,
+            "numero_pedido": o.get('name'),
+            "editable": True,
+            "estado": estado,
+            "cliente": cliente,
+            "payment_term_id": payment_term_id,
+            "payment_term_name": payment_term_name,
+            "moneda": moneda,
+            "carrier_id": o['carrier_id'][0] if o.get('carrier_id') else None,
+            "partner_shipping_id": o['partner_shipping_id'][0] if o.get('partner_shipping_id') else None,
+            "items": items,
+        }), 200
+
+    try:
+        return execute_odoo_operation(logic)
+    except Exception as e:
+        log.error(f"❌ Error en /pedido/{pedido_id}/detalle-edicion: {e}")
+        return jsonify({"error": str(e)}), 500
+
 # =================================================================
-# ENDPOINTS 
+# ENDPOINTS
 # =================================================================
 @app.route('/crear-pedido', methods=['POST'])
 def endpoint_crear_pedido():

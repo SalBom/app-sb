@@ -1,6 +1,6 @@
 // src/screens/Favoritos.tsx
 import React, { useEffect, useState, useCallback } from 'react';
-import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, RefreshControl, Dimensions } from 'react-native';
+import { View, Text, FlatList, StyleSheet, ActivityIndicator, TouchableOpacity, RefreshControl, Dimensions, ScrollView } from 'react-native';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import axios from 'axios';
@@ -12,7 +12,9 @@ import { useFavoritesStore } from '../store/useFavoritesStore';
 
 import TarjetaProductoListado from '../components/TarjetaProductoListado';
 import TarjetaProductoKanban from '../components/TarjetaProductoKanban';
+import TarjetaProductoDesktop from '../components/TarjetaProductoDesktop';
 import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 // Iconos de Vista
 const IconGrid = () => ( <Svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2B2B2B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><Rect x="3" y="3" width="7" height="7" /><Rect x="14" y="3" width="7" height="7" /><Rect x="14" y="14" width="7" height="7" /><Rect x="3" y="14" width="7" height="7" /></Svg> );
@@ -23,6 +25,7 @@ const HEADER_PAD = 12;
 
 export default function Favoritos() {
   const navigation = useNavigation<any>();
+  const isDesktopWeb = useIsDesktopWeb();
   // 1. Ya no usamos insets para el padding superior para eliminar el espacio blanco
   
   const [productos, setProductos] = useState<any[]>([]);
@@ -110,16 +113,53 @@ export default function Favoritos() {
     );
   };
 
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    return (
+      <View style={ds.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={ds.page}>
+            <Text style={ds.pageTitle}>MIS FAVORITOS</Text>
+
+            {loading ? (
+              <ActivityIndicator size="large" color="#1C9BD8" style={{ marginTop: 50 }} />
+            ) : productos.length === 0 ? (
+              <Text style={ds.emptyText}>Aún no tenés productos favoritos.</Text>
+            ) : (
+              <View style={ds.grid}>
+                {productos.map((item) => (
+                  <View key={item.id} style={ds.cell}>
+                    <TarjetaProductoDesktop
+                      producto={item}
+                      isFavorite={true}
+                      onPressDetalle={() => navigation.navigate('ProductoDetalle', { id: item.id, preload: item })}
+                      onPressAgregar={(q: number) => handlePressAgregar(item, q)}
+                      onToggleFavorito={() => handleToggleFavorito(item)}
+                    />
+                  </View>
+                ))}
+              </View>
+            )}
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
+
   // 2. Se eliminó paddingTop: insets.top del contenedor principal
   return (
     <View style={styles.container}>
       {/* Header */}
       <View style={styles.headerRow}>
         <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-            <TouchableOpacity onPress={() => navigation.goBack()}>
-                {/* 3. Padding izquierdo removido en estilos para pegar la flecha */}
-                <FlechaHeaderSvg width={60} height={36} />
-            </TouchableOpacity>
+            {!isDesktopWeb && (
+                <TouchableOpacity onPress={() => navigation.goBack()}>
+                    {/* 3. Padding izquierdo removido en estilos para pegar la flecha */}
+                    <FlechaHeaderSvg width={60} height={36} />
+                </TouchableOpacity>
+            )}
             <Text style={styles.headerTitle}>MIS FAVORITOS</Text>
         </View>
         <TouchableOpacity onPress={() => setViewMode(prev => prev === 'list' ? 'kanban' : 'list')} style={styles.viewToggleBtn}>
@@ -175,4 +215,14 @@ const styles = StyleSheet.create({
   listContent: { paddingBottom: 80, paddingTop: 10 }, // Más padding bottom para no tapar con la barra
   emptyContainer: { alignItems: 'center', marginTop: 100 },
   emptyText: { fontFamily: 'BarlowCondensed-Regular', fontSize: 18, color: '#999' }
+});
+
+// --- Estilos exclusivos de desktop ---
+const ds = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', marginBottom: 30, textTransform: 'uppercase' },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 18 },
+  cell: { width: 240 },
+  emptyText: { textAlign: 'center', color: '#999', fontFamily: 'Rubik', fontSize: 16, marginTop: 60 },
 });

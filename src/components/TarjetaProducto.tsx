@@ -2,8 +2,9 @@ import React, { useMemo, useState, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Dimensions, Modal, Pressable, ScrollView } from 'react-native';
 import { Image } from 'expo-image'; 
 import Svg, { Path, Defs, Filter, FeGaussianBlur, G } from 'react-native-svg';
-import { Feather } from '@expo/vector-icons'; 
+import { Feather } from '@expo/vector-icons';
 import axios from 'axios';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 const SCREEN_W = Dimensions.get('window').width;
 
@@ -23,8 +24,10 @@ const SEL_FLAT_H = 10;
 const SEL_Y1 = (SEL_H - SEL_FLAT_H) / 2; 
 const SEL_Y2 = (SEL_H + SEL_FLAT_H) / 2; 
 
-const MODAL_W_PCT = 0.85; 
-const MODAL_W = SCREEN_W * MODAL_W_PCT;
+const MODAL_W_PCT = 0.85;
+// Tope de ancho: en mobile 0.85*SCREEN_W siempre da <420, así que no cambia nada
+// ahí; en desktop evita que el modal de plazos de pago quede gigante.
+const MODAL_W = Math.min(SCREEN_W * MODAL_W_PCT, 420);
 const MODAL_CUT = 20;
 
 import { API_URL } from '../config';
@@ -63,11 +66,15 @@ interface Props {
   listPrice?: number;
   quantity: number;
   
-  paymentTermId: number; 
+  paymentTermId: number;
   discountPct: number;
-  discountRules?: any; 
-  
+  discountRules?: any;
+
   onPaymentTermChange: (id: number) => void;
+  // El plazo de pago ahora es general (se elige una sola vez en el Paso 1).
+  // En el carrito el chip pasa a ser de solo lectura: muestra el plazo aplicado
+  // sin abrir el selector por producto.
+  termReadOnly?: boolean;
 
   image_1920?: string | null;          
   image_url?: string | null;           
@@ -91,12 +98,13 @@ const pickFirst = (...vals: (string | null | undefined)[]) => {
 const TarjetaProducto: React.FC<Props> = (props) => {
   const {
     name, brand, code, price, listPrice, quantity,
-    paymentTermId, discountPct, discountRules, 
-    onPaymentTermChange,
+    paymentTermId, discountPct, discountRules,
+    onPaymentTermChange, termReadOnly,
     image_1920, image_url, image_md_url, image_thumb_url,
     onAdd, onSubtract, onDelete,
   } = props;
 
+  const isDesktopWeb = useIsDesktopWeb();
   const [plazos, setPlazos] = useState<PaymentTerm[]>([]);
   const [showTermModal, setShowTermModal] = useState(false);
   const [imgError, setImgError] = useState(false);
@@ -163,6 +171,90 @@ const TarjetaProducto: React.FC<Props> = (props) => {
   const selectorPath = `M 0,0 H ${SEL_W - SEL_POINT} L ${SEL_W},${SEL_Y1} V ${SEL_Y2} L ${SEL_W - SEL_POINT},${SEL_H} H 0 Z`;
   const modalBgPath = `M ${MODAL_CUT},0 H ${MODAL_W - MODAL_CUT} L ${MODAL_W},${MODAL_CUT} V ${modalHeight - MODAL_CUT} L ${MODAL_W - MODAL_CUT},${modalHeight} H ${MODAL_CUT} L 0,${modalHeight - MODAL_CUT} V ${MODAL_CUT} Z`;
 
+  // Modal de selección de plazo de pago — se reutiliza igual en mobile y desktop.
+  const termModal = (
+    <Modal visible={showTermModal} transparent animationType="fade">
+        <Pressable style={styles.modalOverlay} onPress={() => setShowTermModal(false)}>
+            <View style={[styles.modalWrapper, { width: MODAL_W }]}>
+                <View style={StyleSheet.absoluteFill}><Svg width="100%" height="100%"><Path d={modalBgPath} fill="#FFFFFF" stroke="#E5E7EB" strokeWidth={3} /></Svg></View>
+                <View style={styles.modalInner} onLayout={(e) => { if(e.nativeEvent.layout.height > 50) setModalHeight(e.nativeEvent.layout.height) }}>
+                    <View style={styles.modalHeader}><Feather name="credit-card" size={24} color="#374151" /><Text style={styles.modalNewTitle}>PLAZOS DE PAGO</Text></View>
+
+                    <ScrollView style={{ maxHeight: 300 }} showsVerticalScrollIndicator={false}>
+                      {filteredModalPlazos.length > 0 ? (
+                          filteredModalPlazos.map((term) => {
+                              const isSelected = paymentTermId === term.id;
+                              return (
+                                  <TouchableOpacity key={term.id} style={styles.modalNewItem} onPress={() => { onPaymentTermChange(term.id); setShowTermModal(false); }}>
+                                      <View style={[styles.radioButtonOuter, isSelected && styles.radioButtonOuterSelected]}>{isSelected && <View style={styles.radioButtonInner} />}</View>
+                                      <Text style={[styles.modalNewItemText, isSelected && styles.modalNewItemTextSelected]}>{term.nombre}</Text>
+                                  </TouchableOpacity>
+                              );
+                          })
+                      ) : (
+                          <Text style={{textAlign: 'center', color: '#999', marginVertical: 20}}>
+                              No hay plazos disponibles para oferta.
+                          </Text>
+                      )}
+                    </ScrollView>
+
+                    <TouchableOpacity style={styles.cancelButton} onPress={() => setShowTermModal(false)}><Text style={styles.cancelText}>Cancelar</Text></TouchableOpacity>
+                </View>
+            </View>
+        </Pressable>
+    </Modal>
+  );
+
+  const imageEl = !!uri && !imgError ? (
+      <Image
+        source={{ uri }}
+        style={isDesktopWeb ? dstyles.image : styles.image}
+        contentFit="contain"
+        transition={200}
+        cachePolicy="memory-disk"
+        onError={() => setImgError(true)}
+      />
+  ) : (
+      <View style={isDesktopWeb ? dstyles.placeholderImg : styles.placeholderImg}><Text style={{ fontSize: 10, color: '#999' }}>Sin img</Text></View>
+  );
+
+  // --- CARD DESKTOP: fila única compacta, sin el recorte SVG mobile ---
+  if (isDesktopWeb) {
+    return (
+      <View style={dstyles.wrapper}>
+        <View style={dstyles.imgWrap}>{imageEl}</View>
+
+        <View style={dstyles.info}>
+          <Text style={dstyles.codigo}>{code}</Text>
+          <Text style={dstyles.nombre} numberOfLines={2}>{name}</Text>
+          <Text style={dstyles.marca}>{brand}</Text>
+        </View>
+
+        {!termReadOnly && (
+          <TouchableOpacity onPress={() => setShowTermModal(true)} activeOpacity={0.8} style={dstyles.termBtn}>
+            <Text style={dstyles.termText} numberOfLines={1}>{currentTerm ? currentTerm.nombre : 'CARGANDO...'}</Text>
+            <Feather name="chevron-down" size={14} color="#555" />
+          </TouchableOpacity>
+        )}
+
+        <View style={dstyles.priceWrap}>
+          {strikedPrice !== null && <Text style={dstyles.precioTachado}>USD {fmt(strikedPrice)}</Text>}
+          <Text style={[dstyles.precio, { color: finalPriceColor }]}>USD {fmt(finalPrice)}</Text>
+        </View>
+
+        <View style={dstyles.qtyPill}>
+          <TouchableOpacity onPress={onSubtract} style={dstyles.qtyBtn} hitSlop={5}><Feather name="minus" size={14} color="#FFFFFF" /></TouchableOpacity>
+          <Text style={dstyles.qtyText}>{quantity}</Text>
+          <TouchableOpacity onPress={onAdd} style={dstyles.qtyBtn} hitSlop={5}><Feather name="plus" size={14} color="#FFFFFF" /></TouchableOpacity>
+        </View>
+
+        <TouchableOpacity onPress={onDelete} hitSlop={15} style={dstyles.deleteBtn}><Feather name="trash-2" size={18} color="#E74C3C" /></TouchableOpacity>
+
+        {termModal}
+      </View>
+    );
+  }
+
   return (
     <View style={styles.wrapper}>
       <View style={styles.svgContainer}>
@@ -177,27 +269,20 @@ const TarjetaProducto: React.FC<Props> = (props) => {
 
       <View style={styles.contentContainer}>
         <View style={styles.leftColumn}>
-            {!!uri && !imgError ? (
-                <Image 
-                  source={{ uri }} 
-                  style={styles.image} 
-                  contentFit="contain" 
-                  transition={200} 
-                  cachePolicy="memory-disk"
-                  onError={() => setImgError(true)} 
-                />
-            ) : (<View style={styles.placeholderImg}><Text style={{ fontSize: 10, color: '#999' }}>Sin img</Text></View>)}
+            {imageEl}
         </View>
 
         <View style={styles.rightColumn}>
-            <View style={styles.topRow}>
-                <TouchableOpacity onPress={() => setShowTermModal(true)} activeOpacity={0.8} style={{ width: SEL_W, height: SEL_H, justifyContent: 'center', alignItems: 'center' }}>
-                    <View style={StyleSheet.absoluteFill}><Svg width={SEL_W} height={SEL_H}><Path d={selectorPath} fill="#F3F4F6" stroke="#E5E7EB" strokeWidth={1} /></Svg></View>
-                    <View style={styles.selectorContent}>
-                        <Text style={styles.selectorText} numberOfLines={1}>{currentTerm ? currentTerm.nombre : 'CARGANDO...'}</Text>
-                        <Feather name="chevron-down" size={14} color="#555" />
-                    </View>
-                </TouchableOpacity>
+            <View style={[styles.topRow, termReadOnly && { justifyContent: 'flex-end' }]}>
+                {!termReadOnly && (
+                    <TouchableOpacity onPress={() => setShowTermModal(true)} activeOpacity={0.8} style={{ width: SEL_W, height: SEL_H, justifyContent: 'center', alignItems: 'center' }}>
+                        <View style={StyleSheet.absoluteFill}><Svg width={SEL_W} height={SEL_H}><Path d={selectorPath} fill="#F3F4F6" stroke="#E5E7EB" strokeWidth={1} /></Svg></View>
+                        <View style={styles.selectorContent}>
+                            <Text style={styles.selectorText} numberOfLines={1}>{currentTerm ? currentTerm.nombre : 'CARGANDO...'}</Text>
+                            <Feather name="chevron-down" size={14} color="#555" />
+                        </View>
+                    </TouchableOpacity>
+                )}
                 <TouchableOpacity onPress={onDelete} hitSlop={15} style={{ marginRight: 15 }}><Feather name="trash-2" size={18} color="#E74C3C" /></TouchableOpacity>
             </View>
 
@@ -224,36 +309,7 @@ const TarjetaProducto: React.FC<Props> = (props) => {
         </View>
       </View>
 
-      <Modal visible={showTermModal} transparent animationType="fade">
-          <Pressable style={styles.modalOverlay} onPress={() => setShowTermModal(false)}>
-              <View style={[styles.modalWrapper, { width: MODAL_W }]}>
-                  <View style={StyleSheet.absoluteFill}><Svg width="100%" height="100%"><Path d={modalBgPath} fill="#FFFFFF" stroke="#E5E7EB" strokeWidth={3} /></Svg></View>
-                  <View style={styles.modalInner} onLayout={(e) => { if(e.nativeEvent.layout.height > 50) setModalHeight(e.nativeEvent.layout.height) }}>
-                      <View style={styles.modalHeader}><Feather name="credit-card" size={24} color="#374151" /><Text style={styles.modalNewTitle}>PLAZOS DE PAGO</Text></View>
-                      
-                      <ScrollView style={{ maxHeight: 300 }} showsVerticalScrollIndicator={false}>
-                        {filteredModalPlazos.length > 0 ? (
-                            filteredModalPlazos.map((term) => {
-                                const isSelected = paymentTermId === term.id;
-                                return (
-                                    <TouchableOpacity key={term.id} style={styles.modalNewItem} onPress={() => { onPaymentTermChange(term.id); setShowTermModal(false); }}>
-                                        <View style={[styles.radioButtonOuter, isSelected && styles.radioButtonOuterSelected]}>{isSelected && <View style={styles.radioButtonInner} />}</View>
-                                        <Text style={[styles.modalNewItemText, isSelected && styles.modalNewItemTextSelected]}>{term.nombre}</Text>
-                                    </TouchableOpacity>
-                                );
-                            })
-                        ) : (
-                            <Text style={{textAlign: 'center', color: '#999', marginVertical: 20}}>
-                                No hay plazos disponibles para oferta.
-                            </Text>
-                        )}
-                      </ScrollView>
-
-                      <TouchableOpacity style={styles.cancelButton} onPress={() => setShowTermModal(false)}><Text style={styles.cancelText}>Cancelar</Text></TouchableOpacity>
-                  </View>
-              </View>
-          </Pressable>
-      </Modal>
+      {termModal}
     </View>
   );
 };
@@ -305,6 +361,52 @@ const styles = StyleSheet.create({
   radioButtonInner: { width: 12, height: 12, borderRadius: 6, backgroundColor: '#1C9BD8' },
   cancelButton: { marginTop: 15, alignItems: 'center', paddingVertical: 10 },
   cancelText: { color: '#EF4444', fontFamily: 'BarlowCondensed-Medium', fontSize: 16 }
+});
+
+// --- Estilos exclusivos de la card desktop: fila única, sin recorte SVG ---
+const dstyles = StyleSheet.create({
+  wrapper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    marginBottom: 10,
+    gap: 16,
+  },
+  imgWrap: {
+    width: 64, height: 64,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: '#F9FAFB',
+    borderRadius: 10,
+  },
+  image: { width: 52, height: 52 },
+  placeholderImg: { width: 52, height: 52, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F9FAFB', borderRadius: 8 },
+  info: { flex: 1, minWidth: 0 },
+  codigo: { fontSize: 11, fontFamily: 'BarlowCondensed-Regular', color: '#9CA3AF' },
+  nombre: { fontSize: 15, lineHeight: 17, fontFamily: 'BarlowCondensed-Bold', color: '#1F2937', marginTop: 1 },
+  marca: { fontSize: 11, fontFamily: 'BarlowCondensed-Bold', color: '#9CA3AF', textTransform: 'uppercase', marginTop: 1 },
+  termBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    width: 168, height: 34,
+    backgroundColor: '#F3F4F6', borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 8,
+    paddingHorizontal: 12,
+  },
+  termText: { fontSize: 12, fontFamily: 'BarlowCondensed-Bold', color: '#333', flex: 1, marginRight: 4 },
+  priceWrap: { alignItems: 'flex-end', width: 120 },
+  precioTachado: { fontSize: 12, fontFamily: 'BarlowCondensed-Bold', color: '#999', textDecorationLine: 'line-through' },
+  precio: { fontSize: 19, fontFamily: 'BarlowCondensed-Bold' },
+  qtyPill: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: '#1C9BD8', borderRadius: 17, height: 32,
+    paddingHorizontal: 4, minWidth: 85, justifyContent: 'space-between',
+  },
+  qtyBtn: { width: 28, height: '100%', alignItems: 'center', justifyContent: 'center' },
+  qtyText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#FFFFFF', marginHorizontal: 2, marginTop: -2 },
+  deleteBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
 });
 
 export default React.memo(TarjetaProducto);

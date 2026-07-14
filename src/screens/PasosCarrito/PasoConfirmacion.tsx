@@ -18,10 +18,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CarritoHeader from '../../components/CarritoHeader';
 import { useCartStore } from '../../store/cartStore';
 import LayoutRefresh from '../../components/LayoutRefresh';
-import { getCuitFromStorage } from '../../utils/authStorage'; 
+import { getCuitFromStorage } from '../../utils/authStorage';
 import Svg, { Path, Defs, Filter, FeGaussianBlur, G } from 'react-native-svg';
 import axios from 'axios';
-import { API_URL } from '../../config'; 
+import { API_URL } from '../../config';
+import useIsDesktopWeb from '../../hooks/useIsDesktopWeb';
 
 import PantallaExitoPedido from './PantallaExitoPedido';
 
@@ -86,7 +87,8 @@ interface Props { onBack: () => void; }
 
 const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const insets = useSafeAreaInsets();
-  
+  const isDesktopWeb = useIsDesktopWeb();
+
   const { 
     items, 
     clienteSeleccionado, 
@@ -447,131 +449,112 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
      );
   }
 
-  return (
-    <View style={{ flex: 1, backgroundColor: '#fff' }}>
-      <LayoutRefresh onRecargar={cargarDatos} contentContainerStyle={{ paddingBottom: 5 + insets.bottom }}>
-        <CarritoHeader step={3} onBack={onBack} />
-        
-        <ShapedCard style={{ marginHorizontal: SIDE_MARGIN, marginTop: 6, marginBottom: 24 }}>
-            <Text style={styles.titleDetalle}>DETALLES DE PEDIDO</Text>
-            <View style={styles.row}><Text style={styles.label}>Cliente:</Text><Text style={styles.value}>{getClienteTexto(clienteSeleccionado)}</Text></View>
-            <View style={styles.row}><Text style={styles.label}>Pago:</Text><Text style={styles.value}>{getPlazoTexto(plazoSeleccionado)}</Text></View>
-            <View style={styles.row}><Text style={styles.label}>Envío:</Text><Text style={styles.value}>{direccionEntrega ? `${direccionEntrega.street || ''}, ${direccionEntrega.city || ''}` : getEnvioTexto(envioSeleccionado)}</Text></View>
-            
-            {transporteNombrePuro !== '' && (
-                <View style={styles.row}>
-                    <Text style={styles.label}>Transporte:</Text>
-                    <Text style={styles.value}>{transporteNombrePuro}</Text>
-                </View>
-            )}
-            
-            <View style={[styles.row, { marginBottom: 0 }]}><Text style={styles.label}>Fecha:</Text><Text style={styles.value}>{formatFecha()}</Text></View>
-        </ShapedCard>
-
-        {itemsProcesados.length > 0 && (
-          <View style={styles.prodWrap}>
-            <View style={styles.tableHeader}>
-                <Text style={[styles.headerText, { flex: 1.1, textAlign: 'left' }]}>REF.</Text>
-                <Text style={[styles.headerText, { flex: 0.5, textAlign: 'center' }]}>CANT</Text>
-                <Text style={[styles.headerText, { flex: 0.9, textAlign: 'right' }]}>PRECIO</Text>
-                <Text style={[styles.headerText, { flex: 0.6, textAlign: 'center' }]}>DTO</Text>
-                <Text style={[styles.headerText, { flex: 1, textAlign: 'right' }]}>SUBTOTAL</Text>
-            </View>
-            <View style={styles.headerLine} />
-            {itemsProcesados.map((it: any, index: number) => {
-              const isTransport = String(it.product_id) === '33627';
-              const referral = isTransport ? it.name : (it.default_code || it.name || 'SIN REF');
-              const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
-              const priceUnit = toNumber(it?.price_unit);
-              const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
-              const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
-              const subTotalLine = priceUnit * qty * factor;
-              
-              return (
-                <View key={it.product_id ?? index} style={styles.prodRow}>
-                  <View style={styles.colRef}><Text allowFontScaling={false} style={styles.codeText} numberOfLines={2}>{referral}</Text></View>
-                  <View style={styles.vSep} />
-                  <View style={styles.colQty}><Text allowFontScaling={false} style={styles.qtyText}>x{qty}</Text></View>
-                  <View style={styles.vSep} />
-                  <TouchableOpacity style={styles.colPrice} disabled={!canEdit} onPress={() => openEditModal(it)}>
-                    <Text allowFontScaling={false} style={[styles.priceText, canEdit && { color: '#1C9BD8', textDecorationLine: 'underline' }]} numberOfLines={1}>{formatUsd(priceUnit)}</Text>
-                  </TouchableOpacity>
-                  <View style={styles.vSep} />
-                  <TouchableOpacity style={styles.colDisc} disabled={!canEdit} onPress={() => openEditModal(it)}>
-                    {isTransport 
-                        ? <Text style={[styles.dash, canEdit && { color: '#D32F2F', fontSize: 9, fontWeight: 'bold' }]}>{canEdit ? 'QUITAR' : '-'}</Text> 
-                        : ((d1 > 0 || d2 > 0 || d3 > 0) 
-                            ? (<View style={[styles.discountBadge, canEdit && { backgroundColor: '#E3F2FD' }]}><Text allowFontScaling={false} style={styles.discountText}>{[d1, d2, d3].filter(d => d > 0).join('+')}%</Text></View>) 
-                            : (<Text style={[styles.dash, canEdit && { color: '#1C9BD8' }]}>{canEdit ? 'Add' : '-'}</Text>))}
-                  </TouchableOpacity>
-                  <View style={styles.vSep} />
-                  <View style={styles.colSub}><Text allowFontScaling={false} style={styles.subText} numberOfLines={1}>{formatUsd(subTotalLine)}</Text></View>
-                </View>
-              );
-            })}
-          </View>
-        )}
-
-        <View style={styles.taxWrap}>
-          <View style={styles.taxRow}>
-            <View style={styles.taxLeft}><Text style={styles.taxLeftText}>Base imponible</Text><Text style={styles.taxLeftText}>Impuestos</Text></View>
-            <View style={styles.taxSeparator} />
-            <View style={styles.taxRight}>
-                {isSyncingTotals ? (
-                    <>
-                        <Text style={[styles.taxRightText, { color: '#AAA' }]}>Calculando...</Text>
-                        <Text style={[styles.taxRightText, { color: '#AAA' }]}>Calculando...</Text>
-                    </>
-                ) : (
-                    <>
-                        <Text style={styles.taxRightText}>{formatUsd(liveTotals.base)}</Text>
-                        <Text style={styles.taxRightText}>{formatUsd(liveTotals.tax)}</Text>
-                    </>
-                )}
-            </View>
-          </View>
-          <View style={styles.taxDivider} />
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 }}> 
-              <View><Text style={styles.fxLabel}>Nro. Pedido</Text><Text style={styles.fxValue}>{nroPedidoFormateado}</Text></View>
-              <View style={{ alignItems: 'flex-end' }}><Text style={styles.fxLabel}>Tipo de cambio</Text><Text style={styles.fxValue}>{tipoCambio ? formatPriceAR(tipoCambio) : '—'}</Text></View>
-          </View>
-          <View style={{ alignItems: 'flex-end', borderTopWidth: 1, borderTopColor: '#F0F0F0', paddingTop: 12 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
-                <Text style={styles.totalLabel}>TOTAL</Text>
-                {isSyncingTotals ? (
-                    <ActivityIndicator size="small" color="#1C9BD8" style={{ marginLeft: 10 }} />
-                ) : (
-                    <Text style={styles.totalValue}>{formatUsd(liveTotals.total)}</Text>
-                )}
-              </View>
-          </View>
+  const detailsRows = (
+    <>
+      <View style={styles.row}><Text style={styles.label}>Cliente:</Text><Text style={styles.value}>{getClienteTexto(clienteSeleccionado)}</Text></View>
+      <View style={styles.row}><Text style={styles.label}>Pago:</Text><Text style={styles.value}>{getPlazoTexto(plazoSeleccionado)}</Text></View>
+      <View style={styles.row}><Text style={styles.label}>Envío:</Text><Text style={styles.value}>{direccionEntrega ? `${direccionEntrega.street || ''}, ${direccionEntrega.city || ''}` : getEnvioTexto(envioSeleccionado)}</Text></View>
+      {transporteNombrePuro !== '' && (
+        <View style={styles.row}>
+          <Text style={styles.label}>Transporte:</Text>
+          <Text style={styles.value}>{transporteNombrePuro}</Text>
         </View>
+      )}
+      <View style={[styles.row, { marginBottom: 0 }]}><Text style={styles.label}>Fecha:</Text><Text style={styles.value}>{formatFecha()}</Text></View>
+    </>
+  );
 
-        <View style={{ marginTop: 24, marginBottom: 16 }}>
-            <TouchableOpacity style={styles.obsLink} onPress={() => setShowObservationModal(true)}>
-                <Text style={styles.obsLinkText}>
-                    {observationText ? 'Editar Observaciones al Cliente' : '+ Agregar Instrucciones al Cliente'}
-                </Text>
+  const productTable = itemsProcesados.length > 0 ? (
+    <>
+      <View style={styles.tableHeader}>
+          <Text style={[styles.headerText, { flex: 1.1, textAlign: 'left' }]}>REF.</Text>
+          <Text style={[styles.headerText, { flex: 0.5, textAlign: 'center' }]}>CANT</Text>
+          <Text style={[styles.headerText, { flex: 0.9, textAlign: 'right' }]}>PRECIO</Text>
+          <Text style={[styles.headerText, { flex: 0.6, textAlign: 'center' }]}>DTO</Text>
+          <Text style={[styles.headerText, { flex: 1, textAlign: 'right' }]}>SUBTOTAL</Text>
+      </View>
+      <View style={styles.headerLine} />
+      {itemsProcesados.map((it: any, index: number) => {
+        const isTransport = String(it.product_id) === '33627';
+        const referral = isTransport ? it.name : (it.default_code || it.name || 'SIN REF');
+        const qty = toNumber(it?.product_uom_qty ?? it?.qty ?? it?.quantity ?? 1);
+        const priceUnit = toNumber(it?.price_unit);
+        const d1 = toNumber(it?.discount1); const d2 = toNumber(it?.discount2); const d3 = toNumber(it?.discount3);
+        const factor = (1 - d1/100) * (1 - d2/100) * (1 - d3/100);
+        const subTotalLine = priceUnit * qty * factor;
+
+        return (
+          <View key={it.product_id ?? index} style={styles.prodRow}>
+            <View style={styles.colRef}><Text allowFontScaling={false} style={styles.codeText} numberOfLines={2}>{referral}</Text></View>
+            <View style={styles.vSep} />
+            <View style={styles.colQty}><Text allowFontScaling={false} style={styles.qtyText}>x{qty}</Text></View>
+            <View style={styles.vSep} />
+            <TouchableOpacity style={styles.colPrice} disabled={!canEdit} onPress={() => openEditModal(it)}>
+              <Text allowFontScaling={false} style={[styles.priceText, canEdit && { color: '#1C9BD8', textDecorationLine: 'underline' }]} numberOfLines={1}>{formatUsd(priceUnit)}</Text>
             </TouchableOpacity>
-        </View>
+            <View style={styles.vSep} />
+            <TouchableOpacity style={styles.colDisc} disabled={!canEdit} onPress={() => openEditModal(it)}>
+              {isTransport
+                  ? <Text style={[styles.dash, canEdit && { color: '#D32F2F', fontSize: 9, fontWeight: 'bold' }]}>{canEdit ? 'QUITAR' : '-'}</Text>
+                  : ((d1 > 0 || d2 > 0 || d3 > 0)
+                      ? (<View style={[styles.discountBadge, canEdit && { backgroundColor: '#E3F2FD' }]}><Text allowFontScaling={false} style={styles.discountText}>{[d1, d2, d3].filter(d => d > 0).join('+')}%</Text></View>)
+                      : (<Text style={[styles.dash, canEdit && { color: '#1C9BD8' }]}>{canEdit ? 'Add' : '-'}</Text>))}
+            </TouchableOpacity>
+            <View style={styles.vSep} />
+            <View style={styles.colSub}><Text allowFontScaling={false} style={styles.subText} numberOfLines={1}>{formatUsd(subTotalLine)}</Text></View>
+          </View>
+        );
+      })}
+    </>
+  ) : null;
 
-      </LayoutRefresh>
-
-      <View style={[styles.footerContainer, { paddingBottom: Math.max(20, insets.bottom + 35) }]}>
-        <View style={styles.buttons}>
-          <TouchableWithoutFeedback onPressIn={() => animateBtn(backAnim, 1)} onPressOut={() => animateBtn(backAnim, 0)} onPress={handleBackPress}>
-              <Animated.View style={[styles.back, { transform: [{ scale: getScale(backAnim) }, { translateY: getTranslate(backAnim) }] }]}>
-                  <Text style={styles.backText}>VOLVER</Text>
-              </Animated.View>
-          </TouchableWithoutFeedback>
-          <TouchableWithoutFeedback disabled={loading || isSyncingTotals} onPressIn={() => animateBtn(confirmAnim, 1)} onPressOut={() => animateBtn(confirmAnim, 0)} onPress={handleConfirmPress}>
-              <Animated.View style={[styles.confirm, (loading || isSyncingTotals) && { backgroundColor: '#A0A0A0' }, { transform: [{ scale: getScale(confirmAnim) }, { translateY: getTranslate(confirmAnim) }] }]}>
-                  {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.confirmText}>CONFIRMAR PEDIDO</Text>}
-              </Animated.View>
-          </TouchableWithoutFeedback>
+  const taxSummary = (
+    <>
+      <View style={styles.taxRow}>
+        <View style={styles.taxLeft}><Text style={styles.taxLeftText}>Base imponible</Text><Text style={styles.taxLeftText}>Impuestos</Text></View>
+        <View style={styles.taxSeparator} />
+        <View style={styles.taxRight}>
+            {isSyncingTotals ? (
+                <>
+                    <Text style={[styles.taxRightText, { color: '#AAA' }]}>Calculando...</Text>
+                    <Text style={[styles.taxRightText, { color: '#AAA' }]}>Calculando...</Text>
+                </>
+            ) : (
+                <>
+                    <Text style={styles.taxRightText}>{formatUsd(liveTotals.base)}</Text>
+                    <Text style={styles.taxRightText}>{formatUsd(liveTotals.tax)}</Text>
+                </>
+            )}
         </View>
       </View>
+      <View style={styles.taxDivider} />
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 }}>
+          <View><Text style={styles.fxLabel}>Nro. Pedido</Text><Text style={styles.fxValue}>{nroPedidoFormateado}</Text></View>
+          <View style={{ alignItems: 'flex-end' }}><Text style={styles.fxLabel}>Tipo de cambio</Text><Text style={styles.fxValue}>{tipoCambio ? formatPriceAR(tipoCambio) : '—'}</Text></View>
+      </View>
+      <View style={{ alignItems: 'flex-end', borderTopWidth: 1, borderTopColor: '#F0F0F0', paddingTop: 12 }}>
+          <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: 6 }}>
+            <Text style={styles.totalLabel}>TOTAL</Text>
+            {isSyncingTotals ? (
+                <ActivityIndicator size="small" color="#1C9BD8" style={{ marginLeft: 10 }} />
+            ) : (
+                <Text style={styles.totalValue}>{formatUsd(liveTotals.total)}</Text>
+            )}
+          </View>
+      </View>
+    </>
+  );
 
+  const observationLink = (
+    <TouchableOpacity style={styles.obsLink} onPress={() => setShowObservationModal(true)}>
+        <Text style={styles.obsLinkText}>
+            {observationText ? 'Editar Observaciones al Cliente' : '+ Agregar Instrucciones al Cliente'}
+        </Text>
+    </TouchableOpacity>
+  );
+
+  const editModals = (
+    <>
       <Modal visible={modalVisible} transparent animationType="slide" onRequestClose={() => setModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : "height"} style={styles.modalOverlay}>
             <View style={styles.modalContent}>
@@ -619,6 +602,110 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                 </View>
             </KeyboardAvoidingView>
         </Modal>
+    </>
+  );
+
+  if (isDesktopWeb) {
+    return (
+      <View style={dstyles.screen}>
+        <LayoutRefresh onRecargar={cargarDatos} contentContainerStyle={{ paddingBottom: 40 }}>
+          <View style={dstyles.pageWrap}>
+            <CarritoHeader step={3} onBack={onBack} />
+            <View style={dstyles.layout}>
+              <View style={dstyles.leftCol}>
+                <View style={dstyles.card}>
+                  <Text style={dstyles.cardTitle}>DETALLES DE PEDIDO</Text>
+                  {detailsRows}
+                </View>
+
+                {productTable && (
+                  <View style={[dstyles.card, { marginTop: 16 }]}>
+                    <Text style={dstyles.cardTitle}>PRODUCTOS</Text>
+                    {productTable}
+                  </View>
+                )}
+
+                <View style={[dstyles.card, { marginTop: 16 }]}>
+                  <Text style={dstyles.cardTitle}>INSTRUCCIONES AL CLIENTE (OPCIONAL)</Text>
+                  <TextInput
+                    style={dstyles.obsInput}
+                    multiline
+                    placeholder="Ej: Entregar por la mañana..."
+                    placeholderTextColor="#B3B3B3"
+                    value={observationText}
+                    onChangeText={setObservationText}
+                  />
+                </View>
+              </View>
+
+              <View style={dstyles.rightCol}>
+                <View style={dstyles.summaryCard}>
+                  <Text style={dstyles.cardTitle}>RESUMEN</Text>
+                  {taxSummary}
+                  <View style={dstyles.summaryButtons}>
+                    <TouchableWithoutFeedback disabled={loading || isSyncingTotals} onPressIn={() => animateBtn(confirmAnim, 1)} onPressOut={() => animateBtn(confirmAnim, 0)} onPress={handleConfirmPress}>
+                      <Animated.View style={[dstyles.confirm, (loading || isSyncingTotals) && { backgroundColor: '#A0A0A0' }, { transform: [{ scale: getScale(confirmAnim) }, { translateY: getTranslate(confirmAnim) }] }]}>
+                        {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.confirmText}>CONFIRMAR PEDIDO</Text>}
+                      </Animated.View>
+                    </TouchableWithoutFeedback>
+                    <TouchableWithoutFeedback onPressIn={() => animateBtn(backAnim, 1)} onPressOut={() => animateBtn(backAnim, 0)} onPress={handleBackPress}>
+                      <Animated.View style={[dstyles.back, { transform: [{ scale: getScale(backAnim) }, { translateY: getTranslate(backAnim) }] }]}>
+                        <Text style={styles.backText}>VOLVER</Text>
+                      </Animated.View>
+                    </TouchableWithoutFeedback>
+                  </View>
+                </View>
+              </View>
+            </View>
+          </View>
+        </LayoutRefresh>
+        {editModals}
+      </View>
+    );
+  }
+
+  return (
+    <View style={{ flex: 1, backgroundColor: '#fff' }}>
+      <LayoutRefresh onRecargar={cargarDatos} contentContainerStyle={{ paddingBottom: 5 + insets.bottom }}>
+        <CarritoHeader step={3} onBack={onBack} />
+
+        <ShapedCard style={{ marginHorizontal: SIDE_MARGIN, marginTop: 6, marginBottom: 24 }}>
+            <Text style={styles.titleDetalle}>DETALLES DE PEDIDO</Text>
+            {detailsRows}
+        </ShapedCard>
+
+        {productTable && (
+          <View style={styles.prodWrap}>
+            {productTable}
+          </View>
+        )}
+
+        <View style={styles.taxWrap}>
+          {taxSummary}
+        </View>
+
+        <View style={{ marginTop: 24, marginBottom: 16 }}>
+            {observationLink}
+        </View>
+
+      </LayoutRefresh>
+
+      <View style={[styles.footerContainer, { paddingBottom: Math.max(20, insets.bottom + 35) }]}>
+        <View style={styles.buttons}>
+          <TouchableWithoutFeedback onPressIn={() => animateBtn(backAnim, 1)} onPressOut={() => animateBtn(backAnim, 0)} onPress={handleBackPress}>
+              <Animated.View style={[styles.back, { transform: [{ scale: getScale(backAnim) }, { translateY: getTranslate(backAnim) }] }]}>
+                  <Text style={styles.backText}>VOLVER</Text>
+              </Animated.View>
+          </TouchableWithoutFeedback>
+          <TouchableWithoutFeedback disabled={loading || isSyncingTotals} onPressIn={() => animateBtn(confirmAnim, 1)} onPressOut={() => animateBtn(confirmAnim, 0)} onPress={handleConfirmPress}>
+              <Animated.View style={[styles.confirm, (loading || isSyncingTotals) && { backgroundColor: '#A0A0A0' }, { transform: [{ scale: getScale(confirmAnim) }, { translateY: getTranslate(confirmAnim) }] }]}>
+                  {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.confirmText}>CONFIRMAR PEDIDO</Text>}
+              </Animated.View>
+          </TouchableWithoutFeedback>
+        </View>
+      </View>
+
+      {editModals}
     </View>
   );
 };
@@ -682,8 +769,51 @@ const styles = StyleSheet.create({
   modalBtnSave: { flex: 1, padding: 12, borderRadius: 8, alignItems: 'center', backgroundColor: '#1C9BD8' },
   modalBtnTextSave: { fontWeight: '700', color: '#FFF' },
   
-  obsLink: { alignSelf: 'center' }, 
+  obsLink: { alignSelf: 'center' },
   obsLinkText: { color: '#1C9BD8', fontFamily: 'Rubik-Medium', textDecorationLine: 'underline', fontWeight: '800' },
+});
+
+// --- Desktop: layout de dos columnas (detalle + productos a la izquierda,
+// resumen y acciones a la derecha), evitando el scroll largo hasta los
+// botones que tenía el diseño mobile de una sola columna. ---
+const dstyles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  // Mismo maxWidth que Pasos 1 y 2, para que la barra de pasos del header y
+  // el contenido queden alineados de forma consistente entre las 3 pantallas.
+  pageWrap: { width: '100%', maxWidth: 900, alignSelf: 'center' },
+  layout: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 20,
+    paddingHorizontal: 4,
+    marginTop: 8,
+  },
+  leftCol: { flex: 1, minWidth: 0 },
+  rightCol: { width: 300 },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    padding: 20,
+  },
+  cardTitle: { fontSize: 16, fontFamily: 'BarlowCondensed-Bold', fontWeight: '800', color: '#2B2B2B', marginBottom: 14, textTransform: 'uppercase', letterSpacing: 0.3 },
+  summaryCard: {
+    backgroundColor: '#F9FAFB',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#ECECEC',
+    padding: 20,
+  },
+  summaryButtons: { marginTop: 18, gap: 10 },
+  confirm: { height: 48, borderRadius: 999, backgroundColor: '#1C9BD8', alignItems: 'center', justifyContent: 'center' },
+  back: { height: 48, borderRadius: 999, borderWidth: 1, borderColor: '#D3D6DB', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' },
+  obsInput: {
+    borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10,
+    backgroundColor: '#F9FAFB', padding: 12,
+    minHeight: 72, textAlignVertical: 'top',
+    fontSize: 14, color: '#333',
+  },
 });
 
 export default PasoConfirmacion;

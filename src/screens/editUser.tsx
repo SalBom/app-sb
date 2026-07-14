@@ -24,9 +24,11 @@ const AvatarPlaceholder = require('../../assets/avatarPlaceholder.png');
 
 // Config
 import { API_URL } from '../config';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 const EditUser: React.FC = () => {
   const navigation = useNavigation();
+  const isDesktopWeb = useIsDesktopWeb();
 
   // Estados del formulario
   const [nombre, setNombre] = useState('');
@@ -135,6 +137,59 @@ const EditUser: React.FC = () => {
     return (
       <View style={[s.screen, { justifyContent: 'center', alignItems: 'center' }]}>
         <ActivityIndicator size="large" color="#1E9CD7" />
+      </View>
+    );
+  }
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    return (
+      <View style={ds.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={ds.page}>
+            <Text style={ds.pageTitle}>MI PERFIL</Text>
+
+            <View style={ds.card}>
+              <View style={ds.avatarSection}>
+                <View style={s.avatarWrapper}>
+                  <Image source={avatarSource} style={ds.avatarImage} />
+                  <View style={s.cameraIconBadge}><Feather name="camera" size={16} color="#FFF" /></View>
+                </View>
+              </View>
+
+              <View style={ds.formGrid}>
+                <View style={ds.field}>
+                  <Text style={ds.label}>Nombre</Text>
+                  <TextInput style={ds.input} value={nombre} onChangeText={setNombre} placeholder="Nombre completo" placeholderTextColor="#999" />
+                </View>
+                <View style={ds.field}>
+                  <Text style={ds.label}>Mail</Text>
+                  <TextInput style={ds.input} value={mail} onChangeText={setMail} keyboardType="email-address" placeholder="correo@ejemplo.com" placeholderTextColor="#999" autoCapitalize="none" />
+                </View>
+                <View style={ds.field}>
+                  <Text style={ds.label}>Teléfono</Text>
+                  <TextInput style={ds.input} value={telefono} onChangeText={setTelefono} keyboardType="phone-pad" placeholder="(+54) ..." placeholderTextColor="#999" />
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', gap: 12, marginTop: 30 }}>
+                <TouchableOpacity style={ds.cancelBtn} onPress={() => navigation.goBack()}>
+                  <Text style={ds.cancelBtnText}>Cancelar</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={[ds.saveBtn, saving && { opacity: 0.7 }]} onPress={handleSave} disabled={saving}>
+                  {saving ? <ActivityIndicator size="small" color="#FFF" /> : (
+                    <>
+                      <Text style={ds.saveBtnText}>Guardar cambios</Text>
+                      <Feather name="save" size={16} color="#FFF" />
+                    </>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </ScrollView>
       </View>
     );
   }
@@ -329,6 +384,27 @@ const s = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     marginRight: 10,
   }
+});
+
+// --- Estilos exclusivos de desktop ---
+const ds = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', marginBottom: 30, textTransform: 'uppercase' },
+
+  card: { width: '100%', maxWidth: 640, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#ECECEC', padding: 32 },
+  avatarSection: { alignItems: 'center', marginBottom: 24 },
+  avatarImage: { width: 110, height: 110, borderRadius: 55, backgroundColor: '#E0E0E0' },
+
+  formGrid: { gap: 4 },
+  field: { marginBottom: 16 },
+  label: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#8A8A8A', letterSpacing: 0.5, marginBottom: 8, textTransform: 'uppercase' },
+  input: { backgroundColor: '#FAFAFA', borderWidth: 1, borderColor: '#E0E0E0', borderRadius: 8, height: 46, paddingHorizontal: 14, fontFamily: 'BarlowCondensed-Medium', fontSize: 15, color: '#333' },
+
+  cancelBtn: { flex: 1, paddingVertical: 13, borderRadius: 8, borderWidth: 1, borderColor: '#DDD', alignItems: 'center' },
+  cancelBtnText: { fontFamily: 'BarlowCondensed-Bold', color: '#333' },
+  saveBtn: { flex: 1, flexDirection: 'row', gap: 8, paddingVertical: 13, borderRadius: 8, backgroundColor: '#1E9CD7', alignItems: 'center', justifyContent: 'center' },
+  saveBtnText: { fontFamily: 'BarlowCondensed-Bold', color: '#FFF' },
 });
 
 export default EditUser;

@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, Platform, Animated, Easing } from 'react-native';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 // --- SafeSvg: evita warnings ---
 const SafeSvg = ({ mod, width, height, style }: { mod: any; width: number; height: number; style?: any }) => {
@@ -32,7 +33,8 @@ const CarritoHeader: React.FC<Props> = ({
   showOrderBadge = false,
   orderNumber,
 }) => {
-  
+  const isDesktopWeb = useIsDesktopWeb();
+
   // Animación para la barra de progreso
   const progressAnim = useRef(new Animated.Value(0)).current;
 
@@ -60,9 +62,11 @@ const CarritoHeader: React.FC<Props> = ({
     <View style={styles.container}>
       {/* Header Superior */}
       <View style={styles.headerTop}>
-        <View style={styles.iconWrap}>
-           <SafeSvg mod={ComIconRaw} width={53} height={28} />
-        </View>
+        {!isDesktopWeb && (
+          <View style={styles.iconWrap}>
+             <SafeSvg mod={ComIconRaw} width={53} height={28} />
+          </View>
+        )}
         <Text style={styles.headerTitle}>{title}</Text>
       </View>
 

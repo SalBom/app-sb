@@ -25,6 +25,8 @@ const HeroImg = require('../../assets/carruselDescargas.jpeg'); // <--- CAMBIO 1
 import LogoShimuraCarruselSvg from '../../assets/logoShimuraCarrusel.svg';
 import IsseiDescargasSvg from '../../assets/IsseiDescargas.svg'; // <--- CAMBIO 2: Importar Logo Issei
 import ArrowCarruselSvg from '../../assets/arrowCarrusel.svg';
+import { Feather } from '@expo/vector-icons';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 // --- CONFIGURACIÓN DE LINKS ---
 const LINKS = {
@@ -82,6 +84,7 @@ const ITEMS = [
 
 const Descargas: React.FC = () => {
   const navigation = useNavigation<any>();
+  const isDesktopWeb = useIsDesktopWeb();
   const [currentIndex, setCurrentIndex] = useState(0);
   const heroScrollRef = useRef<ScrollView | null>(null);
 
@@ -127,6 +130,55 @@ const Descargas: React.FC = () => {
     }
     setCurrentIndex(nextIndex);
   };
+
+  // ===========================================================================
+  // VERSIÓN DESKTOP WEB
+  // ===========================================================================
+  if (isDesktopWeb) {
+    const brandKey = currentIndex === 0 ? 'shimura' : 'issei';
+    return (
+      <View style={ds.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={ds.page}>
+            <Text style={ds.pageTitle}>DESCARGAS</Text>
+
+            <View style={ds.brandTabs}>
+              <TouchableOpacity style={[ds.brandTab, currentIndex === 0 && ds.brandTabActive]} onPress={() => setCurrentIndex(0)}>
+                <Text style={[ds.brandTabText, currentIndex === 0 && ds.brandTabTextActive]}>SHIMURA</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={[ds.brandTab, currentIndex === 1 && ds.brandTabActive]} onPress={() => setCurrentIndex(1)}>
+                <Text style={[ds.brandTabText, currentIndex === 1 && ds.brandTabTextActive]}>ISSEI</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={ds.hero}>
+              <Image source={HeroImg} style={ds.heroImg} resizeMode="cover" />
+              <View style={ds.heroLogoCenter}>
+                {currentIndex === 0 ? <LogoShimuraCarruselSvg width={220} height={66} /> : <IsseiDescargasSvg width={220} height={66} />}
+              </View>
+            </View>
+
+            <View style={ds.grid}>
+              {ITEMS.map((it) => {
+                // @ts-ignore
+                const url = LINKS[brandKey][it.id];
+                const hasLink = !!(url && url.length > 0);
+                return (
+                  <TouchableOpacity key={it.id} style={[ds.card, !hasLink && { opacity: 0.5 }]} onPress={() => onPressItem(it.id)} activeOpacity={0.85}>
+                    <View style={ds.cardIconWrap}>
+                      {it.left === 'blue' ? <ListFlechaAzulSvg width={26} height={22} /> : <ListFlechaGrisSvg width={26} height={22} />}
+                    </View>
+                    <Text style={ds.cardLabel}>{it.label}</Text>
+                    <Feather name="download" size={18} color="#8A8A8A" />
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
   return (
     <ScrollView
@@ -324,6 +376,28 @@ const s = StyleSheet.create({
   rowRight: {
     paddingRight: 10,
   },
+});
+
+// --- Estilos exclusivos de desktop ---
+const ds = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', marginBottom: 24, textTransform: 'uppercase' },
+
+  brandTabs: { flexDirection: 'row', gap: 10, marginBottom: 24 },
+  brandTab: { paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20, backgroundColor: '#F3F4F6' },
+  brandTabActive: { backgroundColor: '#1C9BD8' },
+  brandTabText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#555' },
+  brandTabTextActive: { color: '#FFF' },
+
+  hero: { width: '100%', maxWidth: 900, height: 220, borderRadius: 12, overflow: 'hidden', position: 'relative', marginBottom: 30 },
+  heroImg: { width: '100%', height: '100%' },
+  heroLogoCenter: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, alignItems: 'center', justifyContent: 'center' },
+
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 16 },
+  card: { width: 260, flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#ECECEC', paddingVertical: 18, paddingHorizontal: 18 },
+  cardIconWrap: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center' },
+  cardLabel: { flex: 1, fontFamily: 'BarlowCondensed-Bold', fontSize: 14, color: '#2B2B2B' },
 });
 
 export default Descargas;

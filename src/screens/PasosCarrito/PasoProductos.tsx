@@ -23,6 +23,7 @@ import { Ionicons } from '@expo/vector-icons';
 
 import { getCuitFromStorage } from '../../utils/authStorage';
 import { API_URL } from '../../config';
+import useIsDesktopWeb from '../../hooks/useIsDesktopWeb';
 
 // --- HELPERS PARA CLIENTES ---
 async function safeFetch(url: string) {
@@ -61,16 +62,22 @@ interface Props {
 }
 
 const PasoProductos: React.FC<Props> = ({ onNext }) => {
-  const { 
+  const {
       items, updateQuantity, removeFromCart, updateItemPaymentTerm, updateDiscount,
-      clienteSeleccionado, setCliente, setTransporteObj, setTransporte
+      clienteSeleccionado, setCliente, setTransporteObj, setTransporte,
+      plazoSeleccionado, setGlobalPaymentTerm
   } = useCartStore();
   
   const insets = useSafeAreaInsets();
+  const isDesktopWeb = useIsDesktopWeb();
 
   const [discountRules, setDiscountRules] = useState<any>({});
   const [stockMap, setStockMap] = useState<Record<number, string>>({});
   const [checkingStock, setCheckingStock] = useState(false);
+
+  // --- PLAZO DE PAGO GENERAL DEL PEDIDO ---
+  const [plazos, setPlazos] = useState<{ id: number; nombre: string }[]>([]);
+  const [modalPlazo, setModalPlazo] = useState(false);
 
   // --- ESTADOS DE CLIENTES ---
   const [clientes, setClientes] = useState<ClienteSel[]>([]);
@@ -113,9 +120,10 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
     }
   }, [clienteSeleccionado]);
 
-  useEffect(() => { 
-      fetchRules(); 
-      checkStock(); 
+  useEffect(() => {
+      fetchRules();
+      fetchPlazos();
+      checkStock();
       cargarClientes();
   }, []);
 
@@ -140,6 +148,33 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
         .then(res => setDiscountRules(res.data || {}))
         .catch(err => console.log('Error reglas:', err));
   };
+
+  // Mismos IDs de plazo habilitados que usa la card de producto (TarjetaProducto).
+  const PLAZOS_HABILITADOS = [1, 21, 22, 24, 31];
+  const fetchPlazos = () => {
+    axios.get(`${API_URL}/plazos-pago`)
+        .then(res => {
+            if (Array.isArray(res.data)) {
+                const filtrados = res.data
+                    .filter((t: any) => PLAZOS_HABILITADOS.includes(t.id))
+                    .sort((a: any, b: any) => a.id - b.id);
+                setPlazos(filtrados);
+            }
+        })
+        .catch(err => console.log('Error plazos:', err));
+  };
+
+  // Al cargar la lista de plazos, normalizamos el pedido a un plazo GENERAL único:
+  // si ya había uno seleccionado y sigue habilitado lo respetamos, si no tomamos
+  // el primero. setGlobalPaymentTerm unifica el payment_term_id de todos los ítems.
+  useEffect(() => {
+    if (plazos.length === 0) return;
+    const actual = plazos.find(p => p.id === plazoSeleccionado?.id);
+    const elegido = actual || plazos[0];
+    setGlobalPaymentTerm({ id: elegido.id, nombre: elegido.nombre });
+  }, [plazos]);
+
+  const plazoActualNombre = plazos.find(p => p.id === plazoSeleccionado?.id)?.nombre;
 
   const checkStock = async () => {
       setCheckingStock(true);
@@ -243,7 +278,8 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
                 image_thumb_url={item.image_thumb_url}
                 paymentTermId={item.payment_term_id}
                 discountPct={effectivePct}
-                discountRules={discountRules} 
+                discountRules={discountRules}
+                termReadOnly
                 onPaymentTermChange={(newId) => updateItemPaymentTerm(item.product_id, newId)}
                 onAdd={() => updateQuantity(item.product_id, item.product_uom_qty + 1)}
                 onSubtract={() => updateQuantity(item.product_id, Math.max(1, item.product_uom_qty - 1))}
@@ -259,8 +295,8 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
         
         <View style={styles.clientSelectorWrapper}>
             <Text style={styles.clientLabel}>CLIENTE SELECCIONADO</Text>
-            <Pressable 
-                onPress={() => { setClientSearch(''); setModalCliente(true); }} 
+            <Pressable
+                onPress={() => { setClientSearch(''); setModalCliente(true); }}
                 style={({ pressed }) => [styles.select, pressed && { opacity: 0.9 }]}
             >
               <Text style={styles.selectText} numberOfLines={1} ellipsizeMode="tail">
@@ -269,11 +305,24 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
               <Text style={styles.chevron}>▾</Text>
             </Pressable>
         </View>
+
+        <View style={styles.clientSelectorWrapper}>
+            <Text style={styles.clientLabel}>PLAZO DE PAGO</Text>
+            <Pressable
+                onPress={() => setModalPlazo(true)}
+                style={({ pressed }) => [styles.select, pressed && { opacity: 0.9 }]}
+            >
+              <Text style={styles.selectText} numberOfLines={1} ellipsizeMode="tail">
+                  {plazoActualNombre ?? (plazos.length === 0 ? 'Cargando...' : 'Seleccionar plazo')}
+              </Text>
+              <Text style={styles.chevron}>▾</Text>
+            </Pressable>
+        </View>
     </View>
   );
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, isDesktopWeb && styles.containerDesktop]}>
       <FlatList
         data={items}
         renderItem={renderItem}
@@ -306,9 +355,9 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
         </TouchableWithoutFeedback>
       </View>
 
-      <Modal visible={modalCliente} animationType="slide" transparent>
-        <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
+      <Modal visible={modalCliente} animationType={isDesktopWeb ? 'fade' : 'slide'} transparent>
+        <View style={isDesktopWeb ? styles.modalBackdropDesktop : styles.modalBackdrop}>
+          <View style={isDesktopWeb ? styles.modalCardDesktop : styles.modalCard}>
             <Text style={styles.modalTitle}>Seleccionar cliente</Text>
             <View style={styles.searchContainer}>
                 <Ionicons name="search" size={20} color="#999" />
@@ -337,12 +386,43 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
         </View>
       </Modal>
 
+      <Modal visible={modalPlazo} animationType={isDesktopWeb ? 'fade' : 'slide'} transparent>
+        <View style={isDesktopWeb ? styles.modalBackdropDesktop : styles.modalBackdrop}>
+          <View style={isDesktopWeb ? styles.modalCardDesktop : styles.modalCard}>
+            <Text style={styles.modalTitle}>Plazo de pago</Text>
+            <FlatList
+                data={plazos}
+                keyExtractor={(item) => String(item.id)}
+                renderItem={({ item }) => {
+                    const isSel = item.id === plazoSeleccionado?.id;
+                    return (
+                        <Pressable
+                            style={styles.modalItem}
+                            onPress={() => { setGlobalPaymentTerm({ id: item.id, nombre: item.nombre }); setModalPlazo(false); }}
+                        >
+                            <Text style={[styles.modalItemText, isSel && { color: '#139EDB', fontWeight: 'bold' }]}>
+                                {item.nombre}
+                            </Text>
+                        </Pressable>
+                    );
+                }}
+            />
+            <Pressable style={styles.modalClose} onPress={() => setModalPlazo(false)}>
+                <Text style={styles.modalCloseText}>CERRAR</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
     </View>
   );
 };
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
+  // Desktop: se centra el contenido en una columna de ancho razonable en vez de
+  // estirarse borde a borde en pantallas anchas.
+  containerDesktop: { width: '100%', maxWidth: 900, alignSelf: 'center' },
   headerContainerWrapper: { paddingBottom: 15 },
   clientSelectorWrapper: { paddingHorizontal: 20, marginTop: 10 },
   clientLabel: { fontSize: 12, fontFamily: 'BarlowCondensed-SemiBold', color: '#6B7280', marginBottom: 6, marginLeft: 4 },
@@ -358,6 +438,9 @@ const styles = StyleSheet.create({
   botonContinuarTexto: { color: '#fff', fontSize: 16, fontFamily: 'BarlowCondensed-Bold', fontWeight: '700', letterSpacing: 1 },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   modalCard: { backgroundColor: '#fff', maxHeight: '70%', borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingTop: 12 },
+  // Desktop: diálogo centrado y compacto en vez de la hoja mobile que sube desde abajo.
+  modalBackdropDesktop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', alignItems: 'center', justifyContent: 'center' },
+  modalCardDesktop: { backgroundColor: '#fff', width: 440, maxHeight: 520, borderRadius: 16, paddingTop: 16, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 24, shadowOffset: { width: 0, height: 12 } },
   modalTitle: { fontSize: 16, fontWeight: '700', paddingHorizontal: 16, paddingBottom: 8 },
   searchContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#F5F5F5', marginHorizontal: 16, marginBottom: 10, paddingHorizontal: 12, borderRadius: 8, height: 45, borderWidth: 1, borderColor: '#E0E0E0' },
   searchInput: { flex: 1, marginLeft: 8, fontSize: 16, color: '#333', fontWeight: '500' },

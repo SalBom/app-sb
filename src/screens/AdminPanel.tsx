@@ -6,7 +6,8 @@ import { Ionicons } from '@expo/vector-icons';
 
 // Auth, assets y SVGs
 import { getCuitFromStorage, getUserProfile } from '../utils/authStorage';
-import FlechaHeaderSvg from '../../assets/flechaHeader.svg'; 
+import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 const AvatarPlaceholder = require('../../assets/avatarPlaceholder.png');
 
@@ -23,9 +24,23 @@ const MenuRow = ({ label, isSubItem = false, hasArrow = true, onPress, badge }: 
   </TouchableOpacity>
 );
 
+const AdminCardD = ({ icon, label, sub, onPress }: { icon: any; label: string; sub?: string; onPress: () => void }) => (
+  <TouchableOpacity style={dStyles.card} onPress={onPress} activeOpacity={0.85}>
+    <View style={dStyles.cardIconWrap}>
+      <Ionicons name={icon} size={20} color="#1C9BD8" />
+    </View>
+    <View style={{ flex: 1 }}>
+      <Text style={dStyles.cardLabel}>{label}</Text>
+      {sub ? <Text style={dStyles.cardSub}>{sub}</Text> : null}
+    </View>
+    <Ionicons name="chevron-forward" size={18} color="#B5B5B5" />
+  </TouchableOpacity>
+);
+
 export default function AdminPanel() {
   const navigation = useNavigation<any>();
-  
+  const isDesktopWeb = useIsDesktopWeb();
+
   const [user, setUser] = useState<UserState>({ name: 'USUARIO', image: null });
 
   useEffect(() => {
@@ -46,6 +61,32 @@ export default function AdminPanel() {
   const avatarSource = hasImage
     ? { uri: (user.image as string).startsWith('data:') ? user.image : `data:image/png;base64,${user.image}` }
     : AvatarPlaceholder;
+
+  if (isDesktopWeb) {
+    return (
+      <View style={dStyles.screen}>
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          <View style={dStyles.page}>
+            <Text style={dStyles.pageTitle}>PANEL DE ADMIN</Text>
+            <Text style={dStyles.subtitle}>Hola, {[nameLine1, nameLine2].filter(Boolean).join(' ')}</Text>
+
+            <View style={dStyles.grid}>
+              <AdminCardD icon="person-outline" label="Gestión de usuarios" onPress={() => navigation.navigate('GestionUsuarios')} />
+              <AdminCardD icon="megaphone-outline" label="Promociones" onPress={() => navigation.navigate('AdminPromociones')} />
+              <AdminCardD icon="stats-chart-outline" label="Vista de estadísticas" sub="Monitoreo de vendedores" onPress={() => navigation.navigate('DashboardAdministrador')} />
+            </View>
+
+            <Text style={dStyles.sectionTitle}>CONFIGURACIÓN</Text>
+            <View style={dStyles.grid}>
+              <AdminCardD icon="cash-outline" label="Plazos de pagos y descuentos" onPress={() => navigation.navigate('AdminPlazos')} />
+              <AdminCardD icon="pricetag-outline" label="Marcas" onPress={() => {}} />
+              <AdminCardD icon="image-outline" label="Banners" onPress={() => navigation.navigate('AdminBanners')} />
+            </View>
+          </View>
+        </ScrollView>
+      </View>
+    );
+  }
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 40 }} bounces={false}>
@@ -157,4 +198,19 @@ const styles = StyleSheet.create({
   menuTextSub: { fontSize: 15, fontFamily: 'BarlowCondensed-Regular', color: '#555' },
   separator: { height: 1, backgroundColor: '#F0F0F0' },
   proxText: { fontSize: 11, fontFamily: 'BarlowCondensed-Bold', color: '#139EDB', marginTop: 2, letterSpacing: 0.5 }
+});
+
+// --- Estilos exclusivos de desktop ---
+const dStyles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: '#fff' },
+  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  pageTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, color: '#2B2B2B', textTransform: 'uppercase' },
+  subtitle: { fontFamily: 'Rubik', fontSize: 15, color: '#8A8A8A', marginTop: 6, marginBottom: 30 },
+
+  sectionTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 18, color: '#8A8A8A', letterSpacing: 1, marginTop: 40, marginBottom: 16 },
+  grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 18 },
+  card: { width: 300, flexDirection: 'row', alignItems: 'center', gap: 14, backgroundColor: '#FFFFFF', borderRadius: 12, borderWidth: 1, borderColor: '#ECECEC', paddingVertical: 18, paddingHorizontal: 18 },
+  cardIconWrap: { width: 40, height: 40, borderRadius: 10, backgroundColor: '#EAF6FC', alignItems: 'center', justifyContent: 'center' },
+  cardLabel: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#2B2B2B' },
+  cardSub: { fontFamily: 'Rubik', fontSize: 12, color: '#139EDB', marginTop: 2 },
 });
