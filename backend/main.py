@@ -2721,7 +2721,7 @@ def get_pedido_detalle(pedido_id):
             [('id', '=', pedido_id)],
             ['name', 'state', 'partner_id', 'payment_term_id', 'currency_id',
              'carrier_id', 'partner_shipping_id', 'date_order',
-             'amount_total', 'amount_untaxed', 'order_line', 'note']
+             'amount_total', 'amount_untaxed', 'amount_tax', 'order_line', 'note']
         )
         if not orders:
             return jsonify({"error": "Pedido no encontrado"}), 404
@@ -2751,11 +2751,23 @@ def get_pedido_detalle(pedido_id):
         line_ids = o.get('order_line') or []
         items = []
         if line_ids:
-            lines = client.env['sale.order.line'].search_read(
-                [('id', 'in', line_ids)],
-                ['product_id', 'product_uom_qty', 'price_unit', 'price_subtotal',
-                 'discount', 'name', 'display_type']
-            )
+            line_fields = ['product_id', 'product_uom_qty', 'price_unit', 'price_subtotal',
+                            'price_total', 'discount', 'name', 'display_type']
+            # discount1/2/3 son los campos custom que usa la app para el desglose de
+            # descuentos por plazo/oferta (ver _upsert_order_logic); el campo estándar
+            # 'discount' de Odoo puede no reflejarlos si el pedido se cargó desde acá.
+            try:
+                lines = client.env['sale.order.line'].search_read(
+                    [('id', 'in', line_ids)],
+                    line_fields + ['discount1', 'discount2', 'discount3']
+                )
+                has_disc = True
+            except Exception:
+                lines = client.env['sale.order.line'].search_read(
+                    [('id', 'in', line_ids)], line_fields
+                )
+                has_disc = False
+
             by_id = {l['id']: l for l in lines}
             ordered = [by_id[lid] for lid in line_ids if lid in by_id]
             for l in ordered:
@@ -2764,13 +2776,28 @@ def get_pedido_detalle(pedido_id):
                 elif l.get('display_type') == 'line_note':
                     continue
                 else:
+                    d1 = float(l.get('discount1') or 0) if has_disc else 0.0
+                    d2 = float(l.get('discount2') or 0) if has_disc else 0.0
+                    d3 = float(l.get('discount3') or 0) if has_disc else 0.0
+                    # Si no hay descuentos custom cargados, caemos al campo estándar
+                    # de Odoo (ej. pedidos viejos armados directo en Odoo).
+                    if not has_disc or (d1 == 0 and d2 == 0 and d3 == 0):
+                        d1 = float(l.get('discount') or 0)
+                        d2 = 0.0
+                        d3 = 0.0
+                    price_subtotal = float(l.get('price_subtotal') or 0)
+                    price_total = float(l.get('price_total') or 0)
                     items.append({
                         "type": "line",
                         "name": l.get('name') or (l['product_id'][1] if l.get('product_id') else ''),
                         "qty": float(l.get('product_uom_qty') or 0),
                         "price_unit": float(l.get('price_unit') or 0),
-                        "discount": float(l.get('discount') or 0),
-                        "subtotal": float(l.get('price_subtotal') or 0),
+                        "discount1": round(d1, 2),
+                        "discount2": round(d2, 2),
+                        "discount3": round(d3, 2),
+                        "subtotal": round(price_subtotal, 2),
+                        "impuesto": round(price_total - price_subtotal, 2),
+                        "total": round(price_total, 2),
                     })
 
         return jsonify({
@@ -2785,6 +2812,7 @@ def get_pedido_detalle(pedido_id):
             "direccion_envio": shipping,
             "nota": o.get('note') or None,
             "base_imponible": round(float(o.get('amount_untaxed') or 0), 2),
+            "impuestos": round(float(o.get('amount_tax') or 0), 2),
             "total": round(float(o.get('amount_total') or 0), 2),
             "items": items,
         }), 200

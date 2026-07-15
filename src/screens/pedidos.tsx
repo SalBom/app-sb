@@ -42,7 +42,11 @@ type PedidoItem = {
 
 type PedidoDetalleLine =
   | { type: 'section'; name: string }
-  | { type: 'line'; name: string; qty: number; price_unit: number; discount: number; subtotal: number };
+  | {
+      type: 'line'; name: string; qty: number; price_unit: number;
+      discount1: number; discount2: number; discount3: number;
+      subtotal: number; impuesto: number; total: number;
+    };
 
 type PedidoDetalle = {
   pedido_id: number;
@@ -56,6 +60,7 @@ type PedidoDetalle = {
   direccion_envio: { name: string; street: string; city: string } | null;
   nota: string | null;
   base_imponible: number;
+  impuestos: number;
   total: number;
   items: PedidoDetalleLine[];
 };
@@ -559,23 +564,37 @@ const Pedidos: React.FC = () => {
               <View style={ds.detailDivider} />
 
               <View style={ds.itemsHeadRow}>
-                <Text style={[ds.itemsHeadText, { flex: 2 }]}>PRODUCTO</Text>
-                <Text style={[ds.itemsHeadText, { flex: 0.6, textAlign: 'center' }]}>CANT</Text>
-                <Text style={[ds.itemsHeadText, { flex: 1, textAlign: 'right' }]}>PRECIO</Text>
-                <Text style={[ds.itemsHeadText, { flex: 1, textAlign: 'right' }]}>SUBTOTAL</Text>
+                <Text style={[ds.itemsHeadText, { flex: 1.8 }]}>PRODUCTO</Text>
+                <Text style={[ds.itemsHeadText, { flex: 0.5, textAlign: 'center' }]}>CANT</Text>
+                <Text style={[ds.itemsHeadText, { flex: 0.9, textAlign: 'right' }]}>PRECIO</Text>
+                <Text style={[ds.itemsHeadText, { flex: 0.6, textAlign: 'center' }]}>DTO</Text>
+                <Text style={[ds.itemsHeadText, { flex: 0.9, textAlign: 'right' }]}>SUBTOTAL</Text>
               </View>
 
               {detailData.items.map((line, idx) => line.type === 'section' ? (
                 <Text key={idx} style={ds.sectionTitle}>{line.name}</Text>
               ) : (
                 <View key={idx} style={ds.itemRow}>
-                  <Text style={[ds.itemName, { flex: 2 }]} numberOfLines={2}>{line.name}</Text>
-                  <Text style={[ds.itemCell, { flex: 0.6, textAlign: 'center' }]}>x{line.qty}</Text>
-                  <Text style={[ds.itemCell, { flex: 1, textAlign: 'right' }]}>{detailData.moneda || ''} {formatCurrency(line.price_unit)}</Text>
-                  <Text style={[ds.itemCell, { flex: 1, textAlign: 'right', fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' }]}>{detailData.moneda || ''} {formatCurrency(line.subtotal)}</Text>
+                  <Text style={[ds.itemName, { flex: 1.8 }]} numberOfLines={2}>{line.name}</Text>
+                  <Text style={[ds.itemCell, { flex: 0.5, textAlign: 'center' }]}>x{line.qty}</Text>
+                  <Text style={[ds.itemCell, { flex: 0.9, textAlign: 'right' }]}>{detailData.moneda || ''} {formatCurrency(line.price_unit)}</Text>
+                  <Text style={[ds.itemCell, { flex: 0.6, textAlign: 'center', color: '#1C9BD8' }]}>
+                    {[line.discount1, line.discount2, line.discount3].filter(d => d > 0).join('+') || '-'}
+                    {[line.discount1, line.discount2, line.discount3].some(d => d > 0) ? '%' : ''}
+                  </Text>
+                  <Text style={[ds.itemCell, { flex: 0.9, textAlign: 'right', fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' }]}>{detailData.moneda || ''} {formatCurrency(line.subtotal)}</Text>
                 </View>
               ))}
 
+              <View style={ds.detailDivider} />
+              <View style={ds.taxRow}>
+                <Text style={ds.taxLabel}>Base imponible</Text>
+                <Text style={ds.taxValue}>{detailData.moneda || ''} {formatCurrency(detailData.base_imponible)}</Text>
+              </View>
+              <View style={ds.taxRow}>
+                <Text style={ds.taxLabel}>Impuestos</Text>
+                <Text style={ds.taxValue}>{detailData.moneda || ''} {formatCurrency(detailData.impuestos)}</Text>
+              </View>
               <View style={ds.detailDivider} />
               <View style={ds.totalRow}>
                 <Text style={ds.totalLabel}>TOTAL</Text>
@@ -853,6 +872,9 @@ const ds = StyleSheet.create({
   itemRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#F7F7F7' },
   itemName: { fontFamily: 'Rubik', fontSize: 13, color: '#2B2B2B', paddingRight: 8 },
   itemCell: { fontFamily: 'Rubik', fontSize: 13, color: '#555' },
+  taxRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 },
+  taxLabel: { fontFamily: 'Rubik', fontSize: 13, color: '#6B7280' },
+  taxValue: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#2B2B2B' },
   totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
   totalLabel: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#2B2B2B' },
   totalValue: { fontFamily: 'BarlowCondensed-Bold', fontSize: 24, color: '#1C9BD8' },
