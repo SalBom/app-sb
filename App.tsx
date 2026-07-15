@@ -3,6 +3,8 @@ import React, { useEffect } from 'react';
 import { NavigationContainer, createNavigationContainerRef } from '@react-navigation/native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import AppNavigator from './src/navigation/AppNavigator';
+import linking from './src/navigation/linking';
+import { RootStackParamList } from './src/types/navigation';
 import { useFonts } from 'expo-font';
 import * as SplashScreen from 'expo-splash-screen'; // <-- Nuevo import
 import axios from 'axios';
@@ -16,7 +18,7 @@ SplashScreen.preventAutoHideAsync();
 // Ref global de navegación: la usa el sidebar de escritorio (que vive AFUERA del
 // Stack.Navigator, como hermano, para no quedar atrapado en el stacking context
 // que arma react-navigation para las transiciones animadas de cada pantalla).
-export const navigationRef = createNavigationContainerRef();
+export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 export default function App() {
   const [fontsLoaded] = useFonts({
@@ -61,7 +63,7 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <NavigationContainer ref={navigationRef}>
+      <NavigationContainer<RootStackParamList> ref={navigationRef} linking={linking}>
         <AppNavigator />
       </NavigationContainer>
     </SafeAreaProvider>

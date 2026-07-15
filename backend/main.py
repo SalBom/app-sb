@@ -2706,6 +2706,95 @@ def get_pedido_detalle_edicion(pedido_id):
         log.error(f"❌ Error en /pedido/{pedido_id}/detalle-edicion: {e}")
         return jsonify({"error": str(e)}), 500
 
+
+@app.route('/pedido/<int:pedido_id>/detalle', methods=['GET'])
+def get_pedido_detalle(pedido_id):
+    """
+    Detalle de SOLO LECTURA de un pedido, sin importar su estado (a diferencia
+    de /detalle-edicion, que rechaza cualquier pedido que no esté en
+    presupuesto). Devuelve las líneas TAL COMO están en Odoo, incluyendo las
+    secciones (ej. "[LISTA DE PRECIOS] 30/60/90"), para mostrarlas en un modal
+    de "ver detalle" en el listado de pedidos.
+    """
+    def logic(client):
+        orders = client.env['sale.order'].search_read(
+            [('id', '=', pedido_id)],
+            ['name', 'state', 'partner_id', 'payment_term_id', 'currency_id',
+             'carrier_id', 'partner_shipping_id', 'date_order',
+             'amount_total', 'amount_untaxed', 'order_line', 'note']
+        )
+        if not orders:
+            return jsonify({"error": "Pedido no encontrado"}), 404
+
+        o = orders[0]
+
+        cliente = None
+        if o.get('partner_id'):
+            cliente = {"id": o['partner_id'][0], "name": o['partner_id'][1]}
+
+        shipping = None
+        if o.get('partner_shipping_id'):
+            try:
+                sp = client.env['res.partner'].search_read(
+                    [('id', '=', o['partner_shipping_id'][0])],
+                    ['name', 'street', 'city']
+                )
+                if sp:
+                    shipping = {
+                        "name": sp[0].get('name'),
+                        "street": sp[0].get('street') or '',
+                        "city": sp[0].get('city') or '',
+                    }
+            except Exception:
+                pass
+
+        line_ids = o.get('order_line') or []
+        items = []
+        if line_ids:
+            lines = client.env['sale.order.line'].search_read(
+                [('id', 'in', line_ids)],
+                ['product_id', 'product_uom_qty', 'price_unit', 'price_subtotal',
+                 'discount', 'name', 'display_type']
+            )
+            by_id = {l['id']: l for l in lines}
+            ordered = [by_id[lid] for lid in line_ids if lid in by_id]
+            for l in ordered:
+                if l.get('display_type') == 'line_section':
+                    items.append({"type": "section", "name": l.get('name') or ''})
+                elif l.get('display_type') == 'line_note':
+                    continue
+                else:
+                    items.append({
+                        "type": "line",
+                        "name": l.get('name') or (l['product_id'][1] if l.get('product_id') else ''),
+                        "qty": float(l.get('product_uom_qty') or 0),
+                        "price_unit": float(l.get('price_unit') or 0),
+                        "discount": float(l.get('discount') or 0),
+                        "subtotal": float(l.get('price_subtotal') or 0),
+                    })
+
+        return jsonify({
+            "pedido_id": pedido_id,
+            "numero_pedido": o.get('name'),
+            "estado": o.get('state'),
+            "fecha": o.get('date_order'),
+            "cliente": cliente,
+            "payment_term_name": o['payment_term_id'][1] if o.get('payment_term_id') else None,
+            "moneda": o['currency_id'][1] if o.get('currency_id') else None,
+            "carrier_name": o['carrier_id'][1] if o.get('carrier_id') else None,
+            "direccion_envio": shipping,
+            "nota": o.get('note') or None,
+            "base_imponible": round(float(o.get('amount_untaxed') or 0), 2),
+            "total": round(float(o.get('amount_total') or 0), 2),
+            "items": items,
+        }), 200
+
+    try:
+        return execute_odoo_operation(logic)
+    except Exception as e:
+        log.error(f"❌ Error en /pedido/{pedido_id}/detalle: {e}")
+        return jsonify({"error": str(e)}), 500
+
 # =================================================================
 # ENDPOINTS
 # =================================================================

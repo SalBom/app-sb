@@ -40,6 +40,26 @@ type PedidoItem = {
   moneda?: string | null;
 };
 
+type PedidoDetalleLine =
+  | { type: 'section'; name: string }
+  | { type: 'line'; name: string; qty: number; price_unit: number; discount: number; subtotal: number };
+
+type PedidoDetalle = {
+  pedido_id: number;
+  numero_pedido: string;
+  estado: string;
+  fecha: string;
+  cliente: { id: number; name: string } | null;
+  payment_term_name: string | null;
+  moneda: string | null;
+  carrier_name: string | null;
+  direccion_envio: { name: string; street: string; city: string } | null;
+  nota: string | null;
+  base_imponible: number;
+  total: number;
+  items: PedidoDetalleLine[];
+};
+
 const PAGE_SIZE = 20;
 
 // Opciones para los filtros
@@ -84,6 +104,12 @@ const Pedidos: React.FC = () => {
   // Filtro Fecha
   const [dateFilter, setDateFilter] = useState<Date | null>(null);
   const [showDatePicker, setShowDatePicker] = useState(false);
+
+  // Ver Detalle (solo lectura, cualquier estado)
+  const [detailVisible, setDetailVisible] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailData, setDetailData] = useState<PedidoDetalle | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -307,6 +333,29 @@ const Pedidos: React.FC = () => {
     }
   };
 
+  // ───────────────────────── Ver Detalle (cualquier estado) ─────────────────────────
+  const handleViewDetail = async (item: PedidoItem) => {
+    setDetailVisible(true);
+    setDetailLoading(true);
+    setDetailError(null);
+    setDetailData(null);
+    try {
+      const baseUrl = getBaseUrl();
+      const res = await fetch(`${baseUrl}/pedido/${item.pedido_id}/detalle`);
+      const json = await res.json();
+      if (!res.ok) {
+        setDetailError(json?.error || 'No se pudo cargar el detalle del pedido.');
+        return;
+      }
+      setDetailData(json as PedidoDetalle);
+    } catch (e) {
+      setDetailError('Error de conexión.');
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+  const closeDetail = () => { setDetailVisible(false); setDetailData(null); setDetailError(null); };
+
   const formatCurrency = (value: number) => value.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   // Muestra el total en la moneda en la que está cargado el pedido (ej. "USD 1.234,56").
   const formatMonto = (item: PedidoItem) => `${item.moneda ? item.moneda + ' ' : '$ '}${formatCurrency(item.total)}`;
@@ -384,8 +433,8 @@ const Pedidos: React.FC = () => {
                               </TouchableOpacity>
                           )}
 
-                          <TouchableOpacity style={s.iconButton}>
-                              <Feather name="info" size={20} color="#2B2B2B" />
+                          <TouchableOpacity style={s.iconButton} onPress={() => handleViewDetail(item)}>
+                              <Feather name="eye" size={20} color="#2B2B2B" />
                           </TouchableOpacity>
                       </View>
                   </View>
@@ -465,6 +514,80 @@ const Pedidos: React.FC = () => {
     </>
   );
 
+  // Modal de "ver detalle": funciona para pedidos en CUALQUIER estado (a diferencia
+  // de la edición, que solo permite presupuestos). Muestra las líneas tal como están
+  // en Odoo, incluidas las secciones (ej. "[LISTA DE PRECIOS] 30/60/90").
+  const detailModal = (
+    <Modal visible={detailVisible} animationType={isDesktopWeb ? 'fade' : 'slide'} transparent onRequestClose={closeDetail}>
+      <View style={isDesktopWeb ? ds.detailBackdropD : s.modalBackdrop}>
+        <View style={isDesktopWeb ? ds.detailCardD : s.detailCardMobile}>
+          <View style={ds.detailHeaderRow}>
+            <Text style={ds.detailHeaderTitle} numberOfLines={1}>
+              {detailData ? detailData.numero_pedido.replace('S', 'PEDIDO #') : 'Detalle del pedido'}
+            </Text>
+            <TouchableOpacity onPress={closeDetail} hitSlop={10}>
+              <Feather name="x" size={22} color="#2B2B2B" />
+            </TouchableOpacity>
+          </View>
+
+          {detailLoading ? (
+            <ActivityIndicator size="large" color="#0088CC" style={{ marginVertical: 50 }} />
+          ) : detailError ? (
+            <Text style={ds.detailErrorText}>{detailError}</Text>
+          ) : detailData ? (
+            <ScrollView style={ds.detailScroll} showsVerticalScrollIndicator={false}>
+              <View style={[s.badge, { backgroundColor: getEstadoInfo(detailData.estado).color, alignSelf: 'flex-start', marginBottom: 14 }]}>
+                <Text style={s.badgeText}>{getEstadoInfo(detailData.estado).label}</Text>
+              </View>
+
+              <View style={ds.detailRow}><Text style={ds.detailLabel}>Cliente:</Text><Text style={ds.detailValue}>{detailData.cliente?.name || '—'}</Text></View>
+              <View style={ds.detailRow}><Text style={ds.detailLabel}>Fecha:</Text><Text style={ds.detailValue}>{formatFecha(detailData.fecha)}</Text></View>
+              <View style={ds.detailRow}><Text style={ds.detailLabel}>Plazo de pago:</Text><Text style={ds.detailValue}>{detailData.payment_term_name || '—'}</Text></View>
+              {!!detailData.carrier_name && (
+                <View style={ds.detailRow}><Text style={ds.detailLabel}>Transporte:</Text><Text style={ds.detailValue}>{detailData.carrier_name}</Text></View>
+              )}
+              {!!detailData.direccion_envio && (
+                <View style={ds.detailRow}>
+                  <Text style={ds.detailLabel}>Envío a:</Text>
+                  <Text style={ds.detailValue}>{[detailData.direccion_envio.street, detailData.direccion_envio.city].filter(Boolean).join(', ') || detailData.direccion_envio.name}</Text>
+                </View>
+              )}
+              {!!detailData.nota && (
+                <View style={ds.detailRow}><Text style={ds.detailLabel}>Nota:</Text><Text style={ds.detailValue}>{detailData.nota}</Text></View>
+              )}
+
+              <View style={ds.detailDivider} />
+
+              <View style={ds.itemsHeadRow}>
+                <Text style={[ds.itemsHeadText, { flex: 2 }]}>PRODUCTO</Text>
+                <Text style={[ds.itemsHeadText, { flex: 0.6, textAlign: 'center' }]}>CANT</Text>
+                <Text style={[ds.itemsHeadText, { flex: 1, textAlign: 'right' }]}>PRECIO</Text>
+                <Text style={[ds.itemsHeadText, { flex: 1, textAlign: 'right' }]}>SUBTOTAL</Text>
+              </View>
+
+              {detailData.items.map((line, idx) => line.type === 'section' ? (
+                <Text key={idx} style={ds.sectionTitle}>{line.name}</Text>
+              ) : (
+                <View key={idx} style={ds.itemRow}>
+                  <Text style={[ds.itemName, { flex: 2 }]} numberOfLines={2}>{line.name}</Text>
+                  <Text style={[ds.itemCell, { flex: 0.6, textAlign: 'center' }]}>x{line.qty}</Text>
+                  <Text style={[ds.itemCell, { flex: 1, textAlign: 'right' }]}>{detailData.moneda || ''} {formatCurrency(line.price_unit)}</Text>
+                  <Text style={[ds.itemCell, { flex: 1, textAlign: 'right', fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' }]}>{detailData.moneda || ''} {formatCurrency(line.subtotal)}</Text>
+                </View>
+              ))}
+
+              <View style={ds.detailDivider} />
+              <View style={ds.totalRow}>
+                <Text style={ds.totalLabel}>TOTAL</Text>
+                <Text style={ds.totalValue}>{detailData.moneda || ''} {formatCurrency(detailData.total)}</Text>
+              </View>
+            </ScrollView>
+          ) : null}
+        </View>
+      </View>
+    </Modal>
+  );
+
   const renderRowD = (item: PedidoItem, idx: number) => {
     const estadoInfo = getEstadoInfo(item.estado);
     const rawInvStatus = item.estado_facturacion || item.invoice_status || 'no';
@@ -482,6 +605,7 @@ const Pedidos: React.FC = () => {
           <View style={[ds.badge, { backgroundColor: facturacionInfo.color }]}><Text style={ds.badgeText}>{facturacionInfo.label}</Text></View>
         </View>
         <View style={{ flex: 0.6, flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}>
+          <TouchableOpacity onPress={() => handleViewDetail(item)}><Feather name="eye" size={18} color="#2B2B2B" /></TouchableOpacity>
           <TouchableOpacity onPress={() => handleDownloadPdf(item.numero_pedido)}><Feather name="download" size={18} color="#2B2B2B" /></TouchableOpacity>
           {isPresupuesto && (
             <TouchableOpacity onPress={() => handleEditOrder(item)}><Feather name="edit-2" size={18} color="#1C9BD8" /></TouchableOpacity>
@@ -550,6 +674,7 @@ const Pedidos: React.FC = () => {
           </View>
         </ScrollView>
         {filterModals}
+        {detailModal}
       </View>
     );
   }
@@ -630,6 +755,7 @@ const Pedidos: React.FC = () => {
           />
       )}
       {error && <Text style={s.errorText}>{error}</Text>}
+      {detailModal}
     </View>
   );
 };
@@ -678,6 +804,9 @@ const s = StyleSheet.create({
   modalItemTextSelected: { color: '#1C9BD8' },
   modalClose: { alignSelf: 'center', marginVertical: 16, paddingHorizontal: 16, paddingVertical: 10 },
   modalCloseText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#1C9BD8' },
+
+  // Modal "ver detalle" (bottom sheet en mobile)
+  detailCardMobile: { backgroundColor: '#fff', maxHeight: '85%', borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingTop: 16, paddingHorizontal: 16, paddingBottom: 20 },
 });
 
 // --- Estilos exclusivos de desktop ---
@@ -705,6 +834,28 @@ const ds = StyleSheet.create({
 
   modalBackdropD: { justifyContent: 'center', alignItems: 'center' },
   modalCardD: { width: 420, maxWidth: '90%', maxHeight: '70%', borderTopLeftRadius: 16, borderTopRightRadius: 16, borderBottomLeftRadius: 16, borderBottomRightRadius: 16 },
+
+  // Modal "ver detalle" — funciona igual para mobile (bottom sheet, usa s.modalBackdrop
+  // + s.detailCardMobile) y desktop (diálogo centrado más ancho, por la tabla de ítems).
+  detailBackdropD: { flex: 1, backgroundColor: 'rgba(0,0,0,0.35)', alignItems: 'center', justifyContent: 'center' },
+  detailCardD: { backgroundColor: '#fff', width: 640, maxWidth: '92%', maxHeight: '85%', borderRadius: 16, padding: 24, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 24, shadowOffset: { width: 0, height: 12 } },
+  detailHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 },
+  detailHeaderTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 22, color: '#2B2B2B', flex: 1, marginRight: 12 },
+  detailErrorText: { textAlign: 'center', color: '#CC0000', marginVertical: 40, fontFamily: 'BarlowCondensed-SemiBold', fontSize: 15, paddingHorizontal: 16 },
+  detailScroll: { maxHeight: 520 },
+  detailRow: { flexDirection: 'row', marginBottom: 6 },
+  detailLabel: { width: 110, fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#6B7280' },
+  detailValue: { flex: 1, fontFamily: 'Rubik', fontSize: 13, color: '#2B2B2B' },
+  detailDivider: { height: 1, backgroundColor: '#EEEEEE', marginVertical: 14 },
+  itemsHeadRow: { flexDirection: 'row', paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: '#EEEEEE' },
+  itemsHeadText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 11, color: '#8A8A8A', letterSpacing: 0.5 },
+  sectionTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#1C9BD8', textTransform: 'uppercase', marginTop: 14, marginBottom: 6 },
+  itemRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#F7F7F7' },
+  itemName: { fontFamily: 'Rubik', fontSize: 13, color: '#2B2B2B', paddingRight: 8 },
+  itemCell: { fontFamily: 'Rubik', fontSize: 13, color: '#555' },
+  totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
+  totalLabel: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#2B2B2B' },
+  totalValue: { fontFamily: 'BarlowCondensed-Bold', fontSize: 24, color: '#1C9BD8' },
 });
 
 export default Pedidos;
