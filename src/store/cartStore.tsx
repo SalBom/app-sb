@@ -148,12 +148,18 @@ export const useCartStore = create<CartState>((set, get) => ({
         if (product.product_id === PRODUCTO_TRANSPORTE_ID) return { items: state.items };
         newItems = state.items.map((it) => it.product_id === product.product_id ? { ...it, product_uom_qty: it.product_uom_qty + 1 } : it);
       } else {
-        newItems = [...state.items, { ...product, product_uom_qty: product.product_uom_qty ?? 1, payment_term_id: product.payment_term_id ?? 1 }];
+        // Un producto nuevo debe heredar el plazo GENERAL ya elegido (si existe),
+        // en vez de un "Contado" hardcodeado. Si no lo hace, este ítem queda
+        // desincronizado del resto del carrito: la pantalla del carrito sigue
+        // montada al cambiar de pestaña (React Navigation no la desmonta), así
+        // que nada vuelve a unificarlo, y termina llegando a Odoo con un plazo
+        // distinto (Contado) al que el usuario efectivamente eligió.
+        const plazoActualId = product.payment_term_id ?? state.plazoSeleccionado?.id ?? 1;
+        newItems = [...state.items, { ...product, product_uom_qty: product.product_uom_qty ?? 1, payment_term_id: plazoActualId }];
       }
       syncCartToBackend(newItems);
       return { items: newItems };
     });
-    get().updateMaxPaymentTerm();
   },
 
   updateQuantity: (productId, quantity) => {
@@ -195,12 +201,15 @@ export const useCartStore = create<CartState>((set, get) => ({
   },
 
   removeFromCart: (productId) => {
+    // No recalculamos el plazo general acá: es una elección explícita del
+    // usuario (setGlobalPaymentTerm), no algo derivado de los ítems restantes.
+    // Recomputarlo por "máximo" al borrar un producto podía cambiarlo solo,
+    // sin que el usuario lo tocara.
     set((state) => {
       const newItems = state.items.filter((item) => item.product_id !== productId);
       syncCartToBackend(newItems);
       return { items: newItems };
     });
-    get().updateMaxPaymentTerm();
   },
 
   clearCart: () => {

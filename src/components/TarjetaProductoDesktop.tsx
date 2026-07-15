@@ -5,6 +5,7 @@ import { Feather } from '@expo/vector-icons';
 
 import IsseiIsologo from '../../assets/isseiIsologo.svg';
 import ShimuraIsologo from '../../assets/shimuraIsologo.svg';
+import StockSemaphore from './StockSemaphore';
 
 function needsAltMedia(u: string | null | undefined) {
   if (!u) return false;
@@ -31,6 +32,7 @@ export interface ProductoDesktop {
   brand?: string | [number, string] | null;
   image_thumb_url?: string | null;
   image_md_url?: string | null;
+  stock_state?: string;
 }
 
 interface Props {
@@ -101,7 +103,10 @@ const TarjetaProductoDesktop: React.FC<Props> = ({ producto, isFavorite, onPress
         )}
       </View>
 
-      <Text style={styles.sku} numberOfLines={1}>{producto.default_code || ''}</Text>
+      <View style={styles.skuRow}>
+        <Text style={styles.sku} numberOfLines={1}>{producto.default_code || ''}</Text>
+        <StockSemaphore status={producto.stock_state} size={10} style={{ marginLeft: 6 }} />
+      </View>
       <Text style={styles.name} numberOfLines={2}>{(producto.name || '').toUpperCase()}</Text>
       {hasOffer ? (
         <View style={styles.priceRow}>
@@ -136,7 +141,8 @@ const styles = StyleSheet.create({
   imgWrap: { width: '100%', height: 190, alignItems: 'center', justifyContent: 'center', marginTop: 10 },
   img: { width: '88%', height: '88%' },
   imgPlaceholder: { width: '100%', height: '100%', backgroundColor: '#F5F5F5', borderRadius: 8 },
-  sku: { fontFamily: 'BarlowCondensed-Regular', fontSize: 11, color: '#8A8A8A', marginTop: 10 },
+  skuRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
+  sku: { fontFamily: 'BarlowCondensed-Regular', fontSize: 11, color: '#8A8A8A' },
   name: { fontFamily: 'BarlowCondensed-Bold', fontSize: 14, lineHeight: 16, color: '#313131', marginTop: 2, minHeight: 32 },
   priceRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 6 },
   priceStriked: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#9CA3AF', textDecorationLine: 'line-through' },
