@@ -38,6 +38,19 @@ import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 const FS = FileSystem as any;
 
+// Normaliza texto para busqueda de clientes: saca acentos y colapsa
+// espacios raros/invisibles (NBSP, zero-width) que suelen colarse en
+// nombres pegados desde Excel/Word, para que la busqueda no falle en
+// clientes cuyo nombre visible es identico al buscado.
+function normalizeSearchText(s: string): string {
+  return s
+    .normalize('NFD').replace(/[̀-ͯ]/g, '') // saca acentos
+    .replace(/[   -‍  　﻿]/g, ' ') // NBSP/zero-width -> espacio normal
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 // --- ICONOS ---
 const IconExcel = () => (
   <Svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#2E7D32" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -196,8 +209,9 @@ const ListadoClientes = () => {
   const onRefresh = () => { setRefreshing(true); fetchClientes(true); };
 
   const filteredClientes = useMemo(() => {
+    const searchNorm = search ? normalizeSearchText(search) : '';
     return clientes.filter(c => {
-      const matchSearch = search ? (c.name.toLowerCase().includes(search.toLowerCase()) || (c.vat && c.vat.includes(search))) : true;
+      const matchSearch = search ? (normalizeSearchText(c.name).includes(searchNorm) || (c.vat && normalizeSearchText(c.vat).includes(searchNorm))) : true;
       const matchCity = selectedCity ? (c.city && c.city.toLowerCase() === selectedCity.toLowerCase()) : true;
       const matchState = selectedState ? (c.state && c.state.toLowerCase() === selectedState.toLowerCase()) : true;
       return matchSearch && matchCity && matchState;

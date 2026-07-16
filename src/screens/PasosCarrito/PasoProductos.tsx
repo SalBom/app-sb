@@ -32,6 +32,21 @@ import useIsDesktopWeb from '../../hooks/useIsDesktopWeb';
 const CLIENTES_TTL_MS = 5 * 60 * 1000;
 let clientesCache: { cuit: string; list: ClienteSel[]; ts: number } | null = null;
 
+// Normaliza texto para comparar en la búsqueda de clientes: saca acentos
+// (á→a, ñ→n vía NFD, aunque la Ñ se mantiene como letra propia del español así
+// que no rompe nada), colapsa espacios raros/invisibles (NBSP, zero-width) que
+// suelen colarse en nombres pegados desde Excel/Word, y pasa a minúsculas.
+// Sin esto, un cliente cuyo nombre en Odoo tenga uno de estos caracteres
+// "invisibles" no matchea aunque el texto visible sea idéntico al buscado.
+function normalizeSearchText(s: string): string {
+  return s
+    .normalize('NFD').replace(/[̀-ͯ]/g, '') // saca acentos (a con acento -> a, etc.)
+    .replace(/[   -‍  　﻿]/g, ' ') // NBSP/zero-width -> espacio normal
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 // --- HELPERS PARA CLIENTES ---
 async function safeFetch(url: string) {
   try {
@@ -94,8 +109,8 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
 
   const filteredClients = useMemo(() => {
     if (!clientSearch.trim()) return clientes;
-    const text = clientSearch.toLowerCase().trim();
-    return clientes.filter(c => (c.name && c.name.toLowerCase().includes(text)) || (c.vat && String(c.vat).includes(text)));
+    const text = normalizeSearchText(clientSearch);
+    return clientes.filter(c => (c.name && normalizeSearchText(c.name).includes(text)) || (c.vat && normalizeSearchText(String(c.vat)).includes(text)));
   }, [clientes, clientSearch]);
 
   const cargarClientes = useCallback(async (force = false) => {
