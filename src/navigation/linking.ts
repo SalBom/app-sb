@@ -12,6 +12,14 @@
 // `ProductoDetalle` está registrado en DOS navegadores distintos (uno raíz,
 // usado desde Home/Favoritos; otro anidado dentro de la pila de Productos), por
 // eso tienen rutas distintas acá para no generar ambigüedad al resolver URLs.
+//
+// ⚠️ IMPORTANTE: la RAÍZ ('') NO se mapea a ninguna pantalla a propósito.
+// El acceso vs. login se decide en AppNavigator con `initialRouteName`
+// (Login si no hay sesión, MainTabs si la hay). Si acá mapeáramos '' → Home,
+// esa coincidencia de URL le GANARÍA al initialRouteName y todo visitante
+// entraría directo al Home aunque no tenga sesión. Al dejar '' sin mapear,
+// visitar `/` no matchea nada y React Navigation cae en el initialRouteName
+// (el gating de sesión), manteniendo igual los deep links del resto de pantallas.
 import { LinkingOptions } from '@react-navigation/native';
 import { RootStackParamList } from '../types/navigation';
 
@@ -38,9 +46,11 @@ const linking: LinkingOptions<RootStackParamList> = {
       AdminBanners: 'admin/banners',
       AdminPlazos: 'admin/plazos',
       MainTabs: {
-        path: '',
+        // Sin `path` propio y con Home en '/home' (NO en la raíz ''): así la raíz
+        // '/' NO matchea nada y queda a cargo del initialRouteName (gating de
+        // sesión). Las tabs conservan su URL para que el botón "atrás" funcione.
         screens: {
-          Home: '',
+          Home: 'home',
           Carrito: 'carrito',
           MisVentas: 'ofertas',
           Perfil: 'perfil',

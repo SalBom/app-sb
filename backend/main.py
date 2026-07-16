@@ -3325,24 +3325,43 @@ def get_pedidos_vendedor():
     finally:
         release_odoo_client(client)
 
-@app.route("/clientes-del-vendedor", methods=["GET"])
-def clientes_del_vendedor():
+# El campo de transporte en res.partner nunca cambia en runtime, así que lo
+# detectamos UNA sola vez por proceso (antes se hacía un fields_get a Odoo en
+# CADA request de clientes, que es un round-trip de metadatos innecesario).
+_TRANSPORT_FIELD_SENTINEL = "__uninit__"
+_transport_field_cache = _TRANSPORT_FIELD_SENTINEL
+
+def _detect_transport_field(client):
+    global _transport_field_cache
+    if _transport_field_cache != _TRANSPORT_FIELD_SENTINEL:
+        return _transport_field_cache
+    posibles_campos = ["property_delivery_carrier_id", "carrier_id", "x_carrier_id", "x_transporte_id", "x_transporte"]
+    field = "property_delivery_carrier_id"
+    try:
+        res_fields = client.env["res.partner"].fields_get(posibles_campos, attributes=["type"])
+        for f in posibles_campos:
+            if f in res_fields:
+                field = f
+                break
+    except Exception:
+        pass
+    _transport_field_cache = field
+    return field
+
+
+def _fetch_clientes_vendedor(cuit, q):
+    """Consulta a Odoo el listado de clientes. Devuelve un dict serializable
+    (o None si falla, para no cachear una respuesta vacía por error)."""
     client = get_odoo_client()
     pg_conn = None
     try:
-        cuit = request.args.get("cuit")
-        q = (request.args.get("q") or "").strip().lower()
-        
-        if not cuit:
-            return jsonify({"error": "CUIT requerido"}), 400
-
         # 1. Identificar al usuario en Odoo
         partner = client.env["res.partner"].search([("vat", "=", cuit)], limit=1)
         if not partner:
-            return jsonify({"items": [], "is_admin": False}) 
-        
+            return {"items": [], "is_admin": False}
+
         user = client.env["res.users"].search([("partner_id", "=", partner[0].id)], limit=1)
-        
+
         # 2. Verificar Rol REAL en Postgres
         is_admin = False
         try:
@@ -3357,13 +3376,15 @@ def clientes_del_vendedor():
         except Exception as pg_e:
             log.error(f"⚠️ Error PG: {pg_e}")
         finally:
-            if pg_conn: pg_conn.close()
+            if pg_conn:
+                pg_conn.close()
+                pg_conn = None
 
         # 3. Definir Dominio de Búsqueda
         base_domain = [
-            ("customer_rank", ">", 0), 
-            ("active", "=", True), 
-            ("type", "=", "contact") 
+            ("customer_rank", ">", 0),
+            ("active", "=", True),
+            ("type", "=", "contact")
         ]
 
         if is_admin:
@@ -3375,18 +3396,8 @@ def clientes_del_vendedor():
         if q:
             domain += ["|", ("name", "ilike", q), ("vat", "ilike", q)]
 
-        # 🚀 4. BÚSQUEDA DINÁMICA DEL CAMPO DE TRANSPORTE
-        # Odoo puede tenerlo guardado con distintos nombres. Buscamos cuál existe en tu BD.
-        posibles_campos = ["property_delivery_carrier_id", "carrier_id", "x_carrier_id", "x_transporte_id", "x_transporte"]
-        transport_field = None
-        try:
-            res_fields = client.env["res.partner"].fields_get(posibles_campos, attributes=["type"])
-            for f in posibles_campos:
-                if f in res_fields:
-                    transport_field = f
-                    break
-        except Exception:
-            transport_field = "property_delivery_carrier_id"
+        # 4. Campo de transporte (detectado 1 sola vez, ver _detect_transport_field)
+        transport_field = _detect_transport_field(client)
 
         fields_to_read = ["id", "name", "vat", "street", "city", "state_id", "zip"]
         if transport_field:
@@ -3399,25 +3410,47 @@ def clientes_del_vendedor():
             order="name asc"
         )
 
-        # 🚀 5. INYECCIÓN DEL DATO LIMPIO PARA LA APP
+        # 5. Inyección del dato limpio de transporte para la app
         for c in clientes_raw:
             c["app_transport_data"] = None
             if transport_field and c.get(transport_field):
                 val = c[transport_field]
-                # Aseguramos que sea una tupla [ID, "Nombre"]
                 if isinstance(val, (list, tuple)) and len(val) >= 2:
                     c["app_transport_data"] = {"id": val[0], "name": val[1]}
 
-        return jsonify({
-            "items": clientes_raw,
-            "is_admin": is_admin
-        })
-
+        return {"items": clientes_raw, "is_admin": is_admin}
     except Exception as e:
-        log.error(f"❌ Error en clientes-del-vendedor: {e}")
-        return jsonify({"error": str(e), "items": []}), 500
+        log.error(f"❌ Error en _fetch_clientes_vendedor: {e}")
+        return None
     finally:
+        if pg_conn:
+            pg_conn.close()
         release_odoo_client(client)
+
+
+@app.route("/clientes-del-vendedor", methods=["GET"])
+def clientes_del_vendedor():
+    cuit = request.args.get("cuit")
+    q = (request.args.get("q") or "").strip().lower()
+
+    if not cuit:
+        return jsonify({"error": "CUIT requerido"}), 400
+
+    # Cacheamos SOLO la carga completa (sin búsqueda server-side), que es la que
+    # dispara el selector de clientes al abrir el carrito. Con Redis, la 2da
+    # carga en adelante (durante el TTL) no toca Odoo y es prácticamente instantánea.
+    if q:
+        payload = _fetch_clientes_vendedor(cuit, q)
+    else:
+        payload = get_cache_or_execute(
+            f"clientes_vendedor:{cuit}",
+            ttl=300,  # 5 min; si se asigna un cliente nuevo, aparece a más tardar en ese lapso
+            fallback_fn=lambda: _fetch_clientes_vendedor(cuit, "")
+        )
+
+    if payload is None:
+        return jsonify({"error": "No se pudieron obtener los clientes", "items": []}), 500
+    return jsonify(payload)
 
 # 2. ACTUALIZAR LISTADO PARA SOPORTAR 'atendidos', 'vendor_name' PARA CUITs VACÍOS Y FIX BOOLEAN
 @app.route("/clientes-por-estado", methods=["GET"])

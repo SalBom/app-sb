@@ -25,6 +25,13 @@ import { getCuitFromStorage } from '../../utils/authStorage';
 import { API_URL } from '../../config';
 import useIsDesktopWeb from '../../hooks/useIsDesktopWeb';
 
+// Cache en memoria (nivel módulo, persiste entre montajes de la pantalla) de la
+// lista de clientes por CUIT del vendedor. Evita re-consultar cada vez que se
+// entra al carrito. TTL corto para no mostrar datos demasiado viejos; el
+// pull-to-refresh lo saltea con force=true.
+const CLIENTES_TTL_MS = 5 * 60 * 1000;
+let clientesCache: { cuit: string; list: ClienteSel[]; ts: number } | null = null;
+
 // --- HELPERS PARA CLIENTES ---
 async function safeFetch(url: string) {
   try {
@@ -91,26 +98,45 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
     return clientes.filter(c => (c.name && c.name.toLowerCase().includes(text)) || (c.vat && String(c.vat).includes(text)));
   }, [clientes, clientSearch]);
 
-  const cargarClientes = useCallback(async () => {
+  const cargarClientes = useCallback(async (force = false) => {
     try {
-      setLoadingClientes(true);
       const cuit = await getCuitFromStorage();
       if (!cuit) return;
 
+      // 1) Cache hit: si ya tenemos la lista de este vendedor y sigue fresca,
+      //    la usamos al instante sin tocar la red (el backend igual cachea 5 min,
+      //    pero así ni siquiera hacemos el round-trip al entrar/salir del carrito).
+      const cached = clientesCache;
+      if (!force && cached && cached.cuit === cuit && (Date.now() - cached.ts) < CLIENTES_TTL_MS) {
+        setClientes(cached.list);
+        if (cached.list.length > 0 && !clienteSeleccionado) {
+          handleSelectCliente(cached.list[0]);
+        }
+        return;
+      }
+
+      setLoadingClientes(true);
+
+      // 2) Perfil y clientes son independientes → en paralelo (antes iban en secuencia).
+      const [resPerfil, resCli] = await Promise.all([
+        safeFetch(`${API_URL}/usuario-perfil?cuit=${encodeURIComponent(cuit)}`),
+        safeFetch(`${API_URL}/clientes-del-vendedor?cuit=${encodeURIComponent(cuit)}`),
+      ]);
+
       let selfAsCliente: ClienteSel | null = null;
-      const resPerfil = await safeFetch(`${API_URL}/usuario-perfil?cuit=${encodeURIComponent(cuit)}`);
       if (resPerfil.ok && resPerfil.data && resPerfil.data.partner_id) {
           selfAsCliente = { id: resPerfil.data.partner_id, name: `YO: ${resPerfil.data.name}`.toUpperCase(), vat: cuit, is_self: true };
       }
 
-      const resCli = await safeFetch(`${API_URL}/clientes-del-vendedor?cuit=${encodeURIComponent(cuit)}`);
       let normList = normalizeClientes(resCli.ok ? resCli.data.items : []);
       if (selfAsCliente) {
           const yaEsta = normList.some(c => c.id === selfAsCliente!.id);
           if (!yaEsta) normList = [selfAsCliente, ...normList];
       }
+
+      clientesCache = { cuit, list: normList, ts: Date.now() };
       setClientes(normList);
-      
+
       if (normList.length > 0 && !clienteSeleccionado) {
           handleSelectCliente(normList[0]);
       }
@@ -249,10 +275,10 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
   const onRefresh = useCallback(() => {
     setRefreshing(true);
     fetchRules();
-    checkStock(); 
-    cargarClientes();
+    checkStock();
+    cargarClientes(true); // force: el pull-to-refresh saltea la caché
     setTimeout(() => setRefreshing(false), 1000);
-  }, []);
+  }, [cargarClientes]);
   
   const pressAnim = useRef(new Animated.Value(0)).current; 
   const handlePressIn = () => Animated.spring(pressAnim, { toValue: 1, useNativeDriver: true, speed: 50, bounciness: 4 }).start();
