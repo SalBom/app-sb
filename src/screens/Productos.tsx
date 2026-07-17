@@ -28,8 +28,9 @@ import { Feather } from '@expo/vector-icons';
 
 import { useCartStore } from '../store/cartStore';
 import { useFavoritesStore } from '../store/useFavoritesStore';
-import authStorage from '../utils/authStorage'; 
+import authStorage from '../utils/authStorage';
 import type { ProductoBase } from '../store/cartStore';
+import DesktopMiniCart from '../components/DesktopMiniCart';
 import SearchBar from '../components/SearchBar';
 import type { RootStackParamList } from '../types/navigation';
 import { API_URL } from '../config'; 
@@ -248,7 +249,7 @@ const Productos = () => {
   const addToCart = useCartStore((s) => s.addToCart);
   const updateQuantity = useCartStore((s) => s.updateQuantity);
   const itemsInCart = useCartStore((s) => s.items);
-  
+
   const favorites = useFavoritesStore((state) => state.favorites);
   const addFavorite = useFavoritesStore((state) => state.addFavorite);
   const removeFavorite = useFavoritesStore((state) => state.removeFavorite);
@@ -796,6 +797,8 @@ const Productos = () => {
               </View>
             )}
           </View>
+
+          <DesktopMiniCart />
         </View>
       </ScrollView>
 

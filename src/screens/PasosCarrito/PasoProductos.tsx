@@ -19,11 +19,12 @@ import { useCartStore, ClienteSel } from '../../store/cartStore';
 import TarjetaProducto from '../../components/TarjetaProducto';
 import CarritoHeader from '../../components/CarritoHeader';
 import axios from 'axios';
-import { Ionicons } from '@expo/vector-icons'; 
+import { Ionicons, Feather } from '@expo/vector-icons';
 
 import { getCuitFromStorage } from '../../utils/authStorage';
 import { API_URL } from '../../config';
 import useIsDesktopWeb from '../../hooks/useIsDesktopWeb';
+import { navigationRef } from '../../../App';
 
 // Cache en memoria (nivel módulo, persiste entre montajes de la pantalla) de la
 // lista de clientes por CUIT del vendedor. Evita re-consultar cada vez que se
@@ -121,12 +122,11 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
       // 1) Cache hit: si ya tenemos la lista de este vendedor y sigue fresca,
       //    la usamos al instante sin tocar la red (el backend igual cachea 5 min,
       //    pero así ni siquiera hacemos el round-trip al entrar/salir del carrito).
+      // Nota: NO auto-seleccionamos ningún cliente — el desplegable debe quedar
+      // vacío ("Seleccionar Cliente") hasta que el usuario elija uno explícitamente.
       const cached = clientesCache;
       if (!force && cached && cached.cuit === cuit && (Date.now() - cached.ts) < CLIENTES_TTL_MS) {
         setClientes(cached.list);
-        if (cached.list.length > 0 && !clienteSeleccionado) {
-          handleSelectCliente(cached.list[0]);
-        }
         return;
       }
 
@@ -151,15 +151,11 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
 
       clientesCache = { cuit, list: normList, ts: Date.now() };
       setClientes(normList);
-
-      if (normList.length > 0 && !clienteSeleccionado) {
-          handleSelectCliente(normList[0]);
-      }
       setLoadingClientes(false);
     } catch (e) {
       setLoadingClientes(false);
     }
-  }, [clienteSeleccionado]);
+  }, []);
 
   useEffect(() => {
       fetchRules();
@@ -190,6 +186,14 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
         .catch(err => console.log('Error reglas:', err));
   };
 
+  // Navega al catálogo (tab "Productos") desde el carrito vacío. Usa el mismo
+  // navigationRef global que ya usa el sidebar de escritorio para llegar ahí
+  // sin importar desde qué punto de la navegación se dispare.
+  const goToCatalogo = () => {
+    if (!navigationRef.isReady()) return;
+    navigationRef.navigate('MainTabs' as never, { screen: 'Productos', params: { screen: 'ProductosList' } } as never);
+  };
+
   // Mismos IDs de plazo habilitados que usa la card de producto (TarjetaProducto).
   const PLAZOS_HABILITADOS = [1, 21, 22, 24, 31];
   const fetchPlazos = () => {
@@ -205,16 +209,11 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
         .catch(err => console.log('Error plazos:', err));
   };
 
-  // Al cargar la lista de plazos, normalizamos el pedido a un plazo GENERAL único:
-  // si ya había uno seleccionado y sigue habilitado lo respetamos, si no tomamos
-  // el primero. setGlobalPaymentTerm unifica el payment_term_id de todos los ítems.
-  useEffect(() => {
-    if (plazos.length === 0) return;
-    const actual = plazos.find(p => p.id === plazoSeleccionado?.id);
-    const elegido = actual || plazos[0];
-    setGlobalPaymentTerm({ id: elegido.id, nombre: elegido.nombre });
-  }, [plazos]);
-
+  // El plazo NO se auto-selecciona: el desplegable queda en "Seleccionar plazo"
+  // hasta que el usuario elija uno explícitamente. Si ya había uno elegido de
+  // antes en esta sesión (persiste en el store global), se sigue mostrando acá
+  // con solo resolver su nombre contra la lista cargada — no hace falta ningún
+  // efecto para eso, `plazoActualNombre` ya cae al placeholder si es null.
   const plazoActualNombre = plazos.find(p => p.id === plazoSeleccionado?.id)?.nombre;
 
   const checkStock = async () => {
@@ -274,8 +273,16 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
   }, 0);
 
   const handleContinue = () => {
+      if (items.length === 0) {
+          Alert.alert("Atención", "Agregá al menos un producto para continuar.", [{ text: "Entendido" }]);
+          return;
+      }
       if (!clienteSeleccionado) {
           Alert.alert("Atención", "Por favor seleccioná un cliente para el pedido.", [{ text: "Entendido" }]);
+          return;
+      }
+      if (!plazoSeleccionado) {
+          Alert.alert("Atención", "Por favor seleccioná un plazo de pago para el pedido.", [{ text: "Entendido" }]);
           return;
       }
 
@@ -369,6 +376,17 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
         renderItem={renderItem}
         keyExtractor={(item) => item.product_id.toString()}
         ListHeaderComponent={listHeader}
+        ListEmptyComponent={
+          <View style={styles.emptyCart}>
+            <Feather name="shopping-bag" size={40} color="#D9D9D9" />
+            <Text style={styles.emptyCartTitle}>Todavía no agregaste productos</Text>
+            <Text style={styles.emptyCartText}>Explorá el catálogo para empezar a armar tu pedido.</Text>
+            <Pressable style={styles.emptyCartBtn} onPress={goToCatalogo}>
+              <Text style={styles.emptyCartBtnText}>IR AL CATÁLOGO</Text>
+              <Feather name="arrow-right" size={16} color="#FFFFFF" />
+            </Pressable>
+          </View>
+        }
         contentContainerStyle={{ paddingBottom: 20 }}
         style={{ flex: 1 }}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={['#1C9BD8']} tintColor="#1C9BD8" />}
@@ -382,10 +400,15 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
           </Text>
         </View>
 
-        <TouchableWithoutFeedback onPressIn={handlePressIn} onPressOut={handlePressOut} onPress={handleContinue}>
+        <TouchableWithoutFeedback
+          onPressIn={handlePressIn}
+          onPressOut={handlePressOut}
+          onPress={handleContinue}
+          disabled={items.length === 0}
+        >
           <Animated.View style={[
-              styles.botonContinuar, 
-              { transform: [{ scale }, { translateY }], opacity: checkingStock ? 0.7 : 1 }
+              styles.botonContinuar,
+              { transform: [{ scale }, { translateY }], opacity: (checkingStock || items.length === 0) ? 0.5 : 1 }
           ]}>
             {checkingStock ? (
                 <ActivityIndicator color="#FFF" size="small" />
@@ -477,6 +500,14 @@ const styles = StyleSheet.create({
   subtotalAmount: { color: '#313131', fontSize: 28, fontFamily: 'BarlowCondensed-SemiBold', fontWeight: '600' },
   botonContinuar: { backgroundColor: '#1C9BD8', height: 48, borderRadius: 999, alignItems: 'center', justifyContent: 'center', shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 4, shadowOffset: { width: 0, height: 2 }, elevation: 3 },
   botonContinuarTexto: { color: '#fff', fontSize: 16, fontFamily: 'BarlowCondensed-Bold', fontWeight: '700', letterSpacing: 1 },
+
+  // Estado vacío del carrito (Paso 1): invita a ir al catálogo en vez de dejar
+  // un área en blanco sin ninguna indicación de cómo seguir.
+  emptyCart: { alignItems: 'center', paddingHorizontal: 30, paddingTop: 50, paddingBottom: 30, gap: 10 },
+  emptyCartTitle: { fontSize: 17, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B', textAlign: 'center' },
+  emptyCartText: { fontSize: 13, fontFamily: 'Rubik', color: '#8A8A8A', textAlign: 'center', lineHeight: 18, marginBottom: 10 },
+  emptyCartBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#1C9BD8', height: 46, paddingHorizontal: 24, borderRadius: 999 },
+  emptyCartBtnText: { color: '#fff', fontSize: 14, fontFamily: 'BarlowCondensed-Bold', letterSpacing: 0.5 },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'flex-end' },
   modalCard: { backgroundColor: '#fff', maxHeight: '70%', borderTopLeftRadius: 16, borderTopRightRadius: 16, paddingTop: 12 },
   // Desktop: diálogo centrado y compacto en vez de la hoja mobile que sube desde abajo.

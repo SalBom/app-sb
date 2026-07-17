@@ -126,9 +126,14 @@ export const useCartStore = create<CartState>((set, get) => ({
   consultaResumen: null,
   orderId: null,
 
+  // NO llama a updateMaxPaymentTerm: se usa para restaurar el carrito guardado
+  // (arranque de la app, post-login), y el plazo general es una elección
+  // explícita del usuario en el Paso 1 — no algo que se deba re-adivinar a
+  // partir de los ítems restaurados cada vez que se abre la app. Los flujos
+  // que sí conocen el plazo real de antemano (ej. editar un pedido existente
+  // en pedidos.tsx) llaman a setPlazo explícitamente después de setItems.
   setItems: (newItems: ProductoCarrito[]) => {
       set({ items: newItems });
-      get().updateMaxPaymentTerm();
   },
 
   updateMaxPaymentTerm: () => {

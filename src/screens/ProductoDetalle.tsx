@@ -27,6 +27,7 @@ import * as MediaLibrary from 'expo-media-library';
 
 // AUTH PARA VERIFICAR ROL
 import { getCuitFromStorage } from '../utils/authStorage';
+import DesktopMiniCart from '../components/DesktopMiniCart';
 
 // COMPONENTE SEMÁFORO
 import StockSemaphore from '../components/StockSemaphore';
@@ -556,6 +557,12 @@ function ProductoDetalle() {
     return (
       <View style={dstyles.screen}>
         <ScrollView style={{ flex: 1 }} contentContainerStyle={{ paddingBottom: 60 }} showsVerticalScrollIndicator={false}>
+          {/* El mini-carrito va como columna real (no flotante) para no tapar
+              nunca el panel de acciones, que hoy ocupa todo el ancho de la
+              página. El contenido de abajo queda IGUAL en proporciones y
+              estilos (fiel al Figma); solo dispone de un poco menos de ancho
+              total para hacerle lugar, tal como ya se hizo en el catálogo. */}
+          <View style={dstyles.pageRow}>
           <View style={dstyles.page}>
             <Text style={dstyles.breadcrumb} numberOfLines={1}>
               {[categTxt, producto.name, brandTxt, producto.default_code].filter(Boolean).join(' // ')}
@@ -709,6 +716,9 @@ function ProductoDetalle() {
                 )}
               </>
             )}
+          </View>
+
+          <DesktopMiniCart />
           </View>
         </ScrollView>
         {desktopModal}
@@ -1006,7 +1016,12 @@ const styles = StyleSheet.create({
 // --- Estilos exclusivos de desktop: calco del Figma "Productos - 5" ---
 const dstyles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: '#fff' },
-  page: { width: '100%', paddingHorizontal: 40, paddingTop: 30 },
+  // pageRow envuelve el contenido de siempre (page) + el mini-carrito como
+  // columna real, igual que en el catálogo. "page" pasa de width:100% a
+  // flex:1 para poder convivir con esa columna sin cambiar nada de lo que
+  // hay adentro (mismas proporciones/estilos, solo un poco menos de ancho).
+  pageRow: { flexDirection: 'row', alignItems: 'flex-start', width: '100%' },
+  page: { flex: 1, minWidth: 0, paddingHorizontal: 40, paddingTop: 30 },
   breadcrumb: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#636363', marginBottom: 10, textTransform: 'uppercase' },
 
   topRow: { flexDirection: 'row', alignItems: 'stretch' },
