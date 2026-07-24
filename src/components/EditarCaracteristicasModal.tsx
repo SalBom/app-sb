@@ -5,7 +5,7 @@
 // aprobar (recién ahí se publican en el detalle del producto).
 import React, { useEffect, useState } from 'react';
 import {
-  View, Text, StyleSheet, Pressable, Modal, ScrollView, TextInput, ActivityIndicator, Alert,
+  View, Text, StyleSheet, Pressable, Modal, ScrollView, TextInput, ActivityIndicator,
 } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import axios from 'axios';
@@ -31,12 +31,14 @@ const EditarCaracteristicasModal = ({
   const [generating, setGenerating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [esBorradorIA, setEsBorradorIA] = useState(false);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     if (!visible || !producto) return;
     let active = true;
     (async () => {
       setLoading(true);
+      setError('');
       try {
         const cuit = await getCuitFromStorage();
         const res = await axios.get(`${API_URL}/admin/product-specs/${producto.id}`, { params: { cuit } });
@@ -60,6 +62,7 @@ const EditarCaracteristicasModal = ({
 
   const generarIA = async () => {
     if (!producto) return;
+    setError('');
     setGenerating(true);
     try {
       const cuit = await getCuitFromStorage();
@@ -70,7 +73,7 @@ const EditarCaracteristicasModal = ({
       setDescripcion(res.data?.description || '');
       setEsBorradorIA(true);
     } catch (e: any) {
-      Alert.alert('Completar con IA', e?.response?.data?.error || 'No se pudo generar con IA.');
+      setError(e?.response?.data?.error || 'No se pudo generar con IA. Revisá que exista la ficha del producto.');
     } finally {
       setGenerating(false);
     }
@@ -78,6 +81,7 @@ const EditarCaracteristicasModal = ({
 
   const guardar = async () => {
     if (!producto) return;
+    setError('');
     setSaving(true);
     try {
       const cuit = await getCuitFromStorage();
@@ -90,7 +94,7 @@ const EditarCaracteristicasModal = ({
       onSaved?.();
       onClose();
     } catch (e: any) {
-      Alert.alert('Error', e?.response?.data?.error || 'No se pudo guardar.');
+      setError(e?.response?.data?.error || 'No se pudo guardar.');
     } finally {
       setSaving(false);
     }
@@ -111,6 +115,12 @@ const EditarCaracteristicasModal = ({
             <View style={{ padding: 40, alignItems: 'center' }}><ActivityIndicator color="#1C9BD8" /></View>
           ) : (
             <ScrollView style={s.body} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              {!!error && (
+                <View style={s.errBanner}>
+                  <Feather name="alert-triangle" size={14} color="#B91C1C" />
+                  <Text style={s.errText}>{error}</Text>
+                </View>
+              )}
               {esBorradorIA && (
                 <View style={s.iaBanner}>
                   <Feather name="cpu" size={14} color="#B45309" />
@@ -181,6 +191,8 @@ const s = StyleSheet.create({
   headerTitle: { flex: 1, fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#2B2B2B' },
 
   body: { paddingHorizontal: 16, paddingVertical: 14 },
+  errBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FEE2E2', borderWidth: 1, borderColor: '#FCA5A5', borderRadius: 10, padding: 10, marginBottom: 12 },
+  errText: { flex: 1, fontFamily: 'Rubik', fontSize: 12, color: '#B91C1C', lineHeight: 16 },
   iaBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FEF3C7', borderWidth: 1, borderColor: '#FDE68A', borderRadius: 10, padding: 10, marginBottom: 12 },
   iaBannerText: { flex: 1, fontFamily: 'Rubik', fontSize: 12, color: '#92400E', lineHeight: 16 },
   iaBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#7C3AED', height: 44, borderRadius: 10, marginBottom: 16 },

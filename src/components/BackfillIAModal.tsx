@@ -3,7 +3,7 @@
 // técnica y completa sus atributos + descripción como BORRADOR. Solo ADMIN.
 // El proceso corre en el backend; acá se dispara y se muestra el progreso.
 import React, { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, Modal, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, Pressable, Modal, ActivityIndicator, Alert, Platform } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import axios from 'axios';
 import { API_URL } from '../config';
@@ -28,6 +28,7 @@ const BackfillIAModal = ({ visible, onClose }: { visible: boolean; onClose: () =
   const [st, setSt] = useState<St>({});
   const [starting, setStarting] = useState(false);
   const [polling, setPolling] = useState(false);
+  const [error, setError] = useState('');
   const timer = useRef<any>(null);
 
   const stopTimer = () => {
@@ -59,30 +60,36 @@ const BackfillIAModal = ({ visible, onClose }: { visible: boolean; onClose: () =
     return () => stopTimer();
   }, [visible]);
 
-  const iniciar = () => {
-    Alert.alert(
-      'Generar fichas con IA (lote)',
-      'La IA va a leer las fichas técnicas de todos los productos que aún no tengan características cargadas, y va a completar sus atributos y descripción como BORRADOR (los revisás y aprobás después, producto por producto). Esto consume crédito de IA. ¿Continuar?',
-      [
-        { text: 'Cancelar', style: 'cancel' },
-        {
-          text: 'Sí, generar',
-          onPress: async () => {
-            setStarting(true);
-            try {
-              const cuit = await getCuitFromStorage();
-              await axios.post(`${API_URL}/admin/product-specs/backfill`, { cuit, solo_faltantes: true });
-              await fetchStatus();
-              startPolling();
-            } catch (e: any) {
-              Alert.alert('Error', e?.response?.data?.error || 'No se pudo iniciar el proceso.');
-            } finally {
-              setStarting(false);
-            }
-          },
-        },
-      ]
-    );
+  // Confirmación que funciona TAMBIÉN en web (react-native-web no muestra
+  // Alert.alert con botones, así que en web usamos window.confirm).
+  const confirmarInicio = (): Promise<boolean> => {
+    const msg = 'La IA va a leer las fichas técnicas de todos los productos que aún no tengan características cargadas, y va a completar sus atributos y descripción como BORRADOR (los revisás y aprobás después, producto por producto). Esto consume crédito de IA. ¿Continuar?';
+    if (Platform.OS === 'web') {
+      return Promise.resolve(typeof window !== 'undefined' ? window.confirm(msg) : true);
+    }
+    return new Promise((resolve) => {
+      Alert.alert('Generar fichas con IA (lote)', msg, [
+        { text: 'Cancelar', style: 'cancel', onPress: () => resolve(false) },
+        { text: 'Sí, generar', onPress: () => resolve(true) },
+      ]);
+    });
+  };
+
+  const iniciar = async () => {
+    const ok = await confirmarInicio();
+    if (!ok) return;
+    setError('');
+    setStarting(true);
+    try {
+      const cuit = await getCuitFromStorage();
+      await axios.post(`${API_URL}/admin/product-specs/backfill`, { cuit, solo_faltantes: true });
+      await fetchStatus();
+      startPolling();
+    } catch (e: any) {
+      setError(e?.response?.data?.error || 'No se pudo iniciar el proceso.');
+    } finally {
+      setStarting(false);
+    }
   };
 
   const total = st.total || 0;
@@ -108,6 +115,13 @@ const BackfillIAModal = ({ visible, onClose }: { visible: boolean; onClose: () =
               Los resultados quedan como <Text style={{ fontWeight: '700' }}>borrador</Text>: se publican
               recién cuando los aprobás desde cada producto.
             </Text>
+
+            {!!error && (
+              <View style={s.errBanner}>
+                <Feather name="alert-triangle" size={14} color="#B91C1C" />
+                <Text style={s.errText}>{error}</Text>
+              </View>
+            )}
 
             {mostrarProgreso ? (
               <>
@@ -169,6 +183,8 @@ const s = StyleSheet.create({
 
   body: { paddingHorizontal: 16, paddingVertical: 16 },
   desc: { fontFamily: 'Rubik', fontSize: 13, color: '#4B5563', lineHeight: 19, marginBottom: 16 },
+  errBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FEE2E2', borderWidth: 1, borderColor: '#FCA5A5', borderRadius: 10, padding: 10, marginBottom: 14 },
+  errText: { flex: 1, fontFamily: 'Rubik', fontSize: 12, color: '#B91C1C', lineHeight: 16 },
 
   startBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: '#7C3AED', height: 46, borderRadius: 10 },
   startText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#FFFFFF', letterSpacing: 0.3 },

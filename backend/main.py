@@ -1751,51 +1751,58 @@ def producto_relacionados(producto_id: int):
             limit = 10
         limit = max(1, min(limit, 50))
 
-        tmpl = client.env["product.template"].browse(producto_id)
-        if not tmpl or not tmpl.exists():
-            return jsonify({"items": []}), 200
-
-        # Buscamos campos de productos relacionados en Odoo
-        candidates = [
-            getattr(tmpl, "optional_product_ids", None),
-            getattr(tmpl, "alternative_product_ids", None)
-        ]
-        related = next((c for c in candidates if c and not callable(c)), [])
-
         def get_fb_url(sku):
             if not sku: return None
             return f"https://firebasestorage.googleapis.com/v0/b/{FIREBASE_BUCKET}/o/products%2F{quote(sku.strip())}%2F{quote(sku.strip())}.webp?alt=media"
 
-        # 🚀 Preparar diccionarios para inyectar ofertas dinámicas
-        related_dicts = []
-        for t in list(related)[:limit]:
-            try:
-                related_dicts.append({
-                    'id': int(t.id),
-                    'list_price': float(t.list_price or 0.0),
-                    'categ_id': [t.categ_id.id, t.categ_id.name] if t.categ_id else None,
-                    'record': t
-                })
-            except: pass
-            
-        # 🚀 Mapeo dinámico usando la misma lógica
+        # Odoo 17+: usamos search_read en lugar de browse()+acceso a campos.
+        # El acceso lazy a campos de un registro browse dispara internamente
+        # 'fields_get_keys', un método que Odoo 17 eliminó — eso era lo que
+        # rompía este endpoint (los "productos relacionados").
+        base = client.env["product.template"].search_read(
+            [('id', '=', producto_id)],
+            ['optional_product_ids', 'alternative_product_ids']
+        )
+        if not base:
+            return jsonify({"items": []}), 200
+
+        rel_ids, vistos = [], set()
+        for i in (list(base[0].get('optional_product_ids') or []) + list(base[0].get('alternative_product_ids') or [])):
+            if i not in vistos:
+                vistos.add(i)
+                rel_ids.append(i)
+        rel_ids = rel_ids[:limit]
+        if not rel_ids:
+            return jsonify({"items": []}), 200
+
+        rows = client.env["product.template"].search_read(
+            [('id', 'in', rel_ids)],
+            ['id', 'name', 'list_price', 'default_code', 'categ_id', 'write_date']
+        )
+        by_id = {int(r['id']): r for r in rows}
+        rows = [by_id[i] for i in rel_ids if i in by_id]  # respetar orden
+
+        related_dicts = [{
+            'id': int(r['id']),
+            'list_price': float(r.get('list_price') or 0.0),
+            'categ_id': r.get('categ_id') or None,
+        } for r in rows]
+
         offer_map = _inject_realtime_offers(client, related_dicts)
 
         items = []
-        for d in related_dicts:
-            t = d['record']
-            sku = (t.default_code or "").strip()
-            
+        for r in rows:
+            sku = (r.get('default_code') or "").strip()
             items.append({
-                "id": d['id'],
-                "name": t.name or "",
-                "list_price": d['list_price'],
-                "price_offer": offer_map.get(d['id'], None), # Inyección perfecta
+                "id": int(r['id']),
+                "name": r.get('name') or "",
+                "list_price": float(r.get('list_price') or 0.0),
+                "price_offer": offer_map.get(int(r['id']), None),
                 "default_code": sku,
-                "categ_id": d['categ_id'],
+                "categ_id": r.get('categ_id') or None,
                 "image_md_url": get_fb_url(sku),
                 "image_thumb_url": get_fb_url(sku),
-                "write_date": str(t.write_date or "")
+                "write_date": str(r.get('write_date') or "")
             })
 
         return jsonify({"items": items})
