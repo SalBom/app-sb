@@ -31,6 +31,8 @@ import DesktopMiniCart from '../components/DesktopMiniCart';
 
 // COMPONENTE SEMÁFORO
 import StockSemaphore from '../components/StockSemaphore';
+import useIsGuest from '../hooks/useIsGuest';
+import { contactarPorWhatsApp } from '../utils/whatsapp';
 
 // SVGs existentes
 import AgregarCarritoSvg from '../../assets/agregarCarrito.svg';
@@ -105,6 +107,7 @@ function ProductoDetalle() {
   const route = useRoute();
   const navigation = useNavigation<any>();
   const isDesktopWeb = useIsDesktopWeb();
+  const isGuest = useIsGuest();
   // @ts-ignore
   const { id, preload } = route.params || {};
   const numericId = typeof id === 'string' ? Number(id) : id;
@@ -233,6 +236,10 @@ function ProductoDetalle() {
   }, [producto?.price_offer, producto?.list_price]);
 
   const esOferta = useMemo(() => !!(producto?.price_offer && producto.price_offer > 0), [producto?.price_offer]);
+
+  // El invitado no ve precios de oferta ni stock: siempre precio de lista.
+  const mostrarOferta = esOferta && !isGuest;
+  const precioMostrado = isGuest ? (producto?.list_price || 0) : precioBase;
 
   // 5. GALERÍA DINÁMICA
   useEffect(() => {
@@ -616,47 +623,63 @@ function ProductoDetalle() {
                 </View>
                 <Text style={dstyles.reviewsText}>+500 Reseñas</Text>
 
-                {esOferta && <Text style={dstyles.oldPriceD}>${formatMoney(producto?.list_price)}</Text>}
+                {mostrarOferta && <Text style={dstyles.oldPriceD}>${formatMoney(producto?.list_price)}</Text>}
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={[dstyles.priceD, esOferta && { color: '#D32F2F' }]}>${formatMoney(precioBase)}</Text>
-                  {esOferta && <View style={styles.offerBadge}><Text style={styles.offerBadgeText}>OFERTA</Text></View>}
+                  <Text style={[dstyles.priceD, mostrarOferta && { color: '#D32F2F' }]}>${formatMoney(precioMostrado)}</Text>
+                  {mostrarOferta && <View style={styles.offerBadge}><Text style={styles.offerBadgeText}>OFERTA</Text></View>}
                 </View>
-                <TouchableOpacity onPress={() => setModalType('precios')}>
-                  <Text style={dstyles.paymentsLinkD}>Ver precios según plazo</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={dstyles.btnAgregarD}
-                  onPress={() => { handleAddToCartFlow(); triggerFlyToCart(mainImgUri); }}
-                  activeOpacity={0.85}
-                >
-                  <Text style={dstyles.btnAgregarTextD}>Agregar al carrito</Text>
-                  <Feather name="shopping-cart" size={18} color="#FFFFFF" />
-                </TouchableOpacity>
-
-                <View style={dstyles.qtyRowD}>
-                  <Text style={dstyles.qtyLabelD}>Cantidad</Text>
-                  <View style={dstyles.qtyBoxD}>
-                    <TouchableOpacity onPress={() => setCantidad(c => Math.max(1, c - 1))} style={dstyles.qtyBtnWrapD}>
-                      <Feather name="chevron-left" size={16} color="#8A8A8A" />
-                    </TouchableOpacity>
-                    <View style={dstyles.qtyValBadgeD}><Text style={dstyles.qtyValD}>{cantidad}</Text></View>
-                    <TouchableOpacity onPress={() => setCantidad(c => c + 1)} style={dstyles.qtyBtnWrapD}>
-                      <Feather name="chevron-right" size={16} color="#8A8A8A" />
-                    </TouchableOpacity>
-                  </View>
-                </View>
-
-                <View style={dstyles.compareRowD}>
-                  <TouchableOpacity style={dstyles.compareBtnD}>
-                    <Text style={dstyles.compareTextD}>Comparar</Text>
-                    <Feather name="repeat" size={15} color="#1C9BD8" />
+                {!isGuest && (
+                  <TouchableOpacity onPress={() => setModalType('precios')}>
+                    <Text style={dstyles.paymentsLinkD}>Ver precios según plazo</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity style={dstyles.compareBtnD} onPress={() => handleToggleFav(producto)}>
-                    <Text style={dstyles.compareTextD}>Guardar</Text>
-                    <Feather name="heart" size={15} color="#1C9BD8" style={isMainFav ? { opacity: 1 } : { opacity: 0.5 }} />
+                )}
+
+                {isGuest ? (
+                  // Invitado: sin carrito ni favoritos; contacto por WhatsApp.
+                  <TouchableOpacity
+                    style={[dstyles.btnAgregarD, dstyles.btnWhatsappD]}
+                    onPress={() => contactarPorWhatsApp(producto)}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={dstyles.btnAgregarTextD}>Consultar por WhatsApp</Text>
+                    <Feather name="message-circle" size={18} color="#FFFFFF" />
                   </TouchableOpacity>
-                </View>
+                ) : (
+                  <>
+                    <TouchableOpacity
+                      style={dstyles.btnAgregarD}
+                      onPress={() => { handleAddToCartFlow(); triggerFlyToCart(mainImgUri); }}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={dstyles.btnAgregarTextD}>Agregar al carrito</Text>
+                      <Feather name="shopping-cart" size={18} color="#FFFFFF" />
+                    </TouchableOpacity>
+
+                    <View style={dstyles.qtyRowD}>
+                      <Text style={dstyles.qtyLabelD}>Cantidad</Text>
+                      <View style={dstyles.qtyBoxD}>
+                        <TouchableOpacity onPress={() => setCantidad(c => Math.max(1, c - 1))} style={dstyles.qtyBtnWrapD}>
+                          <Feather name="chevron-left" size={16} color="#8A8A8A" />
+                        </TouchableOpacity>
+                        <View style={dstyles.qtyValBadgeD}><Text style={dstyles.qtyValD}>{cantidad}</Text></View>
+                        <TouchableOpacity onPress={() => setCantidad(c => c + 1)} style={dstyles.qtyBtnWrapD}>
+                          <Feather name="chevron-right" size={16} color="#8A8A8A" />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+
+                    <View style={dstyles.compareRowD}>
+                      <TouchableOpacity style={dstyles.compareBtnD}>
+                        <Text style={dstyles.compareTextD}>Comparar</Text>
+                        <Feather name="repeat" size={15} color="#1C9BD8" />
+                      </TouchableOpacity>
+                      <TouchableOpacity style={dstyles.compareBtnD} onPress={() => handleToggleFav(producto)}>
+                        <Text style={dstyles.compareTextD}>Guardar</Text>
+                        <Feather name="heart" size={15} color="#1C9BD8" style={isMainFav ? { opacity: 1 } : { opacity: 0.5 }} />
+                      </TouchableOpacity>
+                    </View>
+                  </>
+                )}
 
                 <View style={dstyles.dividerD} />
                 <View style={dstyles.downloadHeaderRowD}>
@@ -774,23 +797,25 @@ function ProductoDetalle() {
           keyExtractor={(item, index) => index.toString()}
         />
         
-        {/* BOTÓN FAVORITO FLOTANTE */}
-        <TouchableOpacity 
-            style={styles.favBtnFloating} 
+        {/* BOTÓN FAVORITO FLOTANTE (oculto para invitados) */}
+        {!isGuest && (
+        <TouchableOpacity
+            style={styles.favBtnFloating}
             onPress={() => handleToggleFav(producto)}
             activeOpacity={0.8}
         >
             <Svg width={24} height={24} viewBox="0 0 24 24" fill="none">
                 <Path
                     d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"
-                    fill={isMainFav ? "#1C9BD8" : "none"} 
-                    stroke="#1C9BD8" 
+                    fill={isMainFav ? "#1C9BD8" : "none"}
+                    stroke="#1C9BD8"
                     strokeWidth="2.2"
                     strokeLinecap="round"
                     strokeLinejoin="round"
                 />
             </Svg>
         </TouchableOpacity>
+        )}
 
         {validGallery.length > 1 && (
           <View style={styles.pagers}>
@@ -800,39 +825,51 @@ function ProductoDetalle() {
       </View>
 
       <View style={styles.priceBlock}>
-        {esOferta && <Text style={styles.oldPrice}>${formatMoney(producto?.list_price)}</Text>}
+        {mostrarOferta && <Text style={styles.oldPrice}>${formatMoney(producto?.list_price)}</Text>}
         <View style={styles.rowAlign}>
-            <Text style={[styles.price, esOferta && { color: '#D32F2F' }]}>${formatMoney(precioBase)}</Text>
-            {esOferta && <View style={styles.offerBadge}><Text style={styles.offerBadgeText}>OFERTA</Text></View>}
+            <Text style={[styles.price, mostrarOferta && { color: '#D32F2F' }]}>${formatMoney(precioMostrado)}</Text>
+            {mostrarOferta && <View style={styles.offerBadge}><Text style={styles.offerBadgeText}>OFERTA</Text></View>}
         </View>
-        <TouchableOpacity onPress={() => setModalType('precios')}>
-            <Text style={styles.paymentsLink}>Ver precios según plazo</Text>
-        </TouchableOpacity>
+        {!isGuest && (
+          <TouchableOpacity onPress={() => setModalType('precios')}>
+              <Text style={styles.paymentsLink}>Ver precios según plazo</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
-      <View style={{ marginTop: 10 }}>
-        <View style={{ width: '100%', height: 56 }}>
-          <ContenedorQtySvg width="100%" height="100%" />
-          <View style={styles.qtyOverlay}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-              <Text style={styles.qtyLabel}>Cantidad: <Text style={styles.qtyNum}>{cantidad}</Text></Text>
-              <View style={{ marginLeft: 16, flexDirection: 'row', alignItems: 'center' }}>
-                <StockSemaphore status={producto?.stock_state} size={12} />
-                <Text style={styles.stockText}>{producto?.stock_state === 'red' ? 'Stock Crítico' : producto?.stock_state === 'orange' ? 'Stock Medio' : 'Disponible'}</Text>
+      {isGuest ? (
+        // Invitado: sin cantidad/stock/carrito; consulta directa por WhatsApp.
+        <TouchableOpacity onPress={() => contactarPorWhatsApp(producto)} style={styles.waBtnMobile} activeOpacity={0.9}>
+          <Feather name="message-circle" size={20} color="#FFFFFF" />
+          <Text style={styles.waBtnMobileText}>CONSULTAR POR WHATSAPP</Text>
+        </TouchableOpacity>
+      ) : (
+        <>
+          <View style={{ marginTop: 10 }}>
+            <View style={{ width: '100%', height: 56 }}>
+              <ContenedorQtySvg width="100%" height="100%" />
+              <View style={styles.qtyOverlay}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
+                  <Text style={styles.qtyLabel}>Cantidad: <Text style={styles.qtyNum}>{cantidad}</Text></Text>
+                  <View style={{ marginLeft: 16, flexDirection: 'row', alignItems: 'center' }}>
+                    <StockSemaphore status={producto?.stock_state} size={12} />
+                    <Text style={styles.stockText}>{producto?.stock_state === 'red' ? 'Stock Crítico' : producto?.stock_state === 'orange' ? 'Stock Medio' : 'Disponible'}</Text>
+                  </View>
+                </View>
+                <View style={styles.qtyControls}>
+                  <TouchableOpacity onPress={() => setCantidad(c => Math.max(1, c - 1))}><MenosSvg width={36} height={36} /></TouchableOpacity>
+                  <TouchableOpacity onPress={() => setCantidad(c => c + 1)} style={{ marginLeft: 10 }}><MasSvg width={36} height={36} /></TouchableOpacity>
+                </View>
               </View>
             </View>
-            <View style={styles.qtyControls}>
-              <TouchableOpacity onPress={() => setCantidad(c => Math.max(1, c - 1))}><MenosSvg width={36} height={36} /></TouchableOpacity>
-              <TouchableOpacity onPress={() => setCantidad(c => c + 1)} style={{ marginLeft: 10 }}><MasSvg width={36} height={36} /></TouchableOpacity>
-            </View>
+            {isAdmin && <Text style={styles.stockHint}>STOCK FÍSICO: {producto?.stock_qty != null ? Math.floor(producto.stock_qty) : '--'} u.</Text>}
           </View>
-        </View>
-        {isAdmin && <Text style={styles.stockHint}>STOCK FÍSICO: {producto?.stock_qty != null ? Math.floor(producto.stock_qty) : '--'} u.</Text>}
-      </View>
 
-      <Animated.View style={{ transform: [{ scale: scaleAnimAgregar }] }}>
-        <TouchableOpacity onPress={() => { animatePress(scaleAnimAgregar); handleAddToCartFlow(); }} style={{ marginTop: 12 }} activeOpacity={0.9}><AgregarCarritoSvg width="100%" height={46} /></TouchableOpacity>
-      </Animated.View>
+          <Animated.View style={{ transform: [{ scale: scaleAnimAgregar }] }}>
+            <TouchableOpacity onPress={() => { animatePress(scaleAnimAgregar); handleAddToCartFlow(); }} style={{ marginTop: 12 }} activeOpacity={0.9}><AgregarCarritoSvg width="100%" height={46} /></TouchableOpacity>
+          </Animated.View>
+        </>
+      )}
 
       <View style={styles.tabsRow}>
         <PillButton label="CARACTERÍSTICAS" active={tab === 'carac'} onPress={() => setTab('carac')} />
@@ -1010,7 +1047,9 @@ const styles = StyleSheet.create({
   btnModal: { flex: 0.48, height: 46, borderRadius: 8, justifyContent: 'center', alignItems: 'center' },
   btnVolverModal: { backgroundColor: '#8FA2AF' },
   btnDownloadModal: { backgroundColor: '#139EDB' },
-  btnModalText: { color: '#FFF', fontFamily: 'BarlowCondensed-Bold', fontSize: 14 }
+  btnModalText: { color: '#FFF', fontFamily: 'BarlowCondensed-Bold', fontSize: 14 },
+  waBtnMobile: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, height: 50, borderRadius: 10, backgroundColor: '#25D366', marginTop: 16 },
+  waBtnMobileText: { color: '#FFF', fontFamily: 'BarlowCondensed-Bold', fontSize: 17, letterSpacing: 0.5 }
 });
 
 // --- Estilos exclusivos de desktop: calco del Figma "Productos - 5" ---
@@ -1061,6 +1100,7 @@ const dstyles = StyleSheet.create({
   qtyValD: { fontFamily: 'Rubik', fontWeight: '700', fontSize: 15, color: '#FFFFFF' },
 
   btnAgregarD: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', height: 50, borderRadius: 10, backgroundColor: '#1C9BD8', paddingHorizontal: 20, marginBottom: 16 },
+  btnWhatsappD: { backgroundColor: '#25D366', marginTop: 12 },
   btnAgregarTextD: { fontFamily: 'BarlowCondensed-Bold', fontSize: 19, color: '#FFFFFF' },
 
   compareRowD: { flexDirection: 'row', gap: 10 },

@@ -32,6 +32,8 @@ import authStorage from '../utils/authStorage';
 import type { ProductoBase } from '../store/cartStore';
 import DesktopMiniCart from '../components/DesktopMiniCart';
 import SearchBar from '../components/SearchBar';
+import { useTourTarget } from '../hooks/useTourTarget';
+import useIsGuest from '../hooks/useIsGuest';
 import type { RootStackParamList } from '../types/navigation';
 import { API_URL } from '../config'; 
 
@@ -174,6 +176,7 @@ const Productos = () => {
   const navigation = useNavigation<NavigationProp>();
   const insets = useSafeAreaInsets();
   const isDesktopWeb = useIsDesktopWeb();
+  const isGuest = useIsGuest();
 
   // --- ANIMACIÓN "PRODUCTO VOLANDO AL CARRITO" (solo desktop) ---
   const flyAnim = useRef(new Animated.Value(0)).current;
@@ -249,6 +252,7 @@ const Productos = () => {
   const addToCart = useCartStore((s) => s.addToCart);
   const updateQuantity = useCartStore((s) => s.updateQuantity);
   const itemsInCart = useCartStore((s) => s.items);
+  const firstProductTourRef = useTourTarget('agregar-producto');
 
   const favorites = useFavoritesStore((state) => state.favorites);
   const addFavorite = useFavoritesStore((state) => state.addFavorite);
@@ -582,12 +586,21 @@ const Productos = () => {
 
   const renderItem = useCallback(({ item }: { item: Producto }) => {
     const { isFav, handlePressDetalle, handlePressAgregar, handleToggleFav } = buildItemHandlers(item);
+    const isFirst = item.id === productosProcesados[0]?.id;
     if (viewMode === 'kanban') {
       const cardWidth = (SCREEN_W - (HEADER_PAD * 2) - 12) / 2;
-      return <TarjetaProductoKanban producto={item} isFavorite={isFav} onPressDetalle={handlePressDetalle} onPressAgregar={handlePressAgregar} onToggleFavorito={handleToggleFav} width={cardWidth} />;
+      return (
+        <View ref={isFirst ? firstProductTourRef : undefined}>
+          <TarjetaProductoKanban producto={item} isFavorite={isFav} onPressDetalle={handlePressDetalle} onPressAgregar={handlePressAgregar} onToggleFavorito={handleToggleFav} width={cardWidth} />
+        </View>
+      );
     }
-    return <TarjetaProductoListado producto={item} isFavorite={isFav} onPressDetalle={handlePressDetalle} onPressAgregar={handlePressAgregar} onToggleFavorito={handleToggleFav} />;
-  }, [buildItemHandlers, viewMode]);
+    return (
+      <View ref={isFirst ? firstProductTourRef : undefined}>
+        <TarjetaProductoListado producto={item} isFavorite={isFav} onPressDetalle={handlePressDetalle} onPressAgregar={handlePressAgregar} onToggleFavorito={handleToggleFav} />
+      </View>
+    );
+  }, [buildItemHandlers, viewMode, productosProcesados, firstProductTourRef]);
 
   const handleScrollCarousel = (event: any) => {
     const scrollPosition = event.nativeEvent.contentOffset.x;
@@ -621,16 +634,17 @@ const Productos = () => {
         <View style={styles.pillsRow}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingRight: 20 }}>
             <FilterPill label={getSortLabel()} IconStart={IconSort} IconEnd={IconChevronDown} onPress={() => setSortModalVisible(true)} active={sortOption !== 'default'} />
-            <FilterPill label="SOLO STOCK" IconStart={IconStock} onPress={() => setOnlyStock(!onlyStock)} active={onlyStock} />
+            {/* El invitado no ve stock ni ofertas, así que esos filtros no aplican. */}
+            {!isGuest && <FilterPill label="SOLO STOCK" IconStart={IconStock} onPress={() => setOnlyStock(!onlyStock)} active={onlyStock} />}
             <FilterPill label="CATEGORÍA" IconStart={IconFunnel} IconEnd={IconChevronDown} onPress={() => { setParentCat(null); setPickerModal('categoria'); }} active={!!categoriaSeleccionada} />
             <FilterPill label="MARCAS" IconStart={IconPuzzle} IconEnd={IconChevronDown} onPress={() => setPickerModal('marca')} active={!!marcaSeleccionada} />
-            {soloOfertas && <FilterPill label="OFERTAS 🔥" active={true} onPress={() => setSoloOfertas(false)} />}
+            {!isGuest && soloOfertas && <FilterPill label="OFERTAS 🔥" active={true} onPress={() => setSoloOfertas(false)} />}
             <FilterPill label="LIMPIAR" onPress={limpiarFiltros} active={false} />
           </ScrollView>
         </View>
         <Text style={styles.countText}>{loading || isResetting ? 'Cargando...' : `${productosProcesados.length} producto(s) encontrado(s)`}</Text>
       </View>
-  ), [banners, bannerIndex, sortOption, onlyStock, categoriaSeleccionada, marcaSeleccionada, soloOfertas, loading, isResetting, productosProcesados.length]);
+  ), [banners, bannerIndex, sortOption, onlyStock, categoriaSeleccionada, marcaSeleccionada, soloOfertas, loading, isResetting, productosProcesados.length, isGuest]);
 
   const bottomPad = 64 + insets.bottom + 32 + 12;
   const showSkeleton = (loading && pagina === 0 && !refreshing) || isResetting;
@@ -780,10 +794,10 @@ const Productos = () => {
               <EmptyState title="No se encontraron productos" message="Intenta ajustar los filtros o buscar con otro término." icon="search" />
             ) : (
               <View style={dsty.grid}>
-                {productosProcesados.map((item) => {
+                {productosProcesados.map((item, index) => {
                   const { isFav, handlePressDetalle, handlePressAgregar, handleToggleFav } = buildItemHandlers(item);
                   return (
-                    <View key={item.id} style={dsty.gridCell}>
+                    <View key={item.id} ref={index === 0 ? firstProductTourRef : undefined} style={dsty.gridCell}>
                       <TarjetaProductoDesktop
                         producto={item}
                         isFavorite={isFav}

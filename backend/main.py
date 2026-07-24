@@ -1218,8 +1218,9 @@ def delete_admin_promocion(promo_id):
 
 @app.route('/producto/<int:product_id>/info', methods=['GET'])
 def get_product_attributes(product_id):
-    # Cache key v14 para invalidar versiones viejas
-    key = f"prod_info_v14:{product_id}"
+    # Cache key v15: sube de versión porque ahora el detalle prioriza las specs
+    # de la base externa (product_specs) sobre los atributos de Odoo.
+    key = f"prod_info_v15:{product_id}"
 
     def query():
         # Usamos el wrapper seguro para evitar "Request-sent" loops
@@ -1260,9 +1261,24 @@ def get_product_attributes(product_id):
                 'stock_state': st_data.get('state', 'green'),
                 'stock_qty': st_data.get('quantity', 0)
             }
-        
+
         # Ejecutar de forma segura con reintentos
-        return execute_odoo_operation(_op)
+        res = execute_odoo_operation(_op)
+
+        # --- BASE EXTERNA DE ATRIBUTOS (product_specs) ---
+        # Si el producto tiene specs cargadas y APROBADAS en la base externa,
+        # esas reemplazan a las de Odoo (características + descripción). Las specs
+        # en estado 'borrador' (recién generadas por IA, sin revisar) NO se
+        # muestran acá: recién aparecen cuando el admin las aprueba.
+        specs = _get_product_specs(product_id)
+        if specs and specs.get('status') == 'aprobado':
+            attrs = specs.get('attributes') or []
+            if attrs:
+                res['attributes'] = attrs
+            if specs.get('description'):
+                res['description'] = specs['description']
+
+        return res
 
     return jsonify(get_cache_or_execute(key, ttl=120, fallback_fn=query))
 
@@ -5222,6 +5238,301 @@ def admin_sync_now():
         return jsonify({"ok": True, "synced_products": p, "synced_partners": c})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+# ===============================================================
+# BASE EXTERNA DE ATRIBUTOS / DESCRIPCIONES (product_specs) + IA
+# ---------------------------------------------------------------
+# Los atributos y la descripción de cada producto se manejan en esta tabla
+# de Postgres (fuera de Odoo), para no ensuciar los pedidos/facturas de Odoo
+# con las propiedades. Solo un ADMIN puede editarlas. La IA puede leer la
+# ficha técnica del producto y proponer atributos + descripción como BORRADOR;
+# el admin revisa y aprueba antes de que salgan publicadas.
+# ===============================================================
+
+def init_product_specs_table():
+    if not DATABASE_URL: return
+    conn = get_pg_connection()
+    if not conn: return
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS product_specs (
+                product_id  BIGINT PRIMARY KEY,
+                sku         TEXT,
+                attributes  JSONB       NOT NULL DEFAULT '[]'::jsonb,
+                description TEXT        NOT NULL DEFAULT '',
+                source      TEXT        NOT NULL DEFAULT 'manual',   -- 'manual' | 'ia'
+                status      TEXT        NOT NULL DEFAULT 'aprobado',  -- 'aprobado' | 'borrador'
+                updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
+        conn.commit()
+        cur.close()
+        log.info("✅ Tabla 'product_specs' lista.")
+    except Exception as e:
+        if conn: conn.rollback()
+        log.error(f"⚠️ Init product_specs Error: {e}")
+    finally:
+        if conn: conn.close()
+
+init_product_specs_table()
+
+
+def _cuit_is_admin(cuit) -> bool:
+    """True solo si el CUIT tiene rol ADMIN en app_users."""
+    if not cuit or not DATABASE_URL:
+        return False
+    conn = get_pg_connection()
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT role FROM app_users WHERE cuit = %s", (str(cuit).strip(),))
+        row = cur.fetchone()
+        cur.close()
+        return bool(row and row[0] and str(row[0]).upper() == 'ADMIN')
+    except Exception as e:
+        log.error(f"Error verificando rol admin: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def _get_product_specs(product_id):
+    """Devuelve la fila de product_specs (dict) o None."""
+    if not DATABASE_URL:
+        return None
+    conn = get_pg_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT product_id, sku, attributes, description, source, status "
+            "FROM product_specs WHERE product_id = %s",
+            (product_id,)
+        )
+        row = cur.fetchone()
+        cur.close()
+        return dict(row) if row else None
+    except Exception as e:
+        log.error(f"Error leyendo product_specs: {e}")
+        return None
+    finally:
+        if conn:
+            conn.close()
+
+
+def _sanear_atributos(attributes):
+    """Deja solo pares {k, v} no vacíos, como strings."""
+    out = []
+    for a in (attributes or []):
+        try:
+            k = str(a.get("k", "")).strip()
+            v = str(a.get("v", "")).strip()
+        except Exception:
+            continue
+        if k and v:
+            out.append({"k": k, "v": v})
+    return out
+
+
+def _invalidate_product_info_cache(product_id):
+    if redis_client:
+        try:
+            redis_client.delete(f"prod_info_v15:{product_id}")
+        except Exception:
+            pass
+
+
+def _upsert_product_specs(product_id, sku, attributes, description, source='manual', status='aprobado'):
+    if not DATABASE_URL:
+        return False
+    conn = get_pg_connection()
+    if not conn:
+        return False
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO product_specs (product_id, sku, attributes, description, source, status, updated_at)
+            VALUES (%s, %s, %s::jsonb, %s, %s, %s, now())
+            ON CONFLICT (product_id) DO UPDATE SET
+                sku         = EXCLUDED.sku,
+                attributes  = EXCLUDED.attributes,
+                description = EXCLUDED.description,
+                source      = EXCLUDED.source,
+                status      = EXCLUDED.status,
+                updated_at  = now();
+        """, (product_id, (sku or ""), json.dumps(_sanear_atributos(attributes)),
+              (description or ""), source, status))
+        conn.commit()
+        cur.close()
+        _invalidate_product_info_cache(product_id)
+        return True
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        log.error(f"⚠️ upsert product_specs: {e}")
+        return False
+    finally:
+        if conn:
+            conn.close()
+
+
+def _parse_json_laxo(text):
+    """Parseo tolerante del JSON que devuelve la IA (por si viene con ``` o texto extra)."""
+    text = (text or "").strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text[:4].lower() == "json":
+            text = text[4:]
+    try:
+        return json.loads(text)
+    except Exception:
+        i, j = text.find("{"), text.rfind("}")
+        if i != -1 and j != -1 and j > i:
+            try:
+                return json.loads(text[i:j + 1])
+            except Exception:
+                pass
+    return {}
+
+
+def _descargar_ficha(sku):
+    """Baja la ficha técnica (.webp) del producto desde Firebase. Devuelve (bytes, media_type, url)."""
+    url = fb_url(f"fichas_tecnicas/{sku}.webp")
+    try:
+        r = requests.get(url, timeout=25)
+    except Exception as e:
+        log.error(f"Error bajando ficha {sku}: {e}")
+        return None, None, url
+    if r.status_code != 200 or not r.content:
+        return None, None, url
+    ct = (r.headers.get("Content-Type", "") or "").split(";")[0].strip().lower()
+    media_type = ct if ct.startswith("image/") else "image/webp"
+    return r.content, media_type, url
+
+
+def _extraer_specs_ia(image_bytes, media_type, nombre_producto=""):
+    """Manda la ficha a Claude y devuelve {attributes:[{k,v}], description}."""
+    import anthropic  # import perezoso: no rompe el arranque si aún no está instalada
+    client = anthropic.Anthropic()  # lee ANTHROPIC_API_KEY del entorno
+    img_b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+    instruccion = (
+        "Sos un asistente que lee fichas técnicas de máquinas y herramientas del rubro "
+        "ferretero y extrae sus especificaciones.\n\n"
+        f"Producto: {nombre_producto or '(sin nombre)'}\n\n"
+        "Analizá la imagen de la ficha técnica y devolvé EXCLUSIVAMENTE un JSON válido "
+        "(sin texto antes ni después, sin comillas triples), con esta forma exacta:\n"
+        '{"atributos": [{"k": "Nombre de la propiedad", "v": "Valor con unidad"}], "descripcion": "..."}\n\n'
+        "Reglas:\n"
+        "- 'atributos': una entrada por cada especificación técnica que figure en la ficha "
+        "(k = nombre de la propiedad en español, v = valor con su unidad). "
+        'Ejemplo: {"k": "Potencia", "v": "550 W"}.\n'
+        "- Incluí SOLO datos reales que aparezcan en la ficha; no inventes ni completes con supuestos.\n"
+        "- 'descripcion': una descripción comercial breve (2 a 4 oraciones) en español, redactada a "
+        "partir de esas especificaciones, sin inventar datos.\n"
+        "- Si la imagen no es una ficha técnica legible, devolvé "
+        '{"atributos": [], "descripcion": ""}.'
+    )
+    resp = client.messages.create(
+        model="claude-opus-4-8",
+        max_tokens=2000,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": img_b64}},
+                {"type": "text", "text": instruccion},
+            ],
+        }],
+    )
+    text = ""
+    for b in resp.content:
+        if getattr(b, "type", None) == "text":
+            text += b.text
+    data = _parse_json_laxo(text)
+    return {
+        "attributes": _sanear_atributos(data.get("atributos")),
+        "description": str(data.get("descripcion", "") or "").strip(),
+    }
+
+
+# --- ENDPOINTS ADMIN (todos gateados por rol ADMIN) ---
+
+@app.route('/admin/product-specs/<int:product_id>', methods=['GET'])
+def admin_get_product_specs(product_id):
+    if not _cuit_is_admin(request.args.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    specs = _get_product_specs(product_id)
+    if specs:
+        return jsonify({
+            "exists": True,
+            "attributes": specs.get('attributes') or [],
+            "description": specs.get('description') or "",
+            "source": specs.get('source'),
+            "status": specs.get('status'),
+            "sku": specs.get('sku'),
+        })
+    return jsonify({"exists": False, "attributes": [], "description": ""})
+
+
+@app.route('/admin/product-specs/<int:product_id>', methods=['PUT', 'POST'])
+def admin_save_product_specs(product_id):
+    data = request.get_json(silent=True) or {}
+    if not _cuit_is_admin(data.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    ok = _upsert_product_specs(
+        product_id,
+        (data.get('sku') or "").strip(),
+        data.get('attributes') or [],
+        (data.get('description') or "").strip(),
+        source=data.get('source') or 'manual',
+        status='aprobado',   # guardar = aprobar (lo hace el admin)
+    )
+    if not ok:
+        return jsonify({"error": "No se pudo guardar"}), 500
+    return jsonify({"ok": True})
+
+
+@app.route('/admin/product-specs/<int:product_id>/generar-ia', methods=['POST'])
+def admin_generar_specs_ia(product_id):
+    data = request.get_json(silent=True) or {}
+    if not _cuit_is_admin(data.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        return jsonify({"error": "El servidor no tiene configurada la API key de IA (ANTHROPIC_API_KEY)."}), 500
+
+    sku = (data.get('sku') or "").strip()
+    if not sku:
+        return jsonify({"error": "Falta el código (SKU) del producto."}), 400
+
+    contenido, media_type, url = _descargar_ficha(sku)
+    if not contenido:
+        return jsonify({
+            "error": f"No se encontró la ficha técnica del producto {sku}. "
+                     f"Cargá los atributos a mano o verificá que la ficha exista en Firebase.",
+            "ficha_url": url,
+        }), 404
+
+    try:
+        result = _extraer_specs_ia(contenido, media_type, data.get('name', ''))
+    except Exception as e:
+        log.error(f"❌ IA specs {sku}:\n{traceback.format_exc()}")
+        return jsonify({"error": f"La IA no pudo procesar la ficha: {e}"}), 500
+
+    # Se guarda como BORRADOR (source='ia'): NO se publica hasta que el admin
+    # revise y apruebe desde la pantalla. La devolvemos para pre-cargar el editor.
+    _upsert_product_specs(product_id, sku, result['attributes'], result['description'],
+                          source='ia', status='borrador')
+
+    return jsonify({
+        "ok": True,
+        "attributes": result['attributes'],
+        "description": result['description'],
+        "status": "borrador",
+    })
+
+
 # ─────────────────────────── Run ──────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

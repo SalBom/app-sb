@@ -6,6 +6,8 @@ import { Feather } from '@expo/vector-icons';
 import IsseiIsologo from '../../assets/isseiIsologo.svg';
 import ShimuraIsologo from '../../assets/shimuraIsologo.svg';
 import StockSemaphore from './StockSemaphore';
+import useIsGuest from '../hooks/useIsGuest';
+import { contactarPorWhatsApp } from '../utils/whatsapp';
 
 function needsAltMedia(u: string | null | undefined) {
   if (!u) return false;
@@ -51,6 +53,7 @@ const fmt = (n: number) =>
 // imagen centrada, sku + nombre + precio abajo. Mobile usa TarjetaProductoListado,
 // esta card es exclusiva de la versión desktop.
 const TarjetaProductoDesktop: React.FC<Props> = ({ producto, isFavorite, onPressDetalle, onPressAgregar, onToggleFavorito }) => {
+  const isGuest = useIsGuest();
   const imageSource = useMemo(() => {
     const md = withAltMedia(producto.image_md_url);
     if (md) return { uri: md };
@@ -72,7 +75,8 @@ const TarjetaProductoDesktop: React.FC<Props> = ({ producto, isFavorite, onPress
   const brandName = getBrandString();
   const isIssei = /issei/i.test(brandName);
   const isShimura = /shimura/i.test(brandName);
-  const hasOffer = producto.price_offer !== undefined && producto.price_offer !== null && producto.price_offer < producto.list_price;
+  // El invitado no ve precios de oferta: siempre precio de lista.
+  const hasOffer = !isGuest && producto.price_offer !== undefined && producto.price_offer !== null && producto.price_offer < producto.list_price;
   const finalPrice = hasOffer ? (producto.price_offer as number) : producto.list_price;
 
   return (
@@ -84,12 +88,21 @@ const TarjetaProductoDesktop: React.FC<Props> = ({ producto, isFavorite, onPress
       )}
 
       <View style={styles.actionsCol}>
-        <TouchableOpacity style={styles.iconCircle} onPress={onToggleFavorito} hitSlop={6}>
-          <Feather name="heart" size={16} color="#1C9BD8" style={isFavorite ? { opacity: 1 } : { opacity: 0.5 }} />
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.iconCircle} onPress={(e) => onPressAgregar(1, e)} hitSlop={6}>
-          <Feather name="shopping-cart" size={15} color="#1C9BD8" />
-        </TouchableOpacity>
+        {isGuest ? (
+          // Invitado: en vez de favorito/carrito, contacto directo por WhatsApp.
+          <TouchableOpacity style={styles.iconCircle} onPress={() => contactarPorWhatsApp(producto)} hitSlop={6}>
+            <Feather name="message-circle" size={16} color="#25D366" />
+          </TouchableOpacity>
+        ) : (
+          <>
+            <TouchableOpacity style={styles.iconCircle} onPress={onToggleFavorito} hitSlop={6}>
+              <Feather name="heart" size={16} color="#1C9BD8" style={isFavorite ? { opacity: 1 } : { opacity: 0.5 }} />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.iconCircle} onPress={(e) => onPressAgregar(1, e)} hitSlop={6}>
+              <Feather name="shopping-cart" size={15} color="#1C9BD8" />
+            </TouchableOpacity>
+          </>
+        )}
         <TouchableOpacity style={styles.iconCircle} onPress={onPressDetalle} hitSlop={6}>
           <Feather name="eye" size={16} color="#1C9BD8" />
         </TouchableOpacity>
@@ -105,7 +118,7 @@ const TarjetaProductoDesktop: React.FC<Props> = ({ producto, isFavorite, onPress
 
       <View style={styles.skuRow}>
         <Text style={styles.sku} numberOfLines={1}>{producto.default_code || ''}</Text>
-        <StockSemaphore status={producto.stock_state} size={10} style={{ marginLeft: 6 }} />
+        {!isGuest && <StockSemaphore status={producto.stock_state} size={10} style={{ marginLeft: 6 }} />}
       </View>
       <Text style={styles.name} numberOfLines={2}>{(producto.name || '').toUpperCase()}</Text>
       {hasOffer ? (

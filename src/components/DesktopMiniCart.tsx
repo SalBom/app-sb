@@ -12,11 +12,13 @@ import { Image } from 'expo-image';
 import { Feather } from '@expo/vector-icons';
 import { useCartStore } from '../store/cartStore';
 import { navigationRef } from '../../App';
+import useIsGuest from '../hooks/useIsGuest';
 
 const fmt = (n: number) =>
   new Intl.NumberFormat('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Math.max(0, n || 0));
 
 const DesktopMiniCart: React.FC = () => {
+  const isGuest = useIsGuest();
   const itemsInCart = useCartStore((s) => s.items);
   const clienteSeleccionado = useCartStore((s) => s.clienteSeleccionado);
   const plazoSeleccionado = useCartStore((s) => s.plazoSeleccionado);
@@ -37,6 +39,10 @@ const DesktopMiniCart: React.FC = () => {
     [itemsInCart]
   );
   const needsSetup = itemsInCart.length > 0 && (!clienteSeleccionado || !plazoSeleccionado);
+
+  // El invitado no tiene carrito: no se muestra el panel (la columna de
+  // contenido pasa a ocupar todo el ancho).
+  if (isGuest) return null;
 
   return (
     <View style={s.miniCart}>

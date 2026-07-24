@@ -24,6 +24,7 @@ import { registerForPushNotificationsAsync } from '../utils/pushNotifications';
 import { useCartStore } from '../store/cartStore';
 import { API_URL } from '../config';
 import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
+import { useGuestStore } from '../store/guestStore';
 
 // SVG del Logo
 import SBLOGO from '../../assets/SBLOGO.svg';
@@ -51,6 +52,15 @@ const Login: React.FC<Props> = ({ navigation }) => {
   const isDesktopWeb = useIsDesktopWeb();
 
   const setItems = useCartStore((state: any) => state.setItems);
+  const enterGuest = useGuestStore((s) => s.enterGuest);
+
+  // Modo invitado: solo en la web (nunca en la APK). Entra al catálogo
+  // institucional sin credenciales (sin carrito, stock, ofertas ni dashboard).
+  const canBeGuest = Platform.OS === 'web';
+  const handleGuest = () => {
+    enterGuest();
+    navigation.replace('MainTabs');
+  };
 
   // --- ANIMACIONES DE ÉXITO ---
   const formOpacity = useRef(new Animated.Value(1)).current;
@@ -119,7 +129,11 @@ const Login: React.FC<Props> = ({ navigation }) => {
       if (res.data.ok) {
         const name = res.data.name || 'Usuario';
         setUserNameForLoading(name);
-        
+
+        // Un login real siempre sale del modo invitado (por si venía de navegar
+        // el catálogo como visitante).
+        useGuestStore.getState().exitGuest();
+
         await saveUserSession({
           cuit: res.data.cuit,
           role: res.data.role,
@@ -344,6 +358,20 @@ const Login: React.FC<Props> = ({ navigation }) => {
               </Text>
             </TouchableOpacity>
 
+            {canBeGuest && (
+              <View style={d.guestWrap}>
+                <View style={d.guestDivider}>
+                  <View style={d.guestLine} />
+                  <Text style={d.guestOr}>o</Text>
+                  <View style={d.guestLine} />
+                </View>
+                <TouchableOpacity style={d.guestBtn} onPress={handleGuest} disabled={loading} activeOpacity={0.85}>
+                  <Feather name="eye" size={18} color="#1C9BD8" />
+                  <Text style={d.guestBtnText}>Ver catálogo sin registrarme</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
             {loading && userNameForLoading !== '' && (
               <Text style={d.welcomeInline}>¡Bienvenido, {userNameForLoading}!</Text>
             )}
@@ -515,6 +543,13 @@ const Login: React.FC<Props> = ({ navigation }) => {
             </TouchableOpacity>
           )}
 
+          {canBeGuest && !isKeyboardVisible && (
+            <TouchableOpacity style={styles.guestBtnMobile} onPress={handleGuest} disabled={loading} activeOpacity={0.85}>
+              <Feather name="eye" size={18} color="#1C9BD8" />
+              <Text style={styles.guestBtnMobileText}>Ver catálogo sin registrarme</Text>
+            </TouchableOpacity>
+          )}
+
         </Animated.View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -649,6 +684,12 @@ const styles = StyleSheet.create({
     color: '#0998D5',
     fontFamily: 'Rubik-SemiBold',
   },
+  guestBtnMobile: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    marginTop: 18, height: 48, borderRadius: 8, width: '100%',
+    borderWidth: 1, borderColor: '#1C9BD8', backgroundColor: '#FFFFFF',
+  },
+  guestBtnMobileText: { color: '#1C9BD8', fontFamily: 'Rubik-SemiBold', fontSize: 14 },
 });
 
 // --- Estilos exclusivos del login DESKTOP (split moderno) ---
@@ -690,6 +731,18 @@ const d = StyleSheet.create({
     shadowColor: '#1C9BD8', shadowOpacity: 0.35, shadowRadius: 12, shadowOffset: { width: 0, height: 6 },
   },
   welcomeInline: { fontFamily: 'Rubik', fontSize: 15, color: '#1C9BD8', textAlign: 'center', marginTop: 18 },
+
+  // Acceso invitado (web institucional)
+  guestWrap: { width: '100%', marginTop: 18 },
+  guestDivider: { flexDirection: 'row', alignItems: 'center', marginBottom: 14 },
+  guestLine: { flex: 1, height: 1, backgroundColor: '#ECEFF2' },
+  guestOr: { marginHorizontal: 12, fontFamily: 'Rubik', fontSize: 13, color: '#9AA0A6' },
+  guestBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    height: 50, borderRadius: 8, width: '100%',
+    borderWidth: 1, borderColor: '#1C9BD8', backgroundColor: '#FFFFFF',
+  },
+  guestBtnText: { color: '#1C9BD8', fontFamily: 'BarlowCondensed-Bold', fontSize: 16, letterSpacing: 0.3 },
 
   // --- Overrides de fuente: solo usamos las 5 familias realmente cargadas en App.tsx
   //     (Rubik + BarlowCondensed Bold/Regular/Light/SemiBold). Se aplican en arrays

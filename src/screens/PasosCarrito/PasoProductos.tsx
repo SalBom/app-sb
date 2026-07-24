@@ -25,6 +25,8 @@ import { getCuitFromStorage } from '../../utils/authStorage';
 import { API_URL } from '../../config';
 import useIsDesktopWeb from '../../hooks/useIsDesktopWeb';
 import { navigationRef } from '../../../App';
+import { useTourTarget } from '../../hooks/useTourTarget';
+import { useTourStore, TOUR_STEPS } from '../../store/tourStore';
 
 // Cache en memoria (nivel módulo, persiste entre montajes de la pantalla) de la
 // lista de clientes por CUIT del vendedor. Evita re-consultar cada vez que se
@@ -93,6 +95,10 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
   
   const insets = useSafeAreaInsets();
   const isDesktopWeb = useIsDesktopWeb();
+
+  const clienteTourRef = useTourTarget('cliente');
+  const plazoTourRef = useTourTarget('plazo');
+  const confirmarTourRef = useTourTarget('confirmar');
 
   const [discountRules, setDiscountRules] = useState<any>({});
   const [stockMap, setStockMap] = useState<Record<number, string>>({});
@@ -290,6 +296,12 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
           const { d1, d2 } = getItemDiscounts(item);
           updateDiscount(item.product_id, { discount1: d1, discount2: d2 });
       });
+
+      // Si el tour guiado llegó hasta acá, este es el último paso: se cierra
+      // solo al confirmar de verdad (no antes, y no con un botón "Listo" aparte).
+      const tour = useTourStore.getState();
+      if (tour.active && TOUR_STEPS[tour.stepIndex]?.id === 'confirmar') tour.stop();
+
       setTimeout(onNext, 150);
   };
 
@@ -344,6 +356,7 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
         <View style={styles.clientSelectorWrapper}>
             <Text style={styles.clientLabel}>CLIENTE SELECCIONADO</Text>
             <Pressable
+                ref={clienteTourRef}
                 onPress={() => { setClientSearch(''); setModalCliente(true); }}
                 style={({ pressed }) => [styles.select, pressed && { opacity: 0.9 }]}
             >
@@ -357,6 +370,7 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
         <View style={styles.clientSelectorWrapper}>
             <Text style={styles.clientLabel}>PLAZO DE PAGO</Text>
             <Pressable
+                ref={plazoTourRef}
                 onPress={() => setModalPlazo(true)}
                 style={({ pressed }) => [styles.select, pressed && { opacity: 0.9 }]}
             >
@@ -406,7 +420,9 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
           onPress={handleContinue}
           disabled={items.length === 0}
         >
-          <Animated.View style={[
+          <Animated.View
+            ref={confirmarTourRef}
+            style={[
               styles.botonContinuar,
               { transform: [{ scale }, { translateY }], opacity: (checkingStock || items.length === 0) ? 0.5 : 1 }
           ]}>

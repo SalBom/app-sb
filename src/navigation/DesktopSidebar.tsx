@@ -9,6 +9,9 @@ import { Feather } from '@expo/vector-icons';
 import { navigationRef } from '../../App';
 import { useCartStore } from '../store/cartStore';
 import { getUserRoleFromStorage } from '../utils/authStorage';
+import { useHelpCenterStore } from '../store/helpCenterStore';
+import { useTourTarget } from '../hooks/useTourTarget';
+import useIsGuest from '../hooks/useIsGuest';
 
 import HomeIcon from '../../assets/home.svg';
 import CarritoIcon from '../../assets/carrito.svg';
@@ -51,6 +54,9 @@ export default function DesktopSidebar() {
   const [isAdmin, setIsAdmin] = useState(false);
   const cartCount = useCartCount();
   const widthAnim = useRef(new Animated.Value(COLLAPSED_W)).current;
+  const openHelp = useHelpCenterStore((s) => s.open);
+  const carritoTourRef = useTourTarget('ir-carrito');
+  const isGuest = useIsGuest();
 
   useEffect(() => {
     const checkRole = () => {
@@ -96,7 +102,12 @@ export default function DesktopSidebar() {
     setExpanded(false);
   };
 
-  const navItems = isAdmin ? [...NAV_ITEMS, ADMIN_ITEM] : NAV_ITEMS;
+  // El invitado (web institucional) solo navega Home y Catálogo: sin carrito,
+  // sin ofertas ni perfil/dashboard.
+  const GUEST_ALLOWED = ['Home', 'Productos'];
+  const navItems = isGuest
+    ? NAV_ITEMS.filter((it) => GUEST_ALLOWED.includes(it.name))
+    : (isAdmin ? [...NAV_ITEMS, ADMIN_ITEM] : NAV_ITEMS);
 
   return (
     <>
@@ -104,34 +115,49 @@ export default function DesktopSidebar() {
         <Pressable style={styles.backdrop} onPress={() => setExpanded(false)} />
       )}
       <Animated.View style={[styles.sidebar, { width: widthAnim }]}>
-        <Pressable style={styles.hamburgerBtn} onPress={() => setExpanded((v) => !v)}>
-          <View style={styles.hamburgerLine} />
-          <View style={styles.hamburgerLine} />
-          <View style={styles.hamburgerLine} />
-        </Pressable>
+        <View>
+          <Pressable style={styles.hamburgerBtn} onPress={() => setExpanded((v) => !v)}>
+            <View style={styles.hamburgerLine} />
+            <View style={styles.hamburgerLine} />
+            <View style={styles.hamburgerLine} />
+          </Pressable>
 
-        <View style={styles.itemsList}>
-          {navItems.map(({ name, label, IconCmp }) => {
-            const isActive = name === 'AdminPanel' ? rootRoute === 'AdminPanel' : activeRoute === name;
-            return (
-              <Pressable
-                key={name}
-                style={[styles.item, isActive && styles.itemActive, !expanded && styles.itemCollapsed]}
-                onPress={() => go(name)}
-              >
-                <View style={styles.iconWrap}>
-                  <IconCmp width={22} height={22} fill={isActive ? '#1C9BD8' : '#FFFFFF'} />
-                  {name === 'Carrito' && cartCount > 0 && (
-                    <View style={styles.badge}><Text style={styles.badgeText}>{cartCount > 99 ? '99+' : cartCount}</Text></View>
+          <View style={styles.itemsList}>
+            {navItems.map(({ name, label, IconCmp }) => {
+              const isActive = name === 'AdminPanel' ? rootRoute === 'AdminPanel' : activeRoute === name;
+              return (
+                <Pressable
+                  key={name}
+                  ref={name === 'Carrito' ? carritoTourRef : undefined}
+                  style={[styles.item, isActive && styles.itemActive, !expanded && styles.itemCollapsed]}
+                  onPress={() => go(name)}
+                >
+                  <View style={styles.iconWrap}>
+                    <IconCmp width={22} height={22} fill={isActive ? '#1C9BD8' : '#FFFFFF'} />
+                    {name === 'Carrito' && cartCount > 0 && (
+                      <View style={styles.badge}><Text style={styles.badgeText}>{cartCount > 99 ? '99+' : cartCount}</Text></View>
+                    )}
+                  </View>
+                  {expanded && (
+                    <Text style={[styles.label, isActive && styles.labelActive]} numberOfLines={1}>{label}</Text>
                   )}
-                </View>
-                {expanded && (
-                  <Text style={[styles.label, isActive && styles.labelActive]} numberOfLines={1}>{label}</Text>
-                )}
-              </Pressable>
-            );
-          })}
+                </Pressable>
+              );
+            })}
+          </View>
         </View>
+
+        {!isGuest && (
+          <Pressable
+            style={[styles.item, styles.helpItem, !expanded && styles.itemCollapsed]}
+            onPress={() => { openHelp(); setExpanded(false); }}
+          >
+            <View style={styles.iconWrap}>
+              <Feather name="help-circle" size={22} color="#FFFFFF" />
+            </View>
+            {expanded && <Text style={styles.label}>Ayuda</Text>}
+          </Pressable>
+        )}
       </Animated.View>
     </>
   );
@@ -143,7 +169,8 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.15)', zIndex: 40,
   },
   sidebar: {
-    height: '100%', backgroundColor: '#2B2B2B', paddingTop: 20, overflow: 'hidden',
+    height: '100%', backgroundColor: '#2B2B2B', paddingTop: 20, paddingBottom: 16, overflow: 'hidden',
+    justifyContent: 'space-between',
     zIndex: 50, shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 12, shadowOffset: { width: 4, height: 0 },
   },
   hamburgerBtn: { width: COLLAPSED_W, height: 44, alignItems: 'center', justifyContent: 'center', gap: 5, marginBottom: 12 },
@@ -155,6 +182,7 @@ const styles = StyleSheet.create({
   },
   itemCollapsed: { paddingHorizontal: 0, marginHorizontal: 8, justifyContent: 'center' },
   itemActive: { backgroundColor: 'rgba(28,155,216,0.14)' },
+  helpItem: { borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 16, marginTop: 8, borderRadius: 0, marginHorizontal: 0, paddingHorizontal: 20 },
   iconWrap: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center', position: 'relative' },
   label: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#D9D9D9', letterSpacing: 0.3 },
   labelActive: { color: '#1C9BD8' },

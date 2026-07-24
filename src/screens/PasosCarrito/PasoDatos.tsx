@@ -267,11 +267,16 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
 
     try {
         const existingOrderId = getStore().orderId;
-        const payload: any = { 
-            cliente_cuit: clienteObj.vat, 
-            payment_term_id: plazoIdFinal, 
+        const payload: any = {
+            // Sin esto, el backend nunca sabe qué pedido actualizar y termina
+            // creando uno nuevo en cada paso 2→3 (incluso pegándole a
+            // /actualizar-pedido) — así es como se duplicaban los pedidos al
+            // volver atrás y volver a avanzar.
+            order_id_to_update: existingOrderId || null,
+            cliente_cuit: clienteObj.vat,
+            payment_term_id: plazoIdFinal,
             items: odooItems,
-            carrier_id: objTransporte?.id || null 
+            carrier_id: objTransporte?.id || null
         };
         
         if (metodoEnvio === 'domicilio' && addrSelected && typeof addrSelected.id === 'number') {

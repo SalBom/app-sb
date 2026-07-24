@@ -7,6 +7,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { useCartStore } from '../store/cartStore';
 import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
+import { useTourTarget } from '../hooks/useTourTarget';
+import useIsGuest from '../hooks/useIsGuest';
+import { useGuestStore } from '../store/guestStore';
+import { navigationRef } from '../../App';
+import { Feather } from '@expo/vector-icons';
 
 // Screens
 import Home from '../screens/Home';
@@ -61,19 +66,19 @@ interface ScaleButtonProps {
   scaleTo?: number;
 }
 
-const ScaleButton = ({ onPress, onLongPress, children, style, scaleTo = 0.85 }: ScaleButtonProps) => {
+const ScaleButton = React.forwardRef<any, ScaleButtonProps>(({ onPress, onLongPress, children, style, scaleTo = 0.85 }, ref) => {
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const handlePressIn = () => Animated.spring(scaleAnim, { toValue: scaleTo, useNativeDriver: true, speed: 20, bounciness: 4 }).start();
   const handlePressOut = () => Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, speed: 20, bounciness: 4 }).start();
 
   return (
-    <Pressable onPressIn={handlePressIn} onPressOut={handlePressOut} onPress={onPress} onLongPress={onLongPress} style={style}>
+    <Pressable ref={ref} onPressIn={handlePressIn} onPressOut={handlePressOut} onPress={onPress} onLongPress={onLongPress} style={style}>
       <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
         {children}
       </Animated.View>
     </Pressable>
   );
-};
+});
 
 const MainTabs = () => {
   const isDesktopWeb = useIsDesktopWeb();
@@ -98,7 +103,49 @@ const MainTabs = () => {
 const CustomTabBar = (props: BottomTabBarProps) => {
   const insets = useSafeAreaInsets();
   const cartCount = useCartCount();
-  const visibleNames = ['Home', 'Carrito', 'MisVentas', 'Perfil'] as const;
+  const carritoTourRef = useTourTarget('ir-carrito');
+  const isGuest = useIsGuest();
+  const exitGuest = useGuestStore((s) => s.exitGuest);
+  const safeBottomTop = insets.bottom;
+  const activeTabName = props.state.routes[props.state.index]?.name;
+
+  // Barra del invitado (mobile web): 3 botones planos, sin el FAB central de
+  // "sumar pedido". Home, Catálogo (los cuadraditos) y Perfil, que acá sirve
+  // para iniciar sesión (el invitado no tiene perfil propio).
+  if (isGuest) {
+    const goHomeG = () => props.navigation.navigate('Home' as never);
+    const goCatalogoG = () => props.navigation.navigate('Productos' as never, { screen: 'ProductosList' } as never);
+    const goLoginG = () => {
+      exitGuest();
+      if (navigationRef.isReady()) navigationRef.navigate('Login' as never);
+    };
+    const homeActive = activeTabName === 'Home';
+    const catActive = activeTabName === 'Productos';
+    return (
+      <>
+        <View style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: safeBottomTop, backgroundColor: COLORS.barBg }} pointerEvents="none" />
+        <View style={[styles.bar, { bottom: safeBottomTop, justifyContent: 'space-around' }]}>
+          <ScaleButton style={styles.tabBtn} onPress={goHomeG}>
+            <View style={[styles.iconWrap, homeActive && styles.iconFocused]}>
+              <HomeIcon width={ICON_SIZE} height={ICON_SIZE} fill={homeActive ? '#FFD700' : COLORS.icon} />
+            </View>
+          </ScaleButton>
+          <ScaleButton style={styles.tabBtn} onPress={goCatalogoG}>
+            <View style={[styles.iconWrap, catActive && styles.iconFocused]}>
+              <Feather name="grid" size={ICON_SIZE} color={catActive ? '#FFD700' : COLORS.icon} />
+            </View>
+          </ScaleButton>
+          <ScaleButton style={styles.tabBtn} onPress={goLoginG}>
+            <View style={styles.iconWrap}>
+              <UserIcon width={ICON_SIZE} height={ICON_SIZE} fill={COLORS.icon} />
+            </View>
+          </ScaleButton>
+        </View>
+      </>
+    );
+  }
+
+  const visibleNames = ['Home', 'Carrito', 'MisVentas', 'Perfil'];
   const routeByName = Object.fromEntries(props.state.routes.map(r => [r.name, r]));
 
   const pressRoute = (routeKey: string, routeName: string, isFocused: boolean) => {
@@ -129,7 +176,7 @@ const CustomTabBar = (props: BottomTabBarProps) => {
           const { IconCmp } = getIconFor(name);
 
           return (
-            <ScaleButton key={route.key} style={styles.tabBtn} onPress={() => pressRoute(route.key, route.name, isFocused)} onLongPress={() => props.navigation.emit({ type: 'tabLongPress', target: route.key })}>
+            <ScaleButton key={route.key} ref={name === 'Carrito' ? carritoTourRef : undefined} style={styles.tabBtn} onPress={() => pressRoute(route.key, route.name, isFocused)} onLongPress={() => props.navigation.emit({ type: 'tabLongPress', target: route.key })}>
               <View style={[styles.iconWrap, isFocused && styles.iconFocused]}>
                 <IconCmp width={ICON_SIZE} height={ICON_SIZE} fill={isFocused ? '#FFD700' : COLORS.icon} />
                 {name === 'Carrito' && cartCount > 0 && (

@@ -5,7 +5,9 @@ import Svg, { Path, Defs, Filter, FeGaussianBlur, G } from 'react-native-svg';
 import { Feather } from '@expo/vector-icons'; 
 
 import { useCartStore } from '../store/cartStore';
-import StockSemaphore from './StockSemaphore'; 
+import StockSemaphore from './StockSemaphore';
+import useIsGuest from '../hooks/useIsGuest';
+import { contactarPorWhatsApp } from '../utils/whatsapp';
 
 // ICONOS
 import CartIcon from '../../assets/cartIcon.svg';
@@ -73,9 +75,10 @@ const TarjetaProductoKanban: React.FC<Props> = ({
   onToggleFavorito,
   width
 }) => {
+  const isGuest = useIsGuest();
   const items = useCartStore(state => state.items);
   const cartItem = items.find(i => i.product_id === producto.id);
-  
+
   const qtyInCart = cartItem ? cartItem.product_uom_qty : 0;
   const showQtySelector = qtyInCart > 0;
   const displayQty = qtyInCart > 0 ? qtyInCart : 1;
@@ -105,7 +108,8 @@ const TarjetaProductoKanban: React.FC<Props> = ({
   const isIssei = /issei/i.test(brandName);
   const isShimura = /shimura/i.test(brandName);
   
-  const hasOffer = (producto.price_offer !== undefined && producto.price_offer !== null && producto.price_offer < producto.list_price);
+  // El invitado no ve precios de oferta: siempre precio de lista.
+  const hasOffer = !isGuest && (producto.price_offer !== undefined && producto.price_offer !== null && producto.price_offer < producto.list_price);
   const displayPrice = hasOffer ? producto.price_offer : producto.list_price;
 
   const handleAddToCartClick = () => {
@@ -202,7 +206,7 @@ const TarjetaProductoKanban: React.FC<Props> = ({
               {!!producto.default_code && (
                 <Text style={styles.code}>{producto.default_code}</Text>
               )}
-              <StockSemaphore status={producto.stock_state} style={{ marginLeft: 6 }} />
+              {!isGuest && <StockSemaphore status={producto.stock_state} style={{ marginLeft: 6 }} />}
           </View>
 
           {!!producto.corte_por_bulto && (
@@ -212,35 +216,48 @@ const TarjetaProductoKanban: React.FC<Props> = ({
           )}
 
           <View style={styles.actionsRow}>
-            {showQtySelector && (
-              <View style={styles.qtyPill}>
-                  <TouchableOpacity onPress={handleDecrement} style={styles.qtyBtn} hitSlop={5}>
-                      <Feather name="minus" size={10} color="#FFFFFF" />
-                  </TouchableOpacity>
-                  <Text style={styles.qtyText}>{displayQty}</Text>
-                  <TouchableOpacity onPress={handleIncrement} style={styles.qtyBtn} hitSlop={5}>
-                      <Feather name="plus" size={10} color="#FFFFFF" />
-                  </TouchableOpacity>
-              </View>
+            {isGuest ? (
+              // Invitado: sin carrito ni favoritos; consulta por WhatsApp.
+              <TouchableOpacity
+                style={[styles.circleBtn, styles.waCircle]}
+                onPress={(e) => { (e as any)?.stopPropagation?.(); contactarPorWhatsApp(producto); }}
+                activeOpacity={0.8}
+              >
+                <Feather name="message-circle" size={18} color="#FFFFFF" />
+              </TouchableOpacity>
+            ) : (
+              <>
+                {showQtySelector && (
+                  <View style={styles.qtyPill}>
+                      <TouchableOpacity onPress={handleDecrement} style={styles.qtyBtn} hitSlop={5}>
+                          <Feather name="minus" size={10} color="#FFFFFF" />
+                      </TouchableOpacity>
+                      <Text style={styles.qtyText}>{displayQty}</Text>
+                      <TouchableOpacity onPress={handleIncrement} style={styles.qtyBtn} hitSlop={5}>
+                          <Feather name="plus" size={10} color="#FFFFFF" />
+                      </TouchableOpacity>
+                  </View>
+                )}
+
+                <TouchableOpacity style={styles.circleBtn} onPress={handleAddToCartClick} activeOpacity={0.8}>
+                   <CartIcon width={18} height={18} color="#1C9BD8" />
+                </TouchableOpacity>
+
+                {/* BOTÓN FAVORITO ACTUALIZADO (ESTILO CORAZÓN AZUL) */}
+                <TouchableOpacity style={styles.circleBtn} onPress={onToggleFavorito} activeOpacity={0.8}>
+                   <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
+                      <Path
+                        d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"
+                        fill={isFavorite ? "#1C9BD8" : "none"}
+                        stroke="#1C9BD8"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                   </Svg>
+                </TouchableOpacity>
+              </>
             )}
-
-            <TouchableOpacity style={styles.circleBtn} onPress={handleAddToCartClick} activeOpacity={0.8}>
-               <CartIcon width={18} height={18} color="#1C9BD8" />
-            </TouchableOpacity>
-
-            {/* BOTÓN FAVORITO ACTUALIZADO (ESTILO CORAZÓN AZUL) */}
-            <TouchableOpacity style={styles.circleBtn} onPress={onToggleFavorito} activeOpacity={0.8}>
-               <Svg width={18} height={18} viewBox="0 0 24 24" fill="none">
-                  <Path
-                    d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"
-                    fill={isFavorite ? "#1C9BD8" : "none"}
-                    stroke="#1C9BD8"
-                    strokeWidth="2.2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-               </Svg>
-            </TouchableOpacity>
           </View>
 
         </View>
@@ -274,6 +291,7 @@ const styles = StyleSheet.create({
   
   actionsRow: { flexDirection: 'row', justifyContent: 'flex-end', paddingRight: 8, gap: 8, alignItems: 'center' },
   circleBtn: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#F3F4F6', alignItems: 'center', justifyContent: 'center' },
+  waCircle: { backgroundColor: '#25D366' },
   qtyPill: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1C9BD8', borderRadius: 14, height: 28, paddingHorizontal: 2, minWidth: 60, justifyContent: 'space-between', marginRight: 0 },
   qtyBtn: { width: 20, height: '100%', alignItems: 'center', justifyContent: 'center' },
   qtyText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 14, color: '#FFFFFF', marginHorizontal: 1, marginTop: -1 }
