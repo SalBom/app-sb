@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { getCuitFromStorage, getUserProfile } from '../utils/authStorage';
 import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
 import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
+import BackfillIAModal from '../components/BackfillIAModal';
 
 const AvatarPlaceholder = require('../../assets/avatarPlaceholder.png');
 
@@ -42,6 +43,7 @@ export default function AdminPanel() {
   const isDesktopWeb = useIsDesktopWeb();
 
   const [user, setUser] = useState<UserState>({ name: 'USUARIO', image: null });
+  const [backfillVisible, setBackfillVisible] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -81,9 +83,11 @@ export default function AdminPanel() {
               <AdminCardD icon="cash-outline" label="Plazos de pagos y descuentos" onPress={() => navigation.navigate('AdminPlazos')} />
               <AdminCardD icon="pricetag-outline" label="Marcas" onPress={() => {}} />
               <AdminCardD icon="image-outline" label="Banners" onPress={() => navigation.navigate('AdminBanners')} />
+              <AdminCardD icon="sparkles-outline" label="Fichas con IA (lote)" sub="Completar atributos automáticamente" onPress={() => setBackfillVisible(true)} />
             </View>
           </View>
         </ScrollView>
+        <BackfillIAModal visible={backfillVisible} onClose={() => setBackfillVisible(false)} />
       </View>
     );
   }
@@ -170,8 +174,20 @@ export default function AdminPanel() {
            <Ionicons name="chevron-forward" size={22} color="#333" style={{ marginLeft: 'auto' }} />
         </TouchableOpacity>
 
+        <View style={styles.separator} />
+
+        <TouchableOpacity style={styles.mainMenuItem} onPress={() => setBackfillVisible(true)}>
+           <Ionicons name="sparkles-outline" size={22} color="#7C3AED" style={{ marginRight: 10 }} />
+           <View>
+             <Text style={styles.mainMenuText}>FICHAS CON IA (LOTE)</Text>
+             <Text style={[styles.proxText, { color: '#666', marginTop: 0 }]}>Completar atributos automáticamente</Text>
+           </View>
+           <Ionicons name="chevron-forward" size={22} color="#333" style={{ marginLeft: 'auto' }} />
+        </TouchableOpacity>
+
       </View>
 
+      <BackfillIAModal visible={backfillVisible} onClose={() => setBackfillVisible(false)} />
     </ScrollView>
   );
 }

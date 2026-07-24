@@ -28,6 +28,7 @@ import * as MediaLibrary from 'expo-media-library';
 // AUTH PARA VERIFICAR ROL
 import { getCuitFromStorage } from '../utils/authStorage';
 import DesktopMiniCart from '../components/DesktopMiniCart';
+import EditarCaracteristicasModal from '../components/EditarCaracteristicasModal';
 
 // COMPONENTE SEMÁFORO
 import StockSemaphore from '../components/StockSemaphore';
@@ -120,7 +121,8 @@ function ProductoDetalle() {
   const [relacionados, setRelacionados] = useState<any[]>([]);
   const [loadingRel, setLoadingRel] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
-  
+  const [editVisible, setEditVisible] = useState(false);
+
   const [validGallery, setValidGallery] = useState<string[]>([]);
   const [currentImgIndex, setCurrentImgIndex] = useState(0);
 
@@ -135,6 +137,15 @@ function ProductoDetalle() {
   const { isFavorite, addFavorite, removeFavorite } = useFavoritesStore(); 
 
   const scaleAnimAgregar = useRef(new Animated.Value(1)).current;
+
+  // Re-lee la info del producto (atributos/descripción) después de que el admin
+  // edita las specs, para reflejar los cambios sin salir de la pantalla.
+  const refetchInfo = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/producto/${numericId}/info`);
+      if (res.data) setProducto((prev: any) => ({ ...prev, ...res.data, id: numericId }));
+    } catch {}
+  };
 
   const animatePress = (scaleValue: Animated.Value) => {
     Animated.sequence([
@@ -579,6 +590,12 @@ function ProductoDetalle() {
               <View style={dstyles.topRowLeft}>
                 <Text style={dstyles.titleD}>{producto.name}</Text>
                 <Text style={dstyles.codeD}>{producto.default_code || ''}</Text>
+                {isAdmin && (
+                  <Pressable style={dstyles.adminEditBtn} onPress={() => setEditVisible(true)}>
+                    <Feather name="edit-3" size={14} color="#1C9BD8" />
+                    <Text style={dstyles.adminEditText}>Editar características</Text>
+                  </Pressable>
+                )}
 
                 <View style={dstyles.mainRow}>
                   <View style={dstyles.imageSection}>
@@ -745,6 +762,7 @@ function ProductoDetalle() {
           </View>
         </ScrollView>
         {desktopModal}
+        <EditarCaracteristicasModal visible={editVisible} onClose={() => setEditVisible(false)} producto={producto} onSaved={refetchInfo} />
         {flyItem && (
           <Modal transparent visible animationType="none">
             <View pointerEvents="none" style={StyleSheet.absoluteFill}>
@@ -781,6 +799,12 @@ function ProductoDetalle() {
         <View style={{ flex: 1 }}>
           <Text style={styles.title}>{producto?.name}</Text>
           <Text style={styles.code}>{producto?.default_code || '—'}</Text>
+          {isAdmin && (
+            <Pressable style={styles.adminEditBtn} onPress={() => setEditVisible(true)}>
+              <Feather name="edit-3" size={14} color="#1C9BD8" />
+              <Text style={styles.adminEditText}>Editar características</Text>
+            </Pressable>
+          )}
         </View>
       </View>
 
@@ -911,6 +935,7 @@ function ProductoDetalle() {
       </View>
 
       {sharedModal}
+      <EditarCaracteristicasModal visible={editVisible} onClose={() => setEditVisible(false)} producto={producto} onSaved={refetchInfo} />
     </ScrollView>
   );
 }
@@ -986,6 +1011,8 @@ const styles = StyleSheet.create({
   headerRow: { flexDirection: 'row', marginBottom: 10 },
   title: { fontSize: 24, fontFamily: 'BarlowCondensed-Bold', color: '#222' },
   code: { fontSize: 18, fontFamily: 'BarlowCondensed-Light', color: '#3A4A57' },
+  adminEditBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', backgroundColor: '#EAF6FC', borderWidth: 1, borderColor: '#BEE3F5', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, marginTop: 8 },
+  adminEditText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 14, color: '#1C9BD8', letterSpacing: 0.3 },
   imageBox: { height: 264, backgroundColor: '#FFF', borderRadius: 16, padding: 12, elevation: 2, alignItems: 'center', shadowColor: '#000', shadowOpacity: 0.06, shadowOffset: { width: 0, height: 3 }, shadowRadius: 6, position: 'relative' },
   image: { width: '100%', height: 230 },
   favBtnFloating: { position: 'absolute', top: 12, right: 12, width: 40, height: 40, borderRadius: 20, backgroundColor: '#F3F4F6', alignItems: 'center', justifyContent: 'center', zIndex: 10, elevation: 2 },
@@ -1068,6 +1095,8 @@ const dstyles = StyleSheet.create({
 
   titleD: { fontFamily: 'BarlowCondensed-Bold', fontSize: 60, lineHeight: 62, color: '#636363', textTransform: 'uppercase' },
   codeD: { fontFamily: 'BarlowCondensed-Light', fontSize: 26, color: '#636363', marginTop: 2, marginBottom: 22 },
+  adminEditBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', backgroundColor: '#EAF6FC', borderWidth: 1, borderColor: '#BEE3F5', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 7, marginTop: -6, marginBottom: 18 },
+  adminEditText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 14, color: '#1C9BD8', letterSpacing: 0.3 },
 
   mainRow: { flexDirection: 'row', alignItems: 'stretch' },
   imageSection: { flex: 2, paddingRight: 24 },

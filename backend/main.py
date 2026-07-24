@@ -5248,6 +5248,10 @@ def admin_sync_now():
 # el admin revisa y aprueba antes de que salgan publicadas.
 # ===============================================================
 
+# Modelo de IA para leer las fichas. Se puede cambiar por variable de entorno
+# (ej. IA_MODEL=claude-haiku-4-5 para bajar ~10x el costo en el lote grande).
+IA_MODEL = os.getenv("IA_MODEL", "claude-opus-4-8").strip()
+
 def init_product_specs_table():
     if not DATABASE_URL: return
     conn = get_pg_connection()
@@ -5436,7 +5440,7 @@ def _extraer_specs_ia(image_bytes, media_type, nombre_producto=""):
         '{"atributos": [], "descripcion": ""}.'
     )
     resp = client.messages.create(
-        model="claude-opus-4-8",
+        model=IA_MODEL,
         max_tokens=2000,
         messages=[{
             "role": "user",
@@ -5531,6 +5535,117 @@ def admin_generar_specs_ia(product_id):
         "description": result['description'],
         "status": "borrador",
     })
+
+
+# --- BACKFILL EN LOTE (primera carga de todo el catálogo con IA) ---
+# Corre en un hilo de fondo: recorre todos los productos con SKU, baja la ficha
+# de cada uno y genera atributos + descripción como BORRADOR. El admin después
+# revisa/aprueba producto por producto. El estado se consulta por polling.
+
+_backfill_state = {
+    "running": False, "total": 0, "procesados": 0,
+    "con_ficha": 0, "sin_ficha": 0, "errores": 0, "saltados": 0,
+    "ultimo": "", "terminado": False, "mensaje": "",
+}
+_backfill_lock = threading.Lock()
+
+
+def _listar_productos_para_backfill():
+    """(id_template, sku, name) de todos los productos vendibles con SKU en Odoo."""
+    def _op(client):
+        return client.env['product.template'].search_read(
+            [('sale_ok', '=', True), ('default_code', '!=', False)],
+            ['id', 'default_code', 'name'],
+            limit=5000
+        )
+    try:
+        return execute_odoo_operation(_op) or []
+    except Exception as e:
+        log.error(f"Error listando productos para backfill: {e}")
+        return []
+
+
+def _run_backfill(solo_faltantes=True):
+    productos = _listar_productos_para_backfill()
+    with _backfill_lock:
+        _backfill_state.update({
+            "running": True, "total": len(productos), "procesados": 0,
+            "con_ficha": 0, "sin_ficha": 0, "errores": 0, "saltados": 0,
+            "ultimo": "", "terminado": False, "mensaje": "",
+        })
+
+    for p in productos:
+        try:
+            pid = int(p['id'])
+        except Exception:
+            continue
+        sku = (p.get('default_code') or "").strip()
+        name = p.get('name') or ""
+
+        with _backfill_lock:
+            _backfill_state["procesados"] += 1
+            _backfill_state["ultimo"] = sku or f"#{pid}"
+
+        if not sku:
+            continue
+
+        # Saltear los que ya tienen specs cargadas (borrador o aprobadas)
+        if solo_faltantes and _get_product_specs(pid):
+            with _backfill_lock:
+                _backfill_state["saltados"] += 1
+            continue
+
+        contenido, media_type, _url = _descargar_ficha(sku)
+        if not contenido:
+            with _backfill_lock:
+                _backfill_state["sin_ficha"] += 1
+            continue
+
+        try:
+            result = _extraer_specs_ia(contenido, media_type, name)
+            _upsert_product_specs(pid, sku, result['attributes'], result['description'],
+                                  source='ia', status='borrador')
+            with _backfill_lock:
+                _backfill_state["con_ficha"] += 1
+        except Exception as e:
+            log.error(f"Backfill IA {sku}: {e}")
+            with _backfill_lock:
+                _backfill_state["errores"] += 1
+
+        time.sleep(0.3)  # respiro entre productos
+
+    with _backfill_lock:
+        _backfill_state["running"] = False
+        _backfill_state["terminado"] = True
+        _backfill_state["mensaje"] = "Proceso terminado."
+    log.info(f"✅ Backfill IA terminado: {dict(_backfill_state)}")
+
+
+@app.route('/admin/product-specs/backfill', methods=['POST'])
+def admin_backfill_specs():
+    data = request.get_json(silent=True) or {}
+    if not _cuit_is_admin(data.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        return jsonify({"error": "El servidor no tiene configurada la API key de IA (ANTHROPIC_API_KEY)."}), 500
+
+    with _backfill_lock:
+        if _backfill_state["running"]:
+            return jsonify({"ok": False, "error": "Ya hay un proceso en curso.",
+                            "state": dict(_backfill_state)}), 409
+
+    solo_faltantes = bool(data.get('solo_faltantes', True))
+    t = threading.Thread(target=_run_backfill, kwargs={"solo_faltantes": solo_faltantes}, daemon=True)
+    t.start()
+    return jsonify({"ok": True, "started": True})
+
+
+@app.route('/admin/product-specs/backfill/status', methods=['GET'])
+def admin_backfill_status():
+    if not _cuit_is_admin(request.args.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    with _backfill_lock:
+        return jsonify(dict(_backfill_state))
 
 
 # ─────────────────────────── Run ──────────────────────────────
