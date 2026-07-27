@@ -29,6 +29,7 @@ import * as MediaLibrary from 'expo-media-library';
 import { getCuitFromStorage } from '../utils/authStorage';
 import DesktopMiniCart from '../components/DesktopMiniCart';
 import EditarCaracteristicasModal from '../components/EditarCaracteristicasModal';
+import { masterboxUnidades } from '../config/masterbox';
 
 // COMPONENTE SEMÁFORO
 import StockSemaphore from '../components/StockSemaphore';
@@ -351,17 +352,21 @@ function ProductoDetalle() {
 
   const handleAddToCartFlow = () => {
     if (!producto) return;
+    // Masterbox: la "cantidad" elegida son CAJAS; al carrito van las unidades
+    // reales (cajas × unidades por caja). Producto normal: step = 1.
+    const step = masterboxUnidades(producto.default_code) || 1;
+    const delta = cantidad * step;
     const existingItem = items.find(it => it.product_id === producto.id);
     if (existingItem) {
-      updateQuantity(producto.id, existingItem.product_uom_qty + cantidad);
+      updateQuantity(producto.id, existingItem.product_uom_qty + delta);
     } else {
-      addToCart({ 
-        product_id: producto.id, 
-        name: producto.name, 
-        price_unit: precioBase, 
-        list_price: producto.list_price, 
-        product_uom_qty: cantidad, 
-        default_code: producto.default_code || '' 
+      addToCart({
+        product_id: producto.id,
+        name: producto.name,
+        price_unit: precioBase,
+        list_price: producto.list_price,
+        product_uom_qty: delta,
+        default_code: producto.default_code || ''
       });
     }
     setCantidad(1);
@@ -474,6 +479,7 @@ function ProductoDetalle() {
   }
 
   const isMainFav = isFavorite(producto.id);
+  const mbUnits = masterboxUnidades(producto.default_code);
 
   const getBrandString = () => {
     const raw = producto?.marca_name || producto?.brand || producto?.marca;
@@ -651,6 +657,15 @@ function ProductoDetalle() {
                   </TouchableOpacity>
                 )}
 
+                {mbUnits && (
+                  <View style={dstyles.masterboxBox}>
+                    <Feather name="package" size={16} color="#B45309" />
+                    <Text style={dstyles.masterboxBoxText}>
+                      Se vende por <Text style={{ fontWeight: '700' }}>masterbox</Text>: 1 caja = {mbUnits} unidades.
+                    </Text>
+                  </View>
+                )}
+
                 {isGuest ? (
                   // Invitado: sin carrito ni favoritos; contacto por WhatsApp.
                   <TouchableOpacity
@@ -744,9 +759,10 @@ function ProductoDetalle() {
                           onToggleFavorito={() => handleToggleFav(p)}
                           onPressDetalle={() => navigation.push('ProductoDetalle', { id: p.id, preload: p })}
                           onPressAgregar={(qty: number) => {
+                            const d = qty * (masterboxUnidades(p.default_code) || 1);
                             const exist = items.find(it => it.product_id === p.id);
-                            if (exist) updateQuantity(p.id, exist.product_uom_qty + qty);
-                            else addToCart({ ...p, product_id: p.id, product_uom_qty: qty, price_unit: relPrecioBase, default_code: p.default_code || '' });
+                            if (exist) updateQuantity(p.id, Math.max(0, exist.product_uom_qty + d));
+                            else if (d > 0) addToCart({ ...p, product_id: p.id, product_uom_qty: d, price_unit: relPrecioBase, default_code: p.default_code || '' });
                           }}
                         />
                       </View>
@@ -859,6 +875,14 @@ function ProductoDetalle() {
               <Text style={styles.paymentsLink}>Ver precios según plazo</Text>
           </TouchableOpacity>
         )}
+        {mbUnits && (
+          <View style={styles.masterboxBox}>
+            <Feather name="package" size={16} color="#B45309" />
+            <Text style={styles.masterboxBoxText}>
+              Se vende por <Text style={{ fontFamily: 'BarlowCondensed-Bold' }}>masterbox</Text>: 1 caja = {mbUnits} unidades.
+            </Text>
+          </View>
+        )}
       </View>
 
       {isGuest ? (
@@ -915,9 +939,10 @@ function ProductoDetalle() {
                         onToggleFavorito={() => handleToggleFav(p)} 
                         onPressDetalle={() => navigation.push('ProductoDetalle', { id: p.id, preload: p })}
                         onPressAgregar={(qty) => {
+                            const d = qty * (masterboxUnidades(p.default_code) || 1);
                             const exist = items.find(it => it.product_id === p.id);
-                            if (exist) updateQuantity(p.id, exist.product_uom_qty + qty);
-                            else addToCart({ ...p, product_id: p.id, product_uom_qty: qty, price_unit: relPrecioBase, default_code: p.default_code || '' });
+                            if (exist) updateQuantity(p.id, Math.max(0, exist.product_uom_qty + d));
+                            else if (d > 0) addToCart({ ...p, product_id: p.id, product_uom_qty: d, price_unit: relPrecioBase, default_code: p.default_code || '' });
                         }}
                         />
                     </View>
@@ -1026,6 +1051,8 @@ const styles = StyleSheet.create({
   offerBadge: { backgroundColor: '#FEE2E2', paddingHorizontal: 8, borderRadius: 4, marginLeft: 10, borderWidth: 1, borderColor: '#FECACA' },
   offerBadgeText: { color: '#D32F2F', fontSize: 12, fontFamily: 'BarlowCondensed-Bold' },
   paymentsLink: { color: '#139EDB', fontSize: 13, textDecorationLine: 'underline', fontFamily: 'BarlowCondensed-Light', marginTop: 4 },
+  masterboxBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FFF7ED', borderWidth: 1, borderColor: '#FED7AA', borderRadius: 10, paddingVertical: 9, paddingHorizontal: 11, marginTop: 12 },
+  masterboxBoxText: { flex: 1, fontFamily: 'BarlowCondensed-SemiBold', fontSize: 15, color: '#B45309', lineHeight: 18 },
   qtyOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15 },
   qtyLabel: { fontSize: 16, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' },
   qtyNum: { fontFamily: 'BarlowCondensed-Bold' },
@@ -1120,6 +1147,8 @@ const dstyles = StyleSheet.create({
   oldPriceD: { fontFamily: 'BarlowCondensed-Bold', fontSize: 18, color: '#9CA3AF', textDecorationLine: 'line-through', marginTop: 16 },
   priceD: { fontFamily: 'BarlowCondensed-Bold', fontSize: 42, color: '#3F3F3F', marginTop: 4 },
   paymentsLinkD: { fontFamily: 'Rubik', fontSize: 12, color: '#1C9BD8', textDecorationLine: 'underline', marginTop: 4, marginBottom: 16 },
+  masterboxBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FFF7ED', borderWidth: 1, borderColor: '#FED7AA', borderRadius: 10, paddingVertical: 9, paddingHorizontal: 11, marginBottom: 16 },
+  masterboxBoxText: { flex: 1, fontFamily: 'BarlowCondensed-SemiBold', fontSize: 14, color: '#B45309', lineHeight: 17 },
 
   qtyRowD: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14, marginBottom: 14 },
   qtyLabelD: { fontFamily: 'Rubik', fontWeight: '700', fontSize: 17, color: '#3F3F3F' },

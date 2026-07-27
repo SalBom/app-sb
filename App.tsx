@@ -11,6 +11,7 @@ import axios from 'axios';
 import { useCartStore } from './src/store/cartStore';
 import { getCuitFromStorage } from './src/utils/authStorage';
 import { API_URL } from './src/config';
+import { cargarMasterbox } from './src/config/masterbox';
 
 // Mantiene visible la pantalla de carga (splash screen) hasta que digamos lo contrario
 SplashScreen.preventAutoHideAsync();
@@ -47,6 +48,8 @@ export default function App() {
     };
 
     syncCartOnLaunch();
+    // Carga la config de masterbox (SKU → unidades por caja) desde el backend.
+    cargarMasterbox();
   }, []);
 
   // Oculta el splash screen una vez que las fuentes terminan de cargar

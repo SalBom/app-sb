@@ -8,6 +8,7 @@ import { useCartStore } from '../store/cartStore';
 import StockSemaphore from './StockSemaphore';
 import useIsGuest from '../hooks/useIsGuest';
 import { contactarPorWhatsApp } from '../utils/whatsapp';
+import { masterboxUnidades } from '../config/masterbox';
 
 // ICONOS
 import CartIcon from '../../assets/cartIcon.svg';
@@ -215,6 +216,12 @@ const TarjetaProductoKanban: React.FC<Props> = ({
               </Text>
           )}
 
+          {masterboxUnidades(producto.default_code) && (
+              <Text style={styles.masterboxText}>
+                  MASTERBOX · CAJA x{masterboxUnidades(producto.default_code)}
+              </Text>
+          )}
+
           <View style={styles.actionsRow}>
             {isGuest ? (
               // Invitado: sin carrito ni favoritos; consulta por WhatsApp.
@@ -285,6 +292,7 @@ const styles = StyleSheet.create({
 
   title: { fontFamily: 'BarlowCondensed-Bold', fontSize: 14, color: '#1F2937', lineHeight: 16, marginBottom: 0, marginTop: 4 },
   corteBulto: { fontFamily: 'BarlowCondensed-Bold', fontSize: 10, color: '#1C9BD8', marginBottom: 4, marginTop: 2 },
+  masterboxText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 10, color: '#B45309', marginTop: 2 },
   
   codeRow: { flexDirection: 'row', alignItems: 'center', marginTop: 0, marginBottom: 6 },
   code: { fontFamily: 'BarlowCondensed-Regular', fontSize: 12, color: '#6B7280' },

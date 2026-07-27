@@ -5655,6 +5655,137 @@ def admin_backfill_status():
         return jsonify(dict(_backfill_state))
 
 
+# ===============================================================
+# MASTERBOX: productos que se venden por caja (N unidades por bulto).
+# Config editable por ADMIN. La app multiplica la cantidad: 1 caja = N unidades.
+# ===============================================================
+
+# Valores iniciales (se siembran la primera vez; después se editan desde el admin).
+_MASTERBOX_SEED = {
+    "IS-BJ2": 10, "IS-BJ4": 5, "IS-BJ6": 5, "IS-BJ8": 4,
+    "IS-BJ10": 4, "IS-BJ12": 4, "IS-BJ16": 2, "IS-BJ20": 2, "IDB 35": 6,
+}
+
+def init_masterbox_table():
+    if not DATABASE_URL: return
+    conn = get_pg_connection()
+    if not conn: return
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS masterbox_config (
+                sku        TEXT PRIMARY KEY,
+                units      INTEGER NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
+        # Sembrar los iniciales solo si no existen (no pisa ediciones del admin).
+        for sku, units in _MASTERBOX_SEED.items():
+            cur.execute(
+                "INSERT INTO masterbox_config (sku, units) VALUES (%s, %s) ON CONFLICT (sku) DO NOTHING;",
+                (sku.strip().upper(), int(units))
+            )
+        conn.commit()
+        cur.close()
+        log.info("✅ Tabla 'masterbox_config' lista.")
+    except Exception as e:
+        if conn: conn.rollback()
+        log.error(f"⚠️ Init masterbox Error: {e}")
+    finally:
+        if conn: conn.close()
+
+init_masterbox_table()
+
+
+def _masterbox_map():
+    """Devuelve { SKU_UPPER: units } desde la DB."""
+    if not DATABASE_URL: return {}
+    conn = get_pg_connection()
+    if not conn: return {}
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT sku, units FROM masterbox_config")
+        rows = cur.fetchall()
+        cur.close()
+        return {str(r[0]).strip().upper(): int(r[1]) for r in rows if r[1] and int(r[1]) > 1}
+    except Exception as e:
+        log.error(f"Error leyendo masterbox_config: {e}")
+        return {}
+    finally:
+        if conn: conn.close()
+
+
+@app.route('/masterbox', methods=['GET'])
+def get_masterbox_map():
+    """Mapa público SKU → unidades por caja (lo consume la app en cada arranque)."""
+    return jsonify(_masterbox_map())
+
+
+@app.route('/admin/masterbox', methods=['GET'])
+def admin_list_masterbox():
+    if not _cuit_is_admin(request.args.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    m = _masterbox_map()
+    items = [{"sku": k, "units": v} for k, v in sorted(m.items())]
+    return jsonify({"items": items})
+
+
+@app.route('/admin/masterbox', methods=['POST', 'PUT'])
+def admin_save_masterbox():
+    data = request.get_json(silent=True) or {}
+    if not _cuit_is_admin(data.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    sku = (data.get('sku') or "").strip().upper()
+    try:
+        units = int(data.get('units'))
+    except Exception:
+        units = 0
+    if not sku:
+        return jsonify({"error": "Falta el SKU."}), 400
+    if units < 2:
+        return jsonify({"error": "Las unidades por caja tienen que ser 2 o más."}), 400
+    conn = get_pg_connection()
+    if not conn:
+        return jsonify({"error": "Sin base de datos."}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            INSERT INTO masterbox_config (sku, units, updated_at)
+            VALUES (%s, %s, now())
+            ON CONFLICT (sku) DO UPDATE SET units = EXCLUDED.units, updated_at = now();
+        """, (sku, units))
+        conn.commit()
+        cur.close()
+        return jsonify({"ok": True})
+    except Exception as e:
+        if conn: conn.rollback()
+        log.error(f"⚠️ save masterbox: {e}")
+        return jsonify({"error": "No se pudo guardar."}), 500
+    finally:
+        if conn: conn.close()
+
+
+@app.route('/admin/masterbox/<path:sku>', methods=['DELETE'])
+def admin_delete_masterbox(sku):
+    if not _cuit_is_admin(request.args.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    conn = get_pg_connection()
+    if not conn:
+        return jsonify({"error": "Sin base de datos."}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM masterbox_config WHERE sku = %s", ((sku or "").strip().upper(),))
+        conn.commit()
+        cur.close()
+        return jsonify({"ok": True})
+    except Exception as e:
+        if conn: conn.rollback()
+        log.error(f"⚠️ delete masterbox: {e}")
+        return jsonify({"error": "No se pudo borrar."}), 500
+    finally:
+        if conn: conn.close()
+
+
 # ─────────────────────────── Run ──────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

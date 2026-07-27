@@ -35,7 +35,8 @@ import SearchBar from '../components/SearchBar';
 import { useTourTarget } from '../hooks/useTourTarget';
 import useIsGuest from '../hooks/useIsGuest';
 import type { RootStackParamList } from '../types/navigation';
-import { API_URL } from '../config'; 
+import { API_URL } from '../config';
+import { masterboxStep } from '../config/masterbox';
 
 import TarjetaProductoListado from '../components/TarjetaProductoListado';
 import TarjetaProductoKanban from '../components/TarjetaProductoKanban';
@@ -544,16 +545,21 @@ const Productos = () => {
     const handlePressDetalle = () => navigation.navigate('ProductoDetalle', { id: item.id, preload: item } as any);
 
     const handlePressAgregar = (quantity: number) => {
+        // Masterbox: cada "unidad" que suma el vendedor es en realidad 1 caja de
+        // N unidades. Multiplicamos por el step para que al carrito (y al pedido)
+        // vayan las unidades reales. Productos normales: step = 1.
+        const step = masterboxStep(item.default_code);
+        const delta = quantity * step;
         const existing = itemsInCart.find(it => it.product_id === item.id);
         if (existing) {
-            updateQuantity(item.id, existing.product_uom_qty + quantity);
-        } else if (quantity > 0) {
+            updateQuantity(item.id, Math.max(0, existing.product_uom_qty + delta));
+        } else if (delta > 0) {
             addToCart({
                 product_id: item.id,
                 name: item.name,
                 price_unit: finalPrice,
                 list_price: item.list_price,
-                product_uom_qty: quantity,
+                product_uom_qty: delta,
                 default_code: item.default_code || '',
                 image_md_url: item.image_md_url ?? null,
                 image_thumb_url: item.image_thumb_url ?? null,

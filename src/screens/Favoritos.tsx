@@ -21,6 +21,7 @@ const IconGrid = () => ( <Svg width="22" height="22" viewBox="0 0 24 24" fill="n
 const IconList = () => ( <Svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#2B2B2B" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><Path d="M8 6h13" /><Path d="M8 12h13" /><Path d="M8 18h13" /><Path d="M3 6h.01" /><Path d="M3 12h.01" /><Path d="M3 18h.01" /></Svg> );
 
 import { API_URL } from '../config';
+import { masterboxStep } from '../config/masterbox';
 const HEADER_PAD = 12;
 
 export default function Favoritos() {
@@ -78,12 +79,14 @@ export default function Favoritos() {
   const handlePressAgregar = (item: any, quantity: number) => {
     const existing = itemsInCart.find(it => it.product_id === item.id);
     const finalPrice = (item.price_offer && item.price_offer > 0) ? item.price_offer : item.list_price;
+    // Masterbox: 1 caja = N unidades reales (ver Productos.tsx).
+    const delta = quantity * masterboxStep(item.default_code);
     if (existing) {
-        updateQuantity(item.id, existing.product_uom_qty + quantity);
-    } else if (quantity > 0) {
+        updateQuantity(item.id, Math.max(0, existing.product_uom_qty + delta));
+    } else if (delta > 0) {
         addToCart({
-            product_id: item.id, name: item.name, price_unit: finalPrice, list_price: item.list_price, 
-            product_uom_qty: quantity, default_code: item.default_code || '', 
+            product_id: item.id, name: item.name, price_unit: finalPrice, list_price: item.list_price,
+            product_uom_qty: delta, default_code: item.default_code || '',
             image_md_url: item.image_md_url, image_thumb_url: item.image_thumb_url,
         });
     }

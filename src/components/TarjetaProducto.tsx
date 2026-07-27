@@ -31,6 +31,7 @@ const MODAL_W = Math.min(SCREEN_W * MODAL_W_PCT, 420);
 const MODAL_CUT = 20;
 
 import { API_URL } from '../config';
+import { masterboxUnidades } from '../config/masterbox';
 
 // --- LÓGICA DE IMAGEN FIREBASE (IMPORTADA DE LAS OTRAS TARJETAS) ---
 function needsAltMedia(u: string | null | undefined) {
@@ -105,6 +106,10 @@ const TarjetaProducto: React.FC<Props> = (props) => {
   } = props;
 
   const isDesktopWeb = useIsDesktopWeb();
+  const mbUnits = masterboxUnidades(code);
+  // Cantidad de cajas = unidades / unidades por caja (para mostrarlo en el carrito).
+  const mbCajas = mbUnits ? Math.round((quantity || 0) / mbUnits) : 0;
+  const mbLabel = mbUnits ? `${mbCajas} ${mbCajas === 1 ? 'caja' : 'cajas'} · ${quantity} u. (${mbUnits} u. c/caja)` : '';
   const [plazos, setPlazos] = useState<PaymentTerm[]>([]);
   const [showTermModal, setShowTermModal] = useState(false);
   const [imgError, setImgError] = useState(false);
@@ -228,6 +233,12 @@ const TarjetaProducto: React.FC<Props> = (props) => {
           <Text style={dstyles.codigo}>{code}</Text>
           <Text style={dstyles.nombre} numberOfLines={2}>{name}</Text>
           <Text style={dstyles.marca}>{brand}</Text>
+          {mbUnits && (
+            <View style={dstyles.masterboxRow}>
+              <Feather name="package" size={11} color="#B45309" />
+              <Text style={dstyles.masterboxText}>{mbLabel}</Text>
+            </View>
+          )}
         </View>
 
         {!termReadOnly && (
@@ -289,6 +300,12 @@ const TarjetaProducto: React.FC<Props> = (props) => {
             <Text style={styles.codigo}>{code}</Text>
             <Text style={styles.nombre} numberOfLines={2}>{name}</Text>
             <Text style={styles.marca}>{brand}</Text>
+            {mbUnits && (
+              <View style={styles.masterboxRow}>
+                <Feather name="package" size={12} color="#B45309" />
+                <Text style={styles.masterboxText}>{mbLabel}</Text>
+              </View>
+            )}
 
             <View style={styles.bottomRow}>
                 <View style={{ flexDirection: 'row', alignItems: 'baseline' }}>
@@ -330,6 +347,8 @@ const styles = StyleSheet.create({
   codigo: { fontSize: 12, fontFamily: 'BarlowCondensed-Regular', color: '#6B7280', marginTop: 2 },
   nombre: { fontSize: 16, lineHeight: 18, fontFamily: 'BarlowCondensed-Bold', color: '#1F2937', marginBottom: 0 },
   marca: { fontSize: 12, fontFamily: 'BarlowCondensed-Bold', color: '#9CA3AF', textTransform: 'uppercase' },
+  masterboxRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 3 },
+  masterboxText: { fontSize: 12, fontFamily: 'BarlowCondensed-Bold', color: '#B45309', letterSpacing: 0.2 },
   bottomRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 'auto', marginBottom: 10 },
   
   precio: { fontSize: 22, fontFamily: 'BarlowCondensed-Bold' },
@@ -389,6 +408,8 @@ const dstyles = StyleSheet.create({
   codigo: { fontSize: 11, fontFamily: 'BarlowCondensed-Regular', color: '#9CA3AF' },
   nombre: { fontSize: 15, lineHeight: 17, fontFamily: 'BarlowCondensed-Bold', color: '#1F2937', marginTop: 1 },
   marca: { fontSize: 11, fontFamily: 'BarlowCondensed-Bold', color: '#9CA3AF', textTransform: 'uppercase', marginTop: 1 },
+  masterboxRow: { flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: 3 },
+  masterboxText: { fontSize: 11.5, fontFamily: 'BarlowCondensed-Bold', color: '#B45309', letterSpacing: 0.2 },
   termBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     width: 168, height: 34,

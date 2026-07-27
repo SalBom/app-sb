@@ -9,6 +9,7 @@ import { getCuitFromStorage, getUserProfile } from '../utils/authStorage';
 import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
 import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 import BackfillIAModal from '../components/BackfillIAModal';
+import MasterboxAdminModal from '../components/MasterboxAdminModal';
 
 const AvatarPlaceholder = require('../../assets/avatarPlaceholder.png');
 
@@ -44,6 +45,7 @@ export default function AdminPanel() {
 
   const [user, setUser] = useState<UserState>({ name: 'USUARIO', image: null });
   const [backfillVisible, setBackfillVisible] = useState(false);
+  const [masterboxVisible, setMasterboxVisible] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -84,10 +86,12 @@ export default function AdminPanel() {
               <AdminCardD icon="pricetag-outline" label="Marcas" onPress={() => {}} />
               <AdminCardD icon="image-outline" label="Banners" onPress={() => navigation.navigate('AdminBanners')} />
               <AdminCardD icon="sparkles-outline" label="Fichas con IA (lote)" sub="Completar atributos automáticamente" onPress={() => setBackfillVisible(true)} />
+              <AdminCardD icon="cube-outline" label="Masterbox" sub="Productos que se venden por caja" onPress={() => setMasterboxVisible(true)} />
             </View>
           </View>
         </ScrollView>
         <BackfillIAModal visible={backfillVisible} onClose={() => setBackfillVisible(false)} />
+        <MasterboxAdminModal visible={masterboxVisible} onClose={() => setMasterboxVisible(false)} />
       </View>
     );
   }
@@ -185,9 +189,21 @@ export default function AdminPanel() {
            <Ionicons name="chevron-forward" size={22} color="#333" style={{ marginLeft: 'auto' }} />
         </TouchableOpacity>
 
+        <View style={styles.separator} />
+
+        <TouchableOpacity style={styles.mainMenuItem} onPress={() => setMasterboxVisible(true)}>
+           <Ionicons name="cube-outline" size={22} color="#B45309" style={{ marginRight: 10 }} />
+           <View>
+             <Text style={styles.mainMenuText}>MASTERBOX</Text>
+             <Text style={[styles.proxText, { color: '#666', marginTop: 0 }]}>Productos que se venden por caja</Text>
+           </View>
+           <Ionicons name="chevron-forward" size={22} color="#333" style={{ marginLeft: 'auto' }} />
+        </TouchableOpacity>
+
       </View>
 
       <BackfillIAModal visible={backfillVisible} onClose={() => setBackfillVisible(false)} />
+      <MasterboxAdminModal visible={masterboxVisible} onClose={() => setMasterboxVisible(false)} />
     </ScrollView>
   );
 }

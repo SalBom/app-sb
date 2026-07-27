@@ -23,6 +23,7 @@ import { Ionicons, Feather } from '@expo/vector-icons';
 
 import { getCuitFromStorage } from '../../utils/authStorage';
 import { API_URL } from '../../config';
+import { masterboxStep } from '../../config/masterbox';
 import useIsDesktopWeb from '../../hooks/useIsDesktopWeb';
 import { navigationRef } from '../../../App';
 import { useTourTarget } from '../../hooks/useTourTarget';
@@ -322,6 +323,8 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
   
   const renderItem = ({ item }: any) => {
     const { effectivePct } = getItemDiscounts(item);
+    // Masterbox: los +/- suman/restan de a una caja (N unidades), no de a 1.
+    const mbStep = masterboxStep(item.default_code);
 
     return (
         <View style={styles.itemContainer}> 
@@ -341,8 +344,8 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
                 discountRules={discountRules}
                 termReadOnly
                 onPaymentTermChange={(newId) => updateItemPaymentTerm(item.product_id, newId)}
-                onAdd={() => updateQuantity(item.product_id, item.product_uom_qty + 1)}
-                onSubtract={() => updateQuantity(item.product_id, Math.max(1, item.product_uom_qty - 1))}
+                onAdd={() => updateQuantity(item.product_id, item.product_uom_qty + mbStep)}
+                onSubtract={() => updateQuantity(item.product_id, Math.max(mbStep, item.product_uom_qty - mbStep))}
                 onDelete={() => removeFromCart(item.product_id)}
             />
         </View>

@@ -8,6 +8,7 @@ import ShimuraIsologo from '../../assets/shimuraIsologo.svg';
 import StockSemaphore from './StockSemaphore';
 import useIsGuest from '../hooks/useIsGuest';
 import { contactarPorWhatsApp } from '../utils/whatsapp';
+import { masterboxUnidades } from '../config/masterbox';
 
 function needsAltMedia(u: string | null | undefined) {
   if (!u) return false;
@@ -121,6 +122,9 @@ const TarjetaProductoDesktop: React.FC<Props> = ({ producto, isFavorite, onPress
         {!isGuest && <StockSemaphore status={producto.stock_state} size={10} style={{ marginLeft: 6 }} />}
       </View>
       <Text style={styles.name} numberOfLines={2}>{(producto.name || '').toUpperCase()}</Text>
+      {masterboxUnidades(producto.default_code) && (
+        <Text style={styles.masterboxText}>MASTERBOX · CAJA x{masterboxUnidades(producto.default_code)} u.</Text>
+      )}
       {hasOffer ? (
         <View style={styles.priceRow}>
           <Text style={styles.priceStriked}>${fmt(producto.list_price)}</Text>
@@ -157,6 +161,7 @@ const styles = StyleSheet.create({
   skuRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10 },
   sku: { fontFamily: 'BarlowCondensed-Regular', fontSize: 11, color: '#8A8A8A' },
   name: { fontFamily: 'BarlowCondensed-Bold', fontSize: 14, lineHeight: 16, color: '#313131', marginTop: 2, minHeight: 32 },
+  masterboxText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 11, color: '#B45309', marginTop: 4 },
   priceRow: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6, marginTop: 6 },
   priceStriked: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#9CA3AF', textDecorationLine: 'line-through' },
   priceOffer: { fontFamily: 'BarlowCondensed-Bold', fontSize: 20, color: '#D32F2F' },
