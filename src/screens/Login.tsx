@@ -48,6 +48,9 @@ const Login: React.FC<Props> = ({ navigation }) => {
   
   const [userNameForLoading, setUserNameForLoading] = useState('');
   const [loading, setLoading] = useState(false);
+  // Mensaje de error inline (Alert.alert no se renderiza en react-native-web,
+  // así que el aviso de "usuario/contraseña incorrectos" tiene que ir en pantalla).
+  const [errorMsg, setErrorMsg] = useState('');
 
   const isDesktopWeb = useIsDesktopWeb();
 
@@ -100,14 +103,15 @@ const Login: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   const handleAction = async () => {
+    setErrorMsg('');
     if (!cuit.trim() || !password.trim()) {
-      Alert.alert("Atención", "Por favor, completa todos los campos.");
+      setErrorMsg("Completá el CUIT y la contraseña.");
       return;
     }
 
     if (mode === 'register') {
       if (password !== confirmPassword) {
-        Alert.alert("Error", "Las contraseñas no coinciden.");
+        setErrorMsg("Las contraseñas no coinciden.");
         return;
       }
       doRegister();
@@ -185,12 +189,14 @@ const Login: React.FC<Props> = ({ navigation }) => {
     } catch (e: any) {
       setLoading(false);
       const status = e.response?.data?.status;
-      const msg = e.response?.data?.error || "Error al iniciar sesión";
 
       if (status === 'PENDING') {
-        Alert.alert("Cuenta Pendiente", "Tu solicitud está siendo revisada por la administración.");
+        setErrorMsg("Tu cuenta está pendiente de aprobación por la administración.");
+      } else if (!e.response) {
+        // Sin respuesta del servidor: problema de conexión, no de credenciales.
+        setErrorMsg("No pudimos conectar. Revisá tu conexión e intentá de nuevo.");
       } else {
-        Alert.alert("Error", msg);
+        setErrorMsg("CUIT o contraseña incorrectos. Verificá los datos e intentá de nuevo.");
       }
     }
   };
@@ -213,12 +219,14 @@ const Login: React.FC<Props> = ({ navigation }) => {
       }
     } catch (e: any) {
       const action = e.response?.data?.action;
-      const msg = e.response?.data?.error || "Error al registrarse";
+      const msg = e.response?.data?.error || "No pudimos procesar la solicitud.";
 
       if (action === 'CONTACT_ADMIN') {
-        Alert.alert("Acceso Restringido", "El CUIT no figura en nuestra base de clientes.");
+        setErrorMsg("El CUIT no figura en nuestra base de clientes. Contactá a administración.");
+      } else if (!e.response) {
+        setErrorMsg("No pudimos conectar. Revisá tu conexión e intentá de nuevo.");
       } else {
-        Alert.alert("Error", msg);
+        setErrorMsg(msg);
       }
     } finally {
       setLoading(false);
@@ -231,6 +239,7 @@ const Login: React.FC<Props> = ({ navigation }) => {
     setConfirmPassword('');
     setShowPassword(false);
     setShowConfirmPassword(false);
+    setErrorMsg('');
   };
 
   // ===========================================================================
@@ -335,6 +344,13 @@ const Login: React.FC<Props> = ({ navigation }) => {
                 </View>
                 <Text style={[styles.checkboxLabel, d.fCheckbox]}>Recordar mis datos de inicio de sesión</Text>
               </TouchableOpacity>
+            )}
+
+            {!!errorMsg && (
+              <View style={styles.errorBanner}>
+                <Feather name="alert-circle" size={16} color="#B91C1C" />
+                <Text style={styles.errorBannerText}>{errorMsg}</Text>
+              </View>
             )}
 
             <TouchableOpacity style={[d.button, loading && { opacity: 0.7 }]} onPress={handleAction} disabled={loading} activeOpacity={0.85}>
@@ -513,8 +529,15 @@ const Login: React.FC<Props> = ({ navigation }) => {
             </TouchableOpacity>
           )}
 
-          <TouchableOpacity 
-            style={styles.button} 
+          {!!errorMsg && (
+            <View style={styles.errorBanner}>
+              <Feather name="alert-circle" size={16} color="#B91C1C" />
+              <Text style={styles.errorBannerText}>{errorMsg}</Text>
+            </View>
+          )}
+
+          <TouchableOpacity
+            style={styles.button}
             onPress={handleAction}
             disabled={loading}
             activeOpacity={0.8}
@@ -690,6 +713,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: '#1C9BD8', backgroundColor: '#FFFFFF',
   },
   guestBtnMobileText: { color: '#1C9BD8', fontFamily: 'Rubik-SemiBold', fontSize: 14 },
+  errorBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, width: '100%',
+    backgroundColor: '#FEE2E2', borderWidth: 1, borderColor: '#FCA5A5',
+    borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 16,
+  },
+  errorBannerText: { flex: 1, color: '#B91C1C', fontFamily: 'Rubik', fontSize: 13, lineHeight: 17 },
 });
 
 // --- Estilos exclusivos del login DESKTOP (split moderno) ---
