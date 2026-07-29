@@ -13,7 +13,8 @@ import {
   FlatList,
   Modal,
   Pressable,
-  Platform
+  Platform,
+  TextInput
 } from 'react-native';
 import { Image } from 'expo-image'; 
 import { useRoute, useNavigation } from '@react-navigation/native';
@@ -117,6 +118,16 @@ function ProductoDetalle() {
   const [producto, setProducto] = useState<ProductoLite | null>(preload || null);
   const [loading, setLoading] = useState(!preload);
   const [cantidad, setCantidad] = useState(1);
+  // Cantidad escrita a mano: mientras se tipea guardamos el texto crudo y recién
+  // al salir del campo (o Enter) lo validamos. Acá la cantidad son CAJAS si el
+  // producto es masterbox, así que no hace falta redondear a múltiplos.
+  const [cantidadDraft, setCantidadDraft] = useState<string | null>(null);
+  const commitCantidad = () => {
+    if (cantidadDraft === null) return;
+    const n = parseInt(cantidadDraft, 10);
+    setCantidadDraft(null);
+    setCantidad(!n || n < 1 ? 1 : n);
+  };
   const [tab, setTab] = useState<'carac' | 'desc'>('carac');
   const [desktopTab, setDesktopTab] = useState<'desc' | 'acc' | 'res'>('desc');
   const [relacionados, setRelacionados] = useState<any[]>([]);
@@ -480,6 +491,9 @@ function ProductoDetalle() {
 
   const isMainFav = isFavorite(producto.id);
   const mbUnits = masterboxUnidades(producto.default_code);
+  // Sin stock: el depósito informó 0 unidades. Si todavía no llegó el dato
+  // (stock_qty undefined) no avisamos nada, para no dar un falso "sin stock".
+  const sinStock = producto.stock_qty != null && producto.stock_qty <= 0;
 
   const getBrandString = () => {
     const raw = producto?.marca_name || producto?.brand || producto?.marca;
@@ -666,6 +680,16 @@ function ProductoDetalle() {
                   </View>
                 )}
 
+                {sinStock && !isGuest && (
+                  <View style={dstyles.sinStockBox}>
+                    <Feather name="alert-triangle" size={16} color="#B91C1C" />
+                    <Text style={dstyles.sinStockBoxText}>
+                      <Text style={{ fontWeight: '700' }}>SIN STOCK.</Text> Este producto no tiene
+                      unidades disponibles. Consultá la fecha de reposición antes de confirmar el pedido.
+                    </Text>
+                  </View>
+                )}
+
                 {isGuest ? (
                   // Invitado: sin carrito ni favoritos; contacto por WhatsApp.
                   <TouchableOpacity
@@ -693,7 +717,18 @@ function ProductoDetalle() {
                         <TouchableOpacity onPress={() => setCantidad(c => Math.max(1, c - 1))} style={dstyles.qtyBtnWrapD}>
                           <Feather name="chevron-left" size={16} color="#8A8A8A" />
                         </TouchableOpacity>
-                        <View style={dstyles.qtyValBadgeD}><Text style={dstyles.qtyValD}>{cantidad}</Text></View>
+                        <View style={dstyles.qtyValBadgeD}>
+                          <TextInput
+                            style={[dstyles.qtyValD, dstyles.qtyInputD]}
+                            value={cantidadDraft ?? String(cantidad)}
+                            onChangeText={(t) => setCantidadDraft(t.replace(/[^0-9]/g, ''))}
+                            onBlur={commitCantidad}
+                            onSubmitEditing={commitCantidad}
+                            keyboardType="number-pad"
+                            selectTextOnFocus
+                            returnKeyType="done"
+                          />
+                        </View>
                         <TouchableOpacity onPress={() => setCantidad(c => c + 1)} style={dstyles.qtyBtnWrapD}>
                           <Feather name="chevron-right" size={16} color="#8A8A8A" />
                         </TouchableOpacity>
@@ -893,15 +928,35 @@ function ProductoDetalle() {
         </TouchableOpacity>
       ) : (
         <>
+          {sinStock && (
+            <View style={styles.sinStockBox}>
+              <Feather name="alert-triangle" size={16} color="#B91C1C" />
+              <Text style={styles.sinStockBoxText}>
+                <Text style={{ fontFamily: 'BarlowCondensed-Bold' }}>SIN STOCK.</Text> Este producto no
+                tiene unidades disponibles. Consultá la fecha de reposición antes de confirmar el pedido.
+              </Text>
+            </View>
+          )}
+
           <View style={{ marginTop: 10 }}>
             <View style={{ width: '100%', height: 56 }}>
               <ContenedorQtySvg width="100%" height="100%" />
               <View style={styles.qtyOverlay}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}>
-                  <Text style={styles.qtyLabel}>Cantidad: <Text style={styles.qtyNum}>{cantidad}</Text></Text>
+                  <Text style={styles.qtyLabel}>Cantidad: </Text>
+                  <TextInput
+                    style={[styles.qtyNum, styles.qtyInput]}
+                    value={cantidadDraft ?? String(cantidad)}
+                    onChangeText={(t) => setCantidadDraft(t.replace(/[^0-9]/g, ''))}
+                    onBlur={commitCantidad}
+                    onSubmitEditing={commitCantidad}
+                    keyboardType="number-pad"
+                    selectTextOnFocus
+                    returnKeyType="done"
+                  />
                   <View style={{ marginLeft: 16, flexDirection: 'row', alignItems: 'center' }}>
                     <StockSemaphore status={producto?.stock_state} size={12} />
-                    <Text style={styles.stockText}>{producto?.stock_state === 'red' ? 'Stock Crítico' : producto?.stock_state === 'orange' ? 'Stock Medio' : 'Disponible'}</Text>
+                    <Text style={styles.stockText}>{sinStock ? 'Sin stock' : producto?.stock_state === 'red' ? 'Stock Crítico' : producto?.stock_state === 'orange' ? 'Stock Medio' : 'Disponible'}</Text>
                   </View>
                 </View>
                 <View style={styles.qtyControls}>
@@ -1053,9 +1108,18 @@ const styles = StyleSheet.create({
   paymentsLink: { color: '#139EDB', fontSize: 13, textDecorationLine: 'underline', fontFamily: 'BarlowCondensed-Light', marginTop: 4 },
   masterboxBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FFF7ED', borderWidth: 1, borderColor: '#FED7AA', borderRadius: 10, paddingVertical: 9, paddingHorizontal: 11, marginTop: 12 },
   masterboxBoxText: { flex: 1, fontFamily: 'BarlowCondensed-SemiBold', fontSize: 15, color: '#B45309', lineHeight: 18 },
+  sinStockBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#FEE2E2', borderWidth: 1, borderColor: '#FCA5A5', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 11, marginTop: 12 },
+  sinStockBoxText: { flex: 1, fontFamily: 'Rubik', fontSize: 13, color: '#B91C1C', lineHeight: 18 },
   qtyOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15 },
   qtyLabel: { fontSize: 16, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' },
   qtyNum: { fontFamily: 'BarlowCondensed-Bold' },
+  // Campo editable de cantidad: se ve igual que el número, pero se puede escribir.
+  qtyInput: {
+    minWidth: 44, textAlign: 'center', paddingVertical: 2, paddingHorizontal: 4,
+    borderWidth: 1, borderColor: '#D3D6DB', borderRadius: 6, backgroundColor: '#FFFFFF',
+    fontSize: 15, color: '#2B2B2B',
+    ...(Platform.OS === 'web' ? { outlineStyle: 'none' } as any : {}),
+  },
   stockText: { marginLeft: 6, fontSize: 13, fontFamily: 'BarlowCondensed-Medium', color: '#2B2B2B' },
   stockHint: { color: '#1C9BD8', fontFamily: 'BarlowCondensed-Bold', fontSize: 12, marginTop: 4, marginLeft: 6 },
   qtyControls: { flexDirection: 'row', marginLeft: 'auto' },
@@ -1149,6 +1213,8 @@ const dstyles = StyleSheet.create({
   paymentsLinkD: { fontFamily: 'Rubik', fontSize: 12, color: '#1C9BD8', textDecorationLine: 'underline', marginTop: 4, marginBottom: 16 },
   masterboxBox: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FFF7ED', borderWidth: 1, borderColor: '#FED7AA', borderRadius: 10, paddingVertical: 9, paddingHorizontal: 11, marginBottom: 16 },
   masterboxBoxText: { flex: 1, fontFamily: 'BarlowCondensed-SemiBold', fontSize: 14, color: '#B45309', lineHeight: 17 },
+  sinStockBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#FEE2E2', borderWidth: 1, borderColor: '#FCA5A5', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 11, marginTop: 12 },
+  sinStockBoxText: { flex: 1, fontFamily: 'Rubik', fontSize: 12.5, color: '#B91C1C', lineHeight: 17 },
 
   qtyRowD: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 14, marginBottom: 14 },
   qtyLabelD: { fontFamily: 'Rubik', fontWeight: '700', fontSize: 17, color: '#3F3F3F' },
@@ -1156,6 +1222,10 @@ const dstyles = StyleSheet.create({
   qtyBtnWrapD: { width: 26, height: 26, alignItems: 'center', justifyContent: 'center' },
   qtyValBadgeD: { minWidth: 32, height: 32, borderRadius: 16, backgroundColor: '#139EDB', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
   qtyValD: { fontFamily: 'Rubik', fontWeight: '700', fontSize: 15, color: '#FFFFFF' },
+  qtyInputD: {
+    minWidth: 30, textAlign: 'center', paddingVertical: 0, paddingHorizontal: 2,
+    ...(Platform.OS === 'web' ? { outlineStyle: 'none' } as any : {}),
+  },
 
   btnAgregarD: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', height: 50, borderRadius: 10, backgroundColor: '#1C9BD8', paddingHorizontal: 20, marginBottom: 16 },
   btnWhatsappD: { backgroundColor: '#25D366', marginTop: 12 },

@@ -1,5 +1,5 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Dimensions, Modal, Pressable, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Dimensions, Modal, Pressable, ScrollView, TextInput, Platform } from 'react-native';
 import { Image } from 'expo-image'; 
 import Svg, { Path, Defs, Filter, FeGaussianBlur, G } from 'react-native-svg';
 import { Feather } from '@expo/vector-icons';
@@ -84,6 +84,9 @@ interface Props {
   onAdd: () => void;
   onSubtract: () => void;
   onDelete: () => void;
+  // Permite escribir la cantidad a mano (además de los +/-). Recibe las
+  // unidades finales ya validadas.
+  onSetQuantity?: (qty: number) => void;
 }
 
 const fmt = (n: number) =>
@@ -102,7 +105,7 @@ const TarjetaProducto: React.FC<Props> = (props) => {
     paymentTermId, discountPct, discountRules,
     onPaymentTermChange, termReadOnly,
     image_1920, image_url, image_md_url, image_thumb_url,
-    onAdd, onSubtract, onDelete,
+    onAdd, onSubtract, onDelete, onSetQuantity,
   } = props;
 
   const isDesktopWeb = useIsDesktopWeb();
@@ -110,6 +113,26 @@ const TarjetaProducto: React.FC<Props> = (props) => {
   // Cantidad de cajas = unidades / unidades por caja (para mostrarlo en el carrito).
   const mbCajas = mbUnits ? Math.round((quantity || 0) / mbUnits) : 0;
   const mbLabel = mbUnits ? `${mbCajas} ${mbCajas === 1 ? 'caja' : 'cajas'} · ${quantity} u. (${mbUnits} u. c/caja)` : '';
+  // --- CANTIDAD EDITABLE A MANO ---
+  // Mientras el usuario escribe guardamos el texto crudo (puede quedar vacío
+  // un instante); recién al salir del campo o dar Enter validamos y avisamos.
+  const [qtyDraft, setQtyDraft] = useState<string | null>(null);
+  const commitQty = () => {
+    if (qtyDraft === null) return;
+    const raw = parseInt(qtyDraft, 10);
+    setQtyDraft(null);
+    if (!onSetQuantity) return;
+    if (!raw || raw < 1) { onSetQuantity(mbUnits || 1); return; }
+    // Masterbox: la cantidad siempre tiene que ser múltiplo de la caja, así que
+    // redondeamos a la caja más cercana (mínimo una).
+    if (mbUnits) {
+      const cajas = Math.max(1, Math.round(raw / mbUnits));
+      onSetQuantity(cajas * mbUnits);
+    } else {
+      onSetQuantity(raw);
+    }
+  };
+
   const [plazos, setPlazos] = useState<PaymentTerm[]>([]);
   const [showTermModal, setShowTermModal] = useState(false);
   const [imgError, setImgError] = useState(false);
@@ -255,7 +278,20 @@ const TarjetaProducto: React.FC<Props> = (props) => {
 
         <View style={dstyles.qtyPill}>
           <TouchableOpacity onPress={onSubtract} style={dstyles.qtyBtn} hitSlop={5}><Feather name="minus" size={14} color="#FFFFFF" /></TouchableOpacity>
-          <Text style={dstyles.qtyText}>{quantity}</Text>
+          {onSetQuantity ? (
+            <TextInput
+              style={[dstyles.qtyText, dstyles.qtyInput]}
+              value={qtyDraft ?? String(quantity)}
+              onChangeText={(t) => setQtyDraft(t.replace(/[^0-9]/g, ''))}
+              onBlur={commitQty}
+              onSubmitEditing={commitQty}
+              keyboardType="number-pad"
+              selectTextOnFocus
+              returnKeyType="done"
+            />
+          ) : (
+            <Text style={dstyles.qtyText}>{quantity}</Text>
+          )}
           <TouchableOpacity onPress={onAdd} style={dstyles.qtyBtn} hitSlop={5}><Feather name="plus" size={14} color="#FFFFFF" /></TouchableOpacity>
         </View>
 
@@ -319,7 +355,20 @@ const TarjetaProducto: React.FC<Props> = (props) => {
 
                 <View style={styles.qtyPill}>
                     <TouchableOpacity onPress={onSubtract} style={styles.qtyBtn} hitSlop={5}><Feather name="minus" size={14} color="#FFFFFF" /></TouchableOpacity>
-                    <Text style={styles.qtyText}>{quantity}</Text>
+                    {onSetQuantity ? (
+                      <TextInput
+                        style={[styles.qtyText, styles.qtyInput]}
+                        value={qtyDraft ?? String(quantity)}
+                        onChangeText={(t) => setQtyDraft(t.replace(/[^0-9]/g, ''))}
+                        onBlur={commitQty}
+                        onSubmitEditing={commitQty}
+                        keyboardType="number-pad"
+                        selectTextOnFocus
+                        returnKeyType="done"
+                      />
+                    ) : (
+                      <Text style={styles.qtyText}>{quantity}</Text>
+                    )}
                     <TouchableOpacity onPress={onAdd} style={styles.qtyBtn} hitSlop={5}><Feather name="plus" size={14} color="#FFFFFF" /></TouchableOpacity>
                 </View>
             </View>
@@ -367,6 +416,8 @@ const styles = StyleSheet.create({
   },
   qtyBtn: { width: 28, height: '100%', alignItems: 'center', justifyContent: 'center' },
   qtyText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#FFFFFF', marginHorizontal: 2, marginTop: -2 },
+  // Campo editable: mismo look que el número, pero aceptando escritura.
+  qtyInput: { minWidth: 34, textAlign: 'center', paddingVertical: 0, marginTop: 0, ...(Platform.OS === 'web' ? { outlineStyle: 'none' } as any : {}) },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalWrapper: { justifyContent: 'center' },
   modalInner: { padding: 20, paddingVertical: 25 },
@@ -427,6 +478,7 @@ const dstyles = StyleSheet.create({
   },
   qtyBtn: { width: 28, height: '100%', alignItems: 'center', justifyContent: 'center' },
   qtyText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#FFFFFF', marginHorizontal: 2, marginTop: -2 },
+  qtyInput: { minWidth: 34, textAlign: 'center', paddingVertical: 0, marginTop: 0, ...(Platform.OS === 'web' ? { outlineStyle: 'none' } as any : {}) },
   deleteBtn: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center' },
 });
 

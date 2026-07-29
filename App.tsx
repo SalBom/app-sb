@@ -12,6 +12,7 @@ import { useCartStore } from './src/store/cartStore';
 import { getCuitFromStorage } from './src/utils/authStorage';
 import { API_URL } from './src/config';
 import { cargarMasterbox } from './src/config/masterbox';
+import ErrorBoundary from './src/components/ErrorBoundary';
 
 // Mantiene visible la pantalla de carga (splash screen) hasta que digamos lo contrario
 SplashScreen.preventAutoHideAsync();
@@ -66,9 +67,13 @@ export default function App() {
 
   return (
     <SafeAreaProvider>
-      <NavigationContainer<RootStackParamList> ref={navigationRef} linking={linking}>
-        <AppNavigator />
-      </NavigationContainer>
+      {/* Cualquier error de render queda contenido acá: el usuario ve un aviso
+          con el detalle en vez de una pantalla en blanco. */}
+      <ErrorBoundary>
+        <NavigationContainer<RootStackParamList> ref={navigationRef} linking={linking}>
+          <AppNavigator />
+        </NavigationContainer>
+      </ErrorBoundary>
     </SafeAreaProvider>
   );
 }

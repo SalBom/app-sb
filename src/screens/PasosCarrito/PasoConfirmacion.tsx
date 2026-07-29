@@ -15,6 +15,7 @@ import {
   ActivityIndicator
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Feather } from '@expo/vector-icons';
 import CarritoHeader from '../../components/CarritoHeader';
 import { useCartStore } from '../../store/cartStore';
 import LayoutRefresh from '../../components/LayoutRefresh';
@@ -114,6 +115,9 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const [finalOrderName, setFinalOrderName] = useState('');
   
   const [finalTotal, setFinalTotal] = useState(0);
+  // Error visible en pantalla: Alert.alert NO se renderiza en la web, así que
+  // los fallos al confirmar quedaban totalmente invisibles para el vendedor.
+  const [errorConfirm, setErrorConfirm] = useState('');
   const [loading, setLoading] = useState(false);
   const isSubmittingRef = useRef(false); 
   const [observationText, setObservationText] = useState(notasIniciales || '');
@@ -391,10 +395,11 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     if (loading || isSubmittingRef.current) return;
     isSubmittingRef.current = true;
     setLoading(true);
-    
+    setErrorConfirm('');
+
     try {
       if (itemsProcesados.length === 0) {
-        Alert.alert("Error", "No hay productos válidos en el carrito.");
+        setErrorConfirm("No hay productos válidos en el carrito.");
         isSubmittingRef.current = false;
         setLoading(false);
         return;
@@ -414,15 +419,15 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
         setShowSuccess(true);
         clearCart(); 
       } else {
-        Alert.alert('Error', j?.error ? String(j.error) : 'Error al confirmar.');
+        setErrorConfirm(j?.error ? String(j.error) : 'No se pudo confirmar el pedido. Intentá de nuevo.');
         isSubmittingRef.current = false;
       }
     } catch (e: any) {
         if (e.response?.status === 409) {
-           Alert.alert("Revisar carrito", e.response.data.error || "Uno de los productos ya no está disponible.");
+           setErrorConfirm(e.response.data?.error || "Uno de los productos ya no está disponible. Revisá el carrito.");
         } else {
            const err = e.response?.data?.error || e.message || 'Error de conexión';
-           Alert.alert('Estado del Pedido', `Pudo haber un problema de conexión al recibir respuesta. Verifique "Mis Pedidos".\n\nDetalle: ${err}`); 
+           setErrorConfirm(`Hubo un problema de conexión al confirmar. IMPORTANTE: el pedido puede haberse generado igual — revisá "Mis Pedidos" antes de volver a cargarlo.\n\nDetalle: ${err}`);
         }
         isSubmittingRef.current = false;
     } finally {
@@ -642,6 +647,12 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
                 <View style={dstyles.summaryCard}>
                   <Text style={dstyles.cardTitle}>RESUMEN</Text>
                   {taxSummary}
+                  {!!errorConfirm && (
+                    <View style={styles.errorConfirmBox}>
+                      <Feather name="alert-triangle" size={15} color="#B91C1C" />
+                      <Text style={styles.errorConfirmText}>{errorConfirm}</Text>
+                    </View>
+                  )}
                   <View style={dstyles.summaryButtons}>
                     <TouchableWithoutFeedback disabled={loading || isSyncingTotals} onPressIn={() => animateBtn(confirmAnim, 1)} onPressOut={() => animateBtn(confirmAnim, 0)} onPress={handleConfirmPress}>
                       <Animated.View style={[dstyles.confirm, (loading || isSyncingTotals) && { backgroundColor: '#A0A0A0' }, { transform: [{ scale: getScale(confirmAnim) }, { translateY: getTranslate(confirmAnim) }] }]}>
@@ -691,6 +702,12 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       </LayoutRefresh>
 
       <View style={[styles.footerContainer, { paddingBottom: Math.max(20, insets.bottom + 35) }]}>
+        {!!errorConfirm && (
+          <View style={styles.errorConfirmBox}>
+            <Feather name="alert-triangle" size={15} color="#B91C1C" />
+            <Text style={styles.errorConfirmText}>{errorConfirm}</Text>
+          </View>
+        )}
         <View style={styles.buttons}>
           <TouchableWithoutFeedback onPressIn={() => animateBtn(backAnim, 1)} onPressOut={() => animateBtn(backAnim, 0)} onPress={handleBackPress}>
               <Animated.View style={[styles.back, { transform: [{ scale: getScale(backAnim) }, { translateY: getTranslate(backAnim) }] }]}>
@@ -751,6 +768,13 @@ const styles = StyleSheet.create({
 
   footerContainer: { backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#f0f0f0', paddingTop: 15, paddingHorizontal: 10, shadowColor: '#000', shadowOffset: { width: 0, height: -3 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 5 },
   buttons: { flexDirection: 'row', justifyContent: 'space-between', gap: 10, paddingHorizontal: 8 },
+  errorConfirmBox: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 8,
+    backgroundColor: '#FEE2E2', borderWidth: 1, borderColor: '#FCA5A5',
+    borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10,
+    marginBottom: 12, marginHorizontal: 8,
+  },
+  errorConfirmText: { flex: 1, color: '#B91C1C', fontFamily: 'Rubik', fontSize: 12.5, lineHeight: 17 },
   back: { flex: 1, height: 46, borderRadius: 999, borderWidth: 1, borderColor: '#D3D6DB', alignItems: 'center', justifyContent: 'center', backgroundColor: '#fff' },
   backText: { color: '#2B2B2B', fontWeight: '800' },
   confirm: { flex: 1, height: 46, borderRadius: 999, backgroundColor: '#1C9BD8', alignItems: 'center', justifyContent: 'center' },

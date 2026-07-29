@@ -15,7 +15,7 @@ import {
   Pressable
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useCartStore, ClienteSel } from '../../store/cartStore';
+import { useCartStore, ClienteSel, PRODUCTO_TRANSPORTE_ID } from '../../store/cartStore';
 import TarjetaProducto from '../../components/TarjetaProducto';
 import CarritoHeader from '../../components/CarritoHeader';
 import axios from 'axios';
@@ -103,6 +103,8 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
 
   const [discountRules, setDiscountRules] = useState<any>({});
   const [stockMap, setStockMap] = useState<Record<number, string>>({});
+  // Cantidad real en depósito por producto: sirve para avisar "sin stock" (0 u.).
+  const [stockQtyMap, setStockQtyMap] = useState<Record<number, number>>({});
   const [checkingStock, setCheckingStock] = useState(false);
 
   // --- PLAZO DE PAGO GENERAL DEL PEDIDO ---
@@ -226,22 +228,35 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
   const checkStock = async () => {
       setCheckingStock(true);
       const newMap: Record<number, string> = {};
+      const newQty: Record<number, number> = {};
       try {
           await Promise.all(items.map(async (item) => {
               try {
                   const res = await axios.get(`${API_URL}/producto/${item.product_id}/info`);
                   newMap[item.product_id] = res.data.stock_state || 'green';
+                  newQty[item.product_id] = Number(res.data.stock_qty ?? 0);
               } catch (e) {
                   newMap[item.product_id] = 'green';
               }
           }));
           setStockMap(newMap);
+          setStockQtyMap(newQty);
       } catch (e) {
           console.log("Error checking stock", e);
       } finally {
           setCheckingStock(false);
       }
   };
+
+  // Un ítem está SIN STOCK si el depósito informó 0 unidades. El transporte no
+  // es un producto físico, así que nunca se marca. Si todavía no llegó la
+  // consulta de stock para ese ítem, no avisamos nada (evita falsos positivos).
+  const itemSinStock = (item: any) => {
+    if (!item || item.product_id === PRODUCTO_TRANSPORTE_ID) return false;
+    const q = stockQtyMap[item.product_id];
+    return q !== undefined && q <= 0;
+  };
+  const itemsSinStock = items.filter(itemSinStock);
 
   const subtotalBase = items.reduce(
     (acc, item) => acc + (Number(item.price_unit) || 0) * (item.product_uom_qty || 1),
@@ -325,9 +340,18 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
     const { effectivePct } = getItemDiscounts(item);
     // Masterbox: los +/- suman/restan de a una caja (N unidades), no de a 1.
     const mbStep = masterboxStep(item.default_code);
+    const sinStock = itemSinStock(item);
 
     return (
-        <View style={styles.itemContainer}> 
+        <View style={styles.itemContainer}>
+            {sinStock && (
+              <View style={styles.sinStockRow}>
+                <Feather name="alert-triangle" size={14} color="#B91C1C" />
+                <Text style={styles.sinStockRowText}>
+                  SIN STOCK — este producto no tiene unidades disponibles.
+                </Text>
+              </View>
+            )}
             <TarjetaProducto
                 product_id={item.product_id}
                 name={item.name}
@@ -346,6 +370,7 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
                 onPaymentTermChange={(newId) => updateItemPaymentTerm(item.product_id, newId)}
                 onAdd={() => updateQuantity(item.product_id, item.product_uom_qty + mbStep)}
                 onSubtract={() => updateQuantity(item.product_id, Math.max(mbStep, item.product_uom_qty - mbStep))}
+                onSetQuantity={(qty) => updateQuantity(item.product_id, qty)}
                 onDelete={() => removeFromCart(item.product_id)}
             />
         </View>
@@ -355,7 +380,19 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
   const listHeader = (
     <View style={styles.headerContainerWrapper}>
         <CarritoHeader step={1} />
-        
+
+        {itemsSinStock.length > 0 && (
+          <View style={styles.sinStockBanner}>
+            <Feather name="alert-triangle" size={18} color="#B91C1C" />
+            <Text style={styles.sinStockBannerText}>
+              {itemsSinStock.length === 1
+                ? `"${itemsSinStock[0].name}" no tiene stock disponible.`
+                : `Hay ${itemsSinStock.length} productos sin stock disponible.`}
+              {' '}Podés continuar igual, pero confirmá la fecha de entrega con administración.
+            </Text>
+          </View>
+        )}
+
         <View style={styles.clientSelectorWrapper}>
             <Text style={styles.clientLabel}>CLIENTE SELECCIONADO</Text>
             <Pressable
@@ -513,6 +550,19 @@ const styles = StyleSheet.create({
   selectText: { flex: 1, fontSize: 14, color: '#121212', fontWeight: '700' },
   chevron: { fontSize: 16, opacity: 0.6 },
   itemContainer: { marginBottom: 2 },
+  // Aviso de falta de stock (banner general arriba + marca por producto).
+  sinStockBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    backgroundColor: '#FEE2E2', borderWidth: 1, borderColor: '#FCA5A5',
+    borderRadius: 10, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 14,
+  },
+  sinStockBannerText: { flex: 1, color: '#B91C1C', fontFamily: 'Rubik', fontSize: 12.5, lineHeight: 17 },
+  sinStockRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: '#FEE2E2', borderTopLeftRadius: 8, borderTopRightRadius: 8,
+    paddingHorizontal: 10, paddingVertical: 6,
+  },
+  sinStockRowText: { flex: 1, color: '#B91C1C', fontFamily: 'BarlowCondensed-Bold', fontSize: 12.5, letterSpacing: 0.3 },
   footerContainer: { backgroundColor: '#fff', borderTopWidth: 1, borderTopColor: '#f0f0f0', paddingHorizontal: 20, paddingTop: 15, shadowColor: '#000', shadowOffset: { width: 0, height: -3 }, shadowOpacity: 0.05, shadowRadius: 3, elevation: 5, zIndex: 100 },
   subtotalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
   subtotalLabel: { color: '#313131', fontSize: 16, fontFamily: 'BarlowCondensed-Light', textTransform: 'uppercase' },
