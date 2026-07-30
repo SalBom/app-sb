@@ -396,6 +396,11 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
     isSubmittingRef.current = true;
     setLoading(true);
     setErrorConfirm('');
+    // Cerramos los modales ANTES de confirmar: se renderizan en portales y, si
+    // quedan abiertos cuando aparece la pantalla de éxito, React falla al
+    // desmontarlos ("removeChild ... not a child of this node") y se cae todo.
+    setModalVisible(false);
+    setShowObservationModal(false);
 
     try {
       if (itemsProcesados.length === 0) {
@@ -438,11 +443,20 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   const getScale = (anim: Animated.Value) => anim.interpolate({ inputRange: [0, 1], outputRange: [1, 0.96] });
   const getTranslate = (anim: Animated.Value) => anim.interpolate({ inputRange: [0, 1], outputRange: [0, 2] });
 
-  if (showSuccess) {
-      return <PantallaExitoPedido nroPedido={finalOrderName} montoTotal={finalTotal} onVolver={() => onBack()} />;
-  }
+  // La pantalla de éxito se dibuja como una CAPA por encima (más abajo), no
+  // reemplazando el árbol: al confirmar, clearCart() vacía el carrito y, si acá
+  // devolviéramos otro árbol, React tendría que desmontar de golpe los modales
+  // (que viven en portales) y falla con "removeChild ... not a child of this
+  // node" → pantalla en blanco. Manteniendo el árbol montado, eso no pasa.
+  const successOverlay = showSuccess ? (
+    <View style={StyleSheet.absoluteFill as any}>
+      <PantallaExitoPedido nroPedido={finalOrderName} montoTotal={finalTotal} onVolver={onBack} />
+    </View>
+  ) : null;
 
-  if (!clienteSeleccionado) {
+  // Ojo: después de confirmar, clearCart() deja clienteSeleccionado en null. Sin
+  // el chequeo de showSuccess, esto cambiaría el árbol justo en ese momento.
+  if (!clienteSeleccionado && !showSuccess) {
      return (
         <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}>
            <ActivityIndicator size="large" color="#1C9BD8" />
@@ -671,6 +685,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           </View>
         </LayoutRefresh>
         {editModals}
+        {successOverlay}
       </View>
     );
   }
@@ -723,6 +738,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       </View>
 
       {editModals}
+      {successOverlay}
     </View>
   );
 };
