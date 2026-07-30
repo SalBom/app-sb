@@ -23,7 +23,7 @@ from psycopg2.extras import RealDictCursor
 # --- IMPORTANTE: Importar odooly correctamente ---
 import odooly as odoo
 
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response, g
 from flask_cors import CORS
 from odooly import Client
 import redis
@@ -167,6 +167,60 @@ def get_odoo_client():
             log.error(f"❌ Error conectando a Odoo (Login): {str(e)}")
             raise e
 
+# Candado de acceso a Odoo DENTRO de cada proceso. odooly comparte el Env (y su
+# socket) entre todos los hilos del proceso, así que dos hilos usándolo a la vez
+# rompen la conexión. Los workers de gunicorn son PROCESOS separados (cada uno
+# con su propio caché de odooly), así que este candado no limita la concurrencia
+# entre vendedores: solo evita que el hilo de sincronización de fondo se cruce
+# con la petición que se está atendiendo.
+_odoo_access_lock = threading.Lock()
+# Si el candado no se libera por un fallo raro, no queremos colgar la app: a los
+# 90s seguimos igual (degradado) en vez de quedarnos trabados para siempre.
+_ODOO_LOCK_TIMEOUT = 90
+
+class odoo_access:
+    """Context manager: úsalo alrededor de bloques que hablen con Odoo."""
+    def __enter__(self):
+        self.locked = _odoo_access_lock.acquire(timeout=_ODOO_LOCK_TIMEOUT)
+        if not self.locked:
+            log.warning("⚠️ Timeout esperando el candado de Odoo; sigo sin él.")
+        return self
+    def __exit__(self, *exc):
+        if self.locked:
+            try: _odoo_access_lock.release()
+            except Exception: pass
+        return False
+
+@app.before_request
+def _tomar_candado_odoo():
+    """
+    Toma el candado de Odoo al inicio de cada petición y lo suelta al terminar.
+    Se hace acá (y no en los ~40 endpoints) para cubrirlos a todos sin tocarlos.
+    """
+    g._odoo_lock_held = _odoo_access_lock.acquire(timeout=_ODOO_LOCK_TIMEOUT)
+
+@app.teardown_request
+def _soltar_candado_odoo(exc=None):
+    if getattr(g, '_odoo_lock_held', False):
+        g._odoo_lock_held = False
+        try: _odoo_access_lock.release()
+        except Exception: pass
+
+def _purge_odooly_cache():
+    """
+    odooly guarda los Env (y con ellos el cliente y su socket) en Env._cache,
+    que es un atributo DE CLASE: la clave es (key, db_name, server_url), igual
+    para todos los hilos. Por eso no alcanza con tener un cliente por hilo: al
+    crear uno nuevo, odooly devuelve el Env cacheado de OTRO hilo, con su misma
+    conexión HTTP. Dos hilos escribiendo el mismo socket = CannotSendRequest /
+    ResponseNotReady. Al resetear tenemos que vaciar ese caché, si no la
+    conexión rota se sigue repartiendo aunque pidamos un cliente nuevo.
+    """
+    try:
+        odoo.Env._cache.clear()
+    except Exception:
+        pass
+
 def release_odoo_client(client, destroy=False):
     """
     Si destroy=True, borramos la referencia para forzar reconexión la próxima vez.
@@ -175,6 +229,7 @@ def release_odoo_client(client, destroy=False):
         if hasattr(_thread_local, 'client'):
             # Eliminamos la referencia para que el GC se encargue y el próximo get_odoo_client cree uno nuevo
             del _thread_local.client
+        _purge_odooly_cache()
 
 def execute_odoo_operation(func):
     """
@@ -256,11 +311,14 @@ def periodic_sync_loop(interval_sec: int):
         if acquire_lock("salbom:sync_lock", ttl=interval_sec):
             try:
                 log.info("🔄 Iniciando ciclo de sincronización periódica...")
-                
+
                 # 1. Sincronización base de Odoo (Productos y Partners)
-                p = sync_products()
-                c = sync_partners()
-                
+                # Tomamos el candado: si no, este hilo pisa la conexión a Odoo de
+                # la petición que se esté atendiendo en este mismo proceso.
+                with odoo_access():
+                    p = sync_products()
+                    c = sync_partners()
+
                 # 2. Sincronización de Ofertas (Tarifa 70) a PostgreSQL
                 # Realizamos una llamada interna al endpoint de ofertas
                 with app.test_client() as c_sync:
@@ -5573,7 +5631,11 @@ def _listar_productos_para_backfill():
 
 
 def _run_backfill(solo_faltantes=True):
-    productos = _listar_productos_para_backfill()
+    # Este hilo también habla con Odoo: tomamos el candado SOLO para esa consulta
+    # (el resto es Firebase + IA + Postgres, que no lo necesitan). Si lo tomáramos
+    # para todo el lote, bloquearíamos la app durante horas.
+    with odoo_access():
+        productos = _listar_productos_para_backfill()
     with _backfill_lock:
         _backfill_state.update({
             "running": True, "total": len(productos), "procesados": 0,
