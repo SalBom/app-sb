@@ -1686,56 +1686,96 @@ def get_pedido_pdf():
             log.error(f"❌ /pedido_pdf no pudo resolver '{pedido_id}': {e}")
             return jsonify({"error": "No se pudo identificar el pedido"}), 500
 
-    # 2. Leer las variables de entorno de Odoo que ya usas en tu main.py
-    odoo_url = os.environ.get("ODOO_URL", "").rstrip("/")
-    db = os.environ.get("ODOO_DB")
-    user = os.environ.get("ODOO_USER") or os.environ.get("ODOO_USERNAME")
-    password = os.environ.get("ODOO_PASSWORD")
-    
-    if not odoo_url:
-        return jsonify({"error": "Las credenciales de Odoo no están configuradas"}), 500
+    # 2. Servidor de Odoo. OJO: acá se leía ODOO_URL, que NO existe en el
+    # entorno (el resto de la app usa ODOO_SERVER) — por eso siempre respondía
+    # "Las credenciales de Odoo no están configuradas". Se normaliza igual que
+    # en /factura_pdf, que es la versión que sí funciona.
+    pedido_id_int = int(pedido_id)
+    raw_server = (ODOO_SERVER or "").strip().rstrip("/")
+    if raw_server and not raw_server.startswith("http"):
+        odoo_url = f"https://{raw_server}"
+    else:
+        odoo_url = raw_server
 
-    # 3. Autenticación HTTP (Bypass al bloqueo XML-RPC)
-    session_url = f"{odoo_url}/web/session/authenticate"
-    payload = {
-        "jsonrpc": "2.0",
-        "method": "call",
-        "params": {
-            "db": db,
-            "login": user,
-            "password": password
-        }
-    }
-    
+    if not odoo_url:
+        return jsonify({"error": "ODOO_SERVER no configurado"}), 500
+
     try:
-        # Simulamos el login de un humano
-        session_resp = requests.post(session_url, json=payload, timeout=15)
-        session_resp.raise_for_status()
-        
-        # Extraemos la "llave maestra"
-        session_id = session_resp.cookies.get("session_id")
-        if not session_id:
-            return jsonify({"error": "Odoo rechazó la autenticación web temporal"}), 401
-            
-        # 4. Descarga nativa del reporte oficial de Presupuesto/Pedido
-        # El ID técnico del reporte en Odoo suele ser 'sale.report_saleorder'
-        pdf_url = f"{odoo_url}/report/pdf/sale.report_saleorder/{pedido_id}"
-        
-        pdf_resp = requests.get(pdf_url, cookies={"session_id": session_id}, timeout=25)
-        
-        if pdf_resp.status_code != 200:
-            return jsonify({"error": f"Fallo en Odoo al renderizar el PDF. HTTP {pdf_resp.status_code}"}), 500
-            
-        # 5. Enviamos el archivo físico (bytes) directo a la app
-        response = Response(pdf_resp.content, content_type='application/pdf')
-        response.headers['Content-Disposition'] = f'attachment; filename="Pedido_{pedido_id}.pdf"'
-        return response
+        session = requests.Session()
+        is_logged_in = False
+
+        # 3. Login web. Se usa ODOO_WEB_PASSWORD (no ODOO_PASSWORD): si la clave
+        # de la API es una API key, /web/session/authenticate la rechaza.
+        try:
+            login_page = session.get(f"{odoo_url}/web/login", timeout=15)
+            import re as _re
+            csrf_match = _re.search(r'name=["\']csrf_token["\'][^>]*value=["\']([^"\']+)', login_page.text)
+            csrf_token = csrf_match.group(1) if csrf_match else ''
+            login_resp = session.post(
+                f"{odoo_url}/web/login",
+                data={'login': ODOO_USER, 'password': ODOO_WEB_PASSWORD,
+                      'csrf_token': csrf_token, 'db': ODOO_DB},
+                timeout=15, allow_redirects=True
+            )
+            is_logged_in = '/web' in login_resp.url and '/web/login' not in login_resp.url
+        except Exception as e:
+            log.info(f"⚠️ [pedido_pdf] Login form falló: {e}")
+
+        # Segundo intento por JSON-RPC, por si el formulario no anduvo.
+        if not is_logged_in:
+            try:
+                auth_resp = session.post(f"{odoo_url}/web/session/authenticate", json={
+                    "jsonrpc": "2.0", "method": "call",
+                    "params": {"db": ODOO_DB, "login": ODOO_USER, "password": ODOO_WEB_PASSWORD}
+                }, timeout=15)
+                auth_json = auth_resp.json()
+                uid = auth_json.get('result', {}).get('uid') if isinstance(auth_json.get('result'), dict) else None
+                is_logged_in = uid is not None and uid is not False
+            except Exception as e:
+                log.info(f"⚠️ [pedido_pdf] JSON-RPC falló: {e}")
+
+        # 4. Descarga del reporte. Validamos que sean bytes de PDF de verdad:
+        # si la sesión no sirve, Odoo devuelve 200 con una página HTML de login.
+        if is_logged_in:
+            for report_name in ('sale.report_saleorder', 'sale.report_saleorder_document'):
+                try:
+                    url = f"{odoo_url}/report/pdf/{report_name}/{pedido_id_int}"
+                    resp = session.get(url, timeout=30)
+                    if resp.status_code == 200 and b'%PDF' in resp.content[:20]:
+                        response = Response(resp.content, content_type='application/pdf')
+                        response.headers['Content-Disposition'] = f'attachment; filename="Pedido_{pedido_id_int}.pdf"'
+                        return response
+                except Exception as e:
+                    log.info(f"⚠️ [pedido_pdf] Descarga con {report_name} falló: {e}")
+        else:
+            log.info("⚠️ [pedido_pdf] No se pudo autenticar en Odoo web")
+
+        # 5. Último recurso: si el PDF ya está adjuntado al pedido, lo mandamos.
+        try:
+            def _adjunto(cli):
+                return cli.env['ir.attachment'].search_read(
+                    [('res_model', '=', 'sale.order'), ('res_id', '=', pedido_id_int),
+                     ('mimetype', '=', 'application/pdf')],
+                    ['id', 'name', 'datas'], limit=1, order='id desc'
+                )
+            attachments = execute_odoo_operation(_adjunto)
+            if attachments and attachments[0].get('datas'):
+                pdf_bytes = base64.b64decode(attachments[0]['datas'])
+                resp = Response(pdf_bytes, content_type='application/pdf')
+                resp.headers['Content-Disposition'] = f'attachment; filename="{attachments[0]["name"]}"'
+                return resp
+        except Exception as e:
+            log.info(f"⚠️ [pedido_pdf] ir.attachment falló: {e}")
+
+        return jsonify({
+            "error": "No se pudo generar el PDF. Verificá que el usuario de Odoo tenga contraseña web configurada (no solo API key)."
+        }), 500
 
     except requests.exceptions.RequestException as req_e:
-        print(f"❌ Error de red conectando al servidor PDF de Odoo: {req_e}")
+        log.error(f"❌ [pedido_pdf] Error de red con Odoo: {req_e}")
         return jsonify({"error": "El servidor de PDF tardó demasiado en responder"}), 504
     except Exception as e:
-        print(f"❌ Error interno generando PDF para pedido {pedido_id}: {e}")
+        log.error(f"❌ [pedido_pdf] Error interno (pedido {pedido_id}): {e}")
         return jsonify({"error": "Error interno al procesar el documento"}), 500
 
 @app.route("/mis_facturas", methods=["GET"])
@@ -4187,6 +4227,10 @@ def diag():
             "ODOO_DB": bool(ODOO_DB),
             "ODOO_USER": bool(ODOO_USER),
             "ODOO_PASSWORD": bool(ODOO_PASSWORD),
+            # Clave del login WEB de Odoo, la que usan las descargas de PDF.
+            # Si es False, se está reusando ODOO_PASSWORD: sirve solo si esa
+            # clave es la contraseña real del usuario y no una API key.
+            "ODOO_WEB_PASSWORD_propia": bool(os.getenv("ODOO_WEB_PASSWORD")),
             "REDIS_URL": bool(REDIS_URL),
             "DATABASE_URL": bool(os.getenv("DATABASE_URL")),
             "R2_PUBLIC_BASE_URL": bool(os.getenv("R2_PUBLIC_BASE_URL")),
