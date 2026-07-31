@@ -6,8 +6,15 @@
     "orientation": "portrait",
     "icon": "./assets/icon-app.png",
     "userInterfaceStyle": "light",
-    "jsEngine": "hermes", 
+    "jsEngine": "hermes",
     "newArchEnabled": true,
+    "updates": {
+      "url": "https://u.expo.dev/966d90ca-1d9b-4e75-a2c3-1257c1ed1030",
+      "fallbackToCacheTimeout": 3000
+    },
+    "runtimeVersion": {
+      "policy": "fingerprint"
+    },
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",

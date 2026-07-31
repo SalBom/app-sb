@@ -17,7 +17,9 @@ import {
 } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Ionicons, Feather } from '@expo/vector-icons';
-import DateTimePicker from '@react-native-community/datetimepicker'; 
+import DateTimePicker from '@react-native-community/datetimepicker';
+import * as FS from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
 
 import authStorage from '../utils/authStorage';
 import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
@@ -115,6 +117,9 @@ const Pedidos: React.FC = () => {
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailData, setDetailData] = useState<PedidoDetalle | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  // Pedido cuyo PDF se está bajando: en el celular la descarga tarda unos
+  // segundos y sin feedback el vendedor cree que el botón no hizo nada.
+  const [descargandoId, setDescargandoId] = useState<number | null>(null);
 
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -231,23 +236,77 @@ const Pedidos: React.FC = () => {
   };
 
   // El backend devuelve el PDF en bytes (no un JSON con una URL), así que lo
-  // abrimos directo: el navegador / visor del celular lo descarga solo. Antes
-  // se hacía res.json() sobre el PDF y siempre reventaba.
-  const handleDownloadPdf = async (item: PedidoItem) => {
+  // abrimos directo: el navegador / visor del celular lo descarga solo.
+  //
+  // IMPORTANTE: no puede haber ningún `await` antes de abrirlo. En la web, si
+  // se interrumpe la cadena del clic (por ejemplo esperando canOpenURL), el
+  // navegador deja de considerarlo una acción del usuario y bloquea la ventana
+  // como si fuera un popup. Por eso esta función NO es async y se dispara la
+  // descarga de forma sincrónica.
+  const handleDownloadPdf = (item: PedidoItem) => {
     const idPedido = item?.pedido_id;
     if (!idPedido) {
       avisar('No se pudo identificar el pedido para descargarlo.');
       return;
     }
+    // Se manda el ID NUMÉRICO: Odoo arma el reporte con eso, no con el número
+    // de pedido visible.
+    const url = `${getBaseUrl()}/pedido_pdf?id=${encodeURIComponent(String(idPedido))}`;
+
+    if (Platform.OS === 'web') {
+      try {
+        // Un <a> normal alcanza y evita el bloqueo de ventanas emergentes.
+        // El backend manda Content-Disposition: attachment, así que el
+        // navegador descarga el archivo y NO te saca de la app. (El atributo
+        // download se ignora entre dominios distintos, pero no hace falta: el
+        // nombre del archivo ya viene en esa cabecera.)
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Pedido_${idPedido}.pdf`;
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+      } catch (e) {
+        avisar('No se pudo descargar el PDF. Intentá de nuevo.');
+      }
+      return;
+    }
+
+    // En el celular NO delegamos en el navegador: en Android la descarga se
+    // perdía sin dar aviso. Bajamos el archivo dentro de la app y lo abrimos
+    // con el visor del sistema (hoja de "compartir", que permite abrir con
+    // Drive, WhatsApp, el lector de PDF, etc.).
+    descargarPdfNativo(url, idPedido);
+  };
+
+  const descargarPdfNativo = async (url: string, idPedido: number) => {
+    setDescargandoId(idPedido);
     try {
-        const baseUrl = getBaseUrl();
-        // Se manda el ID NUMÉRICO: Odoo arma el reporte con eso, no con el
-        // número de pedido visible.
-        const url = `${baseUrl}/pedido_pdf?id=${encodeURIComponent(String(idPedido))}`;
-        const ok = await Linking.canOpenURL(url);
-        if (!ok) { avisar('No se pudo abrir el PDF en este dispositivo.'); return; }
-        await Linking.openURL(url);
-    } catch (e) { avisar('No se pudo descargar el PDF. Intentá de nuevo.'); }
+      // Se usa el namespace (FS.File) a propósito: importar `File` suelto
+      // pisaría el File nativo del navegador en el bundle web.
+      const destino = new FS.File(FS.Paths.cache, `Pedido_${idPedido}.pdf`);
+      // idempotent: sobrescribe si ya se había bajado antes (si no, tira error).
+      const archivo = await FS.File.downloadFileAsync(url, destino, { idempotent: true });
+
+      if (!(await Sharing.isAvailableAsync())) {
+        // Sin hoja de compartir, al menos intentamos abrirlo directo.
+        await Linking.openURL(archivo.uri);
+        return;
+      }
+      await Sharing.shareAsync(archivo.uri, {
+        mimeType: 'application/pdf',
+        dialogTitle: `Pedido ${idPedido}`,
+        UTI: 'com.adobe.pdf',
+      });
+    } catch (e: any) {
+      // downloadFileAsync rechaza con el código HTTP si el server falló, así
+      // que el mensaje sirve para diagnosticar en vez de quedar en la nada.
+      const detalle = String(e?.message || e || '').slice(0, 120);
+      avisar(`No se pudo descargar el PDF.\n\n${detalle}`);
+    } finally {
+      setDescargandoId(null);
+    }
   };
 
   // ───────────────────────── Cancelar Pedido (solo PRESUPUESTO) ─────────────────────────
@@ -440,8 +499,14 @@ const Pedidos: React.FC = () => {
                       </View>
 
                       <View style={s.actionsRow}>
-                          <TouchableOpacity style={s.iconButton} onPress={() => handleDownloadPdf(item)}>
-                              <Feather name="download" size={20} color="#2B2B2B" />
+                          <TouchableOpacity
+                              style={s.iconButton}
+                              onPress={() => handleDownloadPdf(item)}
+                              disabled={descargandoId === item.pedido_id}
+                          >
+                              {descargandoId === item.pedido_id
+                                  ? <ActivityIndicator size="small" color="#1C9BD8" />
+                                  : <Feather name="download" size={20} color="#2B2B2B" />}
                           </TouchableOpacity>
 
                           {isPresupuesto && (
@@ -643,7 +708,11 @@ const Pedidos: React.FC = () => {
         </View>
         <View style={{ flex: 0.6, flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}>
           <TouchableOpacity onPress={() => handleViewDetail(item)}><Feather name="eye" size={18} color="#2B2B2B" /></TouchableOpacity>
-          <TouchableOpacity onPress={() => handleDownloadPdf(item)}><Feather name="download" size={18} color="#2B2B2B" /></TouchableOpacity>
+          <TouchableOpacity onPress={() => handleDownloadPdf(item)} disabled={descargandoId === item.pedido_id}>
+            {descargandoId === item.pedido_id
+              ? <ActivityIndicator size="small" color="#1C9BD8" />
+              : <Feather name="download" size={18} color="#2B2B2B" />}
+          </TouchableOpacity>
           {isPresupuesto && (
             <TouchableOpacity onPress={() => handleEditOrder(item)}><Feather name="edit-2" size={18} color="#1C9BD8" /></TouchableOpacity>
           )}

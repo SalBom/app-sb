@@ -13,6 +13,7 @@ import { getCuitFromStorage } from './src/utils/authStorage';
 import { API_URL } from './src/config';
 import { cargarMasterbox } from './src/config/masterbox';
 import ErrorBoundary from './src/components/ErrorBoundary';
+import useOtaUpdates from './src/hooks/useOtaUpdates';
 
 // Mantiene visible la pantalla de carga (splash screen) hasta que digamos lo contrario
 SplashScreen.preventAutoHideAsync();
@@ -30,6 +31,9 @@ export default function App() {
     'BarlowCondensed-Light': require('./assets/fonts/BarlowCondensed-Light.ttf'),
     'BarlowCondensed-SemiBold': require('./assets/fonts/BarlowCondensed-SemiBold.ttf'),
   });
+
+  // Busca actualizaciones OTA (solo en el APK; en web y en desarrollo no hace nada).
+  useOtaUpdates();
 
   const setItems = useCartStore((state: any) => state.setItems);
 
