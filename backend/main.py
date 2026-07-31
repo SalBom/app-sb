@@ -1659,10 +1659,32 @@ def get_mis_pedidos():
 
 @app.route("/pedido_pdf", methods=["GET"]) # (Ajusta el nombre de la ruta si en tu frontend la llamaste distinto)
 def get_pedido_pdf():
-    # 1. Obtener el ID del pedido solicitado por el frontend
-    pedido_id = request.args.get("id") or request.args.get("pedido_id")
+    # 1. Obtener el ID del pedido solicitado por el frontend.
+    # Aceptamos las tres variantes de nombre: la app mandaba 'pedidoId' y acá
+    # sólo se leían 'id'/'pedido_id', así que la descarga fallaba siempre con
+    # "Falta el ID del pedido". Se mantienen las tres para que los APK ya
+    # instalados (que siguen mandando 'pedidoId') funcionen sin actualizar.
+    pedido_id = (request.args.get("id") or request.args.get("pedido_id")
+                 or request.args.get("pedidoId"))
     if not pedido_id:
         return jsonify({"error": "Falta el ID del pedido"}), 400
+
+    # Odoo arma el reporte con el ID NUMÉRICO. Las versiones viejas de la app
+    # mandan el número de pedido visible (ej. "V 0001-00023415"), así que si no
+    # es numérico lo resolvemos contra Odoo antes de seguir.
+    pedido_id = str(pedido_id).strip()
+    if not pedido_id.isdigit():
+        try:
+            nombre = pedido_id
+            def _buscar(cli):
+                return cli.env['sale.order'].search_read([('name', '=', nombre)], ['id'], limit=1)
+            encontrado = execute_odoo_operation(_buscar)
+            if not encontrado:
+                return jsonify({"error": f"No se encontró el pedido {nombre}"}), 404
+            pedido_id = str(encontrado[0]['id'])
+        except Exception as e:
+            log.error(f"❌ /pedido_pdf no pudo resolver '{pedido_id}': {e}")
+            return jsonify({"error": "No se pudo identificar el pedido"}), 500
 
     # 2. Leer las variables de entorno de Odoo que ya usas en tu main.py
     odoo_url = os.environ.get("ODOO_URL", "").rstrip("/")

@@ -323,6 +323,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
   };
 
   const handleRemoveTransport = async () => {
+      setErrorConfirm('');
       setIsTransportIgnored(true);
       const currentItems = useCartStore.getState().items.filter((it: any) => String(it.product_id) !== '33627');
       useCartStore.setState({ items: currentItems });
@@ -332,21 +333,34 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           const freshPayload = await buildPayload(currentItems, true);
           await axios.post(`${API_URL}/actualizar-pedido`, freshPayload);
           pollTotalsFromOdoo(); // Re-calcula e insiste hasta obtener totales post-borrado
-      } catch (e) {
+      } catch (e: any) {
           setIsSyncingTotals(false);
+          // Antes esto se tragaba en silencio: si el backend fallaba, el flete
+          // seguía en Odoo y el vendedor no se enteraba de nada.
+          const err = e?.response?.data?.error || e?.message || 'Error de conexión';
+          setErrorConfirm(`No se pudo quitar el transporte del pedido. Volvé a intentarlo.\n\nDetalle: ${err}`);
       }
   };
 
-  const openEditModal = (item: any) => {
+  // Confirmación que funciona TAMBIÉN en la web: react-native-web no renderiza
+  // Alert.alert con botones, así que el onPress de "Eliminar" nunca se
+  // ejecutaba y tocar QUITAR en el flete no hacía absolutamente nada.
+  const confirmarQuitarFlete = (): Promise<boolean> => {
+      const msg = "¿Deseás eliminar la línea del costo de transporte de este pedido?";
+      if (Platform.OS === 'web') {
+          return Promise.resolve(typeof window !== 'undefined' ? window.confirm(msg) : true);
+      }
+      return new Promise((resolve) => {
+          Alert.alert("Eliminar Transporte", msg, [
+              { text: "Cancelar", style: "cancel", onPress: () => resolve(false) },
+              { text: "Eliminar", style: "destructive", onPress: () => resolve(true) },
+          ]);
+      });
+  };
+
+  const openEditModal = async (item: any) => {
       if (String(item.product_id) === '33627') {
-          Alert.alert(
-              "Eliminar Transporte",
-              "¿Deseás eliminar la línea del costo de transporte de este pedido?",
-              [
-                  { text: "Cancelar", style: "cancel" },
-                  { text: "Eliminar", style: "destructive", onPress: () => handleRemoveTransport() }
-              ]
-          );
+          if (await confirmarQuitarFlete()) handleRemoveTransport();
           return;
       }
 
@@ -384,8 +398,10 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
           const freshPayload = await buildPayload(newItems, isTransportIgnored);
           await axios.post(`${API_URL}/actualizar-pedido`, freshPayload);
           pollTotalsFromOdoo(); // Re-calcula e insiste tras el cambio de precio
-      } catch (e) {
+      } catch (e: any) {
           setIsSyncingTotals(false);
+          const err = e?.response?.data?.error || e?.message || 'Error de conexión';
+          setErrorConfirm(`No se pudo guardar el cambio de precio/descuento. Volvé a intentarlo.\n\nDetalle: ${err}`);
       }
   };
 

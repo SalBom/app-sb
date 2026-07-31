@@ -220,16 +220,34 @@ const Pedidos: React.FC = () => {
     fetchPedidos(newOffset, false);
   };
 
-  const handleDownloadPdf = async (pedidoNombre: string) => {
+  // Aviso que se ve en las DOS plataformas: react-native-web no renderiza
+  // Alert.alert, así que en la web los mensajes quedaban invisibles.
+  const avisar = (msg: string) => {
+    if (Platform.OS === 'web') {
+      if (typeof window !== 'undefined') window.alert(msg);
+    } else {
+      Alert.alert('Aviso', msg);
+    }
+  };
+
+  // El backend devuelve el PDF en bytes (no un JSON con una URL), así que lo
+  // abrimos directo: el navegador / visor del celular lo descarga solo. Antes
+  // se hacía res.json() sobre el PDF y siempre reventaba.
+  const handleDownloadPdf = async (item: PedidoItem) => {
+    const idPedido = item?.pedido_id;
+    if (!idPedido) {
+      avisar('No se pudo identificar el pedido para descargarlo.');
+      return;
+    }
     try {
         const baseUrl = getBaseUrl();
-        const url = `${baseUrl}/pedido_pdf?pedidoId=${encodeURIComponent(pedidoNombre)}`;
-        const res = await fetch(url);
-        const json = await res.json();
-        if (!res.ok) { Alert.alert('Aviso', json?.error || 'No se encontró el PDF.'); return; }
-        if (json.pdf_url) await Linking.openURL(json.pdf_url);
-        else Alert.alert('Error', 'URL de PDF inválida.');
-    } catch (e) { Alert.alert('Error', 'No se pudo descargar el PDF.'); }
+        // Se manda el ID NUMÉRICO: Odoo arma el reporte con eso, no con el
+        // número de pedido visible.
+        const url = `${baseUrl}/pedido_pdf?id=${encodeURIComponent(String(idPedido))}`;
+        const ok = await Linking.canOpenURL(url);
+        if (!ok) { avisar('No se pudo abrir el PDF en este dispositivo.'); return; }
+        await Linking.openURL(url);
+    } catch (e) { avisar('No se pudo descargar el PDF. Intentá de nuevo.'); }
   };
 
   // ───────────────────────── Cancelar Pedido (solo PRESUPUESTO) ─────────────────────────
@@ -422,7 +440,7 @@ const Pedidos: React.FC = () => {
                       </View>
 
                       <View style={s.actionsRow}>
-                          <TouchableOpacity style={s.iconButton} onPress={() => handleDownloadPdf(item.numero_pedido)}>
+                          <TouchableOpacity style={s.iconButton} onPress={() => handleDownloadPdf(item)}>
                               <Feather name="download" size={20} color="#2B2B2B" />
                           </TouchableOpacity>
 
@@ -625,7 +643,7 @@ const Pedidos: React.FC = () => {
         </View>
         <View style={{ flex: 0.6, flexDirection: 'row', justifyContent: 'flex-end', gap: 10 }}>
           <TouchableOpacity onPress={() => handleViewDetail(item)}><Feather name="eye" size={18} color="#2B2B2B" /></TouchableOpacity>
-          <TouchableOpacity onPress={() => handleDownloadPdf(item.numero_pedido)}><Feather name="download" size={18} color="#2B2B2B" /></TouchableOpacity>
+          <TouchableOpacity onPress={() => handleDownloadPdf(item)}><Feather name="download" size={18} color="#2B2B2B" /></TouchableOpacity>
           {isPresupuesto && (
             <TouchableOpacity onPress={() => handleEditOrder(item)}><Feather name="edit-2" size={18} color="#1C9BD8" /></TouchableOpacity>
           )}
