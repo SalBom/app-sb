@@ -750,55 +750,103 @@ def get_facturas():
 # ---------------------------------------------------------------
 
 # --- HELPER: OFERTAS EN TIEMPO REAL ---
-def _inject_realtime_offers(client, page_slice):
+def _precio_de_regla(rule, base_price):
+    """Precio final que deja una regla de tarifa, o 0 si no aplica."""
+    c_type = rule.get('compute_price', 'fixed')
+    if c_type == 'fixed':
+        return float(rule.get('fixed_price') or 0)
+    if c_type == 'percentage':
+        pct = float(rule.get('percent_price') or 0)
+        return base_price * (1 - (pct / 100.0))
+    return 0
+
+
+def _calcular_escalas_tarifa(client, page_slice):
     """
-    Evalúa las reglas activas de la Tarifa 70 en Odoo en tiempo real para los productos en pantalla.
-    Soporta descuentos de Precio Fijo, Porcentajes y reglas aplicadas por Categoría.
+    Devuelve {tmpl_id: [{'min_qty': n, 'price': p}, ...]} ordenado por cantidad.
+
+    Un mismo producto puede tener VARIAS reglas en la tarifa, una por escala de
+    cantidad (ej. desmalezadora: x10, x50, x100). Antes las reglas se metían en
+    un dict indexado por producto, así que sólo sobrevivía UNA (la última) y las
+    demás escalas se perdían. Acá se agrupan todas.
     """
     tmpl_ids = [int(p['id']) for p in page_slice]
-    realtime_offers = {}
     if not tmpl_ids:
-        return realtime_offers
-        
+        return {}
+
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    
+
     def _fetch_rules():
         return client.env['product.pricelist.item'].search_read([
             ('pricelist_id', '=', 70),
             '|', ('date_start', '=', False), ('date_start', '<=', now_str),
             '|', ('date_end', '=', False), ('date_end', '>=', now_str)
-        ], ['applied_on', 'product_tmpl_id', 'categ_id', 'fixed_price', 'compute_price', 'percent_price'])
+        ], ['applied_on', 'product_tmpl_id', 'categ_id', 'fixed_price',
+            'compute_price', 'percent_price', 'min_quantity'])
 
-    # Cache ultra-corto (2 mins) para no saturar Odoo al scrollear, pero mantener los precios vivos
-    active_rules = get_cache_or_execute("active_pricelist_70_rules_v3", ttl=120, fallback_fn=_fetch_rules) or []
+    # Cache corto (2 min) para no saturar Odoo al scrollear, manteniendo precios vivos.
+    # v4: la versión anterior cacheaba las reglas SIN min_quantity.
+    active_rules = get_cache_or_execute("active_pricelist_70_rules_v4", ttl=120, fallback_fn=_fetch_rules) or []
 
-    rules_by_tmpl = { r['product_tmpl_id'][0]: r for r in active_rules if r.get('applied_on') == '1_product' and r.get('product_tmpl_id') }
-    rules_by_cat = { r['categ_id'][0]: r for r in active_rules if r.get('applied_on') == '2_product_category' and r.get('categ_id') }
+    # Ahora se acumulan en listas (varias reglas por producto/categoría).
+    rules_by_tmpl = {}
+    rules_by_cat = {}
+    for r in active_rules:
+        if r.get('applied_on') == '1_product' and r.get('product_tmpl_id'):
+            rules_by_tmpl.setdefault(r['product_tmpl_id'][0], []).append(r)
+        elif r.get('applied_on') == '2_product_category' and r.get('categ_id'):
+            rules_by_cat.setdefault(r['categ_id'][0], []).append(r)
 
+    escalas = {}
     for p in page_slice:
         tid = int(p['id'])
         base_price = float(p.get('list_price') or 0)
-        
+
         cid = None
         if p.get('categ_id'):
             cid = p['categ_id'][0] if isinstance(p['categ_id'], (list, tuple)) else p['categ_id']
-            
-        rule = rules_by_tmpl.get(tid) or rules_by_cat.get(cid)
-        
-        if rule:
-            c_type = rule.get('compute_price', 'fixed')
-            off_price = 0
-            if c_type == 'fixed':
-                off_price = float(rule.get('fixed_price', 0))
-            elif c_type == 'percentage':
-                pct = float(rule.get('percent_price', 0))
-                off_price = base_price * (1 - (pct / 100.0))
-            
-            # Si el precio final es menor al de lista, ¡hay oferta!
-            if 0 < off_price < base_price:
-                realtime_offers[tid] = round(off_price, 2)
-                
-    return realtime_offers
+
+        # Las reglas del producto mandan sobre las de su categoría.
+        reglas = rules_by_tmpl.get(tid) or rules_by_cat.get(cid) or []
+        if not reglas:
+            continue
+
+        por_cantidad = {}
+        for regla in reglas:
+            precio = _precio_de_regla(regla, base_price)
+            if not (0 < precio < base_price):
+                continue  # sin descuento real, no es oferta
+            min_qty = int(regla.get('min_quantity') or 0) or 1
+            # Si hubiera dos reglas para la misma cantidad, gana la más barata.
+            if min_qty not in por_cantidad or precio < por_cantidad[min_qty]:
+                por_cantidad[min_qty] = precio
+
+        if por_cantidad:
+            escalas[tid] = [
+                {"min_qty": q, "price": round(por_cantidad[q], 2)}
+                for q in sorted(por_cantidad)
+            ]
+
+    return escalas
+
+
+def _escala_de_entrada(lista):
+    """
+    Escala que se muestra primero: la de MENOR cantidad exigida, que es la que
+    consigue cualquiera que compre poco (y, en una tarifa bien cargada, la más
+    cara). Se elige por cantidad y no por precio para que una tarifa mal
+    cargada no termine mostrando un precio alto que exige comprar 100 unidades.
+    """
+    return min(lista, key=lambda e: e["min_qty"]) if lista else None
+
+
+def _inject_realtime_offers(client, page_slice):
+    """
+    Precio de oferta de las tarjetas del catálogo: el de la PRIMERA escala (la
+    de menor cantidad). El detalle muestra la tabla completa con el resto.
+    """
+    escalas = _calcular_escalas_tarifa(client, page_slice)
+    return {tid: _escala_de_entrada(l)["price"] for tid, l in escalas.items() if l}
 
 # 🆕 HELPER: Corte por bulto (atributo product.attribute id=44)
 ATTR_CORTE_POR_BULTO_ID = 44
@@ -911,7 +959,10 @@ def get_productos():
         stock_data_map = _compute_stock_states(client, page_slice)
 
         # 🚀 5.5 INYECCIÓN DE OFERTAS EN TIEMPO REAL
-        offer_map = _inject_realtime_offers(client, page_slice)
+        # Escalas por cantidad: la tarjeta muestra la PRIMERA escala (la de menor
+        # cantidad) y desde cuántas unidades rige. El resto se ve en la ficha.
+        escalas_map = _calcular_escalas_tarifa(client, page_slice)
+        offer_map = {t: _escala_de_entrada(l)["price"] for t, l in escalas_map.items() if l}
         corte_por_bulto_map = _inject_corte_por_bulto(client, page_slice)
 
         def get_fb_url(p):
@@ -940,6 +991,16 @@ def get_productos():
             # 🚀 Asignamos el precio de oferta mapeado directo por Odoo
             offer_price = offer_map.get(pid, None)
 
+            # Cantidad mínima para acceder a ese precio. La tarjeta muestra el
+            # de la primera escala, así que aclara desde cuántas unidades rige
+            # (si arranca en 1, no hace falta aclarar nada).
+            escalas_prod = escalas_map.get(pid) or []
+            offer_min_qty = None
+            if escalas_prod:
+                entrada = _escala_de_entrada(escalas_prod)
+                if entrada and entrada["min_qty"] > 1:
+                    offer_min_qty = entrada["min_qty"]
+
             st_info = stock_data_map.get(pid, {'state': 'green', 'quantity': 0})
 
             norm.append({
@@ -947,6 +1008,7 @@ def get_productos():
                 "name": r.get("name") or "",
                 "list_price": list_price,
                 "price_offer": offer_price,
+                "price_offer_min_qty": offer_min_qty,
                 "default_code": sku,
                 "write_date": wd,
                 "categ_id": r.get("categ_id"),
@@ -1276,9 +1338,9 @@ def delete_admin_promocion(promo_id):
 
 @app.route('/producto/<int:product_id>/info', methods=['GET'])
 def get_product_attributes(product_id):
-    # Cache key v15: sube de versión porque ahora el detalle prioriza las specs
+    # Cache key v16: sube de versión porque la respuesta ahora incluye price_tiers
     # de la base externa (product_specs) sobre los atributos de Odoo.
-    key = f"prod_info_v15:{product_id}"
+    key = f"prod_info_v16:{product_id}"
 
     def query():
         # Usamos el wrapper seguro para evitar "Request-sent" loops
@@ -1313,11 +1375,22 @@ def get_product_attributes(product_id):
             st_map = _compute_stock_states(client, [{'id': product_id}])
             st_data = st_map.get(product_id, {'state': 'green', 'quantity': 0})
 
+            # 4. Escalas de precio por cantidad (x10 / x50 / x100...).
+            # El detalle muestra la tabla completa; las tarjetas sólo el precio
+            # más barato.
+            precios = client.env['product.template'].read([product_id], ['list_price', 'categ_id'])[0]
+            escalas = _calcular_escalas_tarifa(client, [{
+                'id': product_id,
+                'list_price': precios.get('list_price') or 0,
+                'categ_id': precios.get('categ_id'),
+            }])
+
             return {
                 'attributes': attributes_list,
                 'description': desc,
                 'stock_state': st_data.get('state', 'green'),
-                'stock_qty': st_data.get('quantity', 0)
+                'stock_qty': st_data.get('quantity', 0),
+                'price_tiers': escalas.get(product_id, [])
             }
 
         # Ejecutar de forma segura con reintentos
@@ -5475,7 +5548,7 @@ def _sanear_atributos(attributes):
 def _invalidate_product_info_cache(product_id):
     if redis_client:
         try:
-            redis_client.delete(f"prod_info_v15:{product_id}")
+            redis_client.delete(f"prod_info_v16:{product_id}")
         except Exception:
             pass
 

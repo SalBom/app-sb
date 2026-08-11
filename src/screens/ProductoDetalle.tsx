@@ -68,7 +68,10 @@ type ProductoLite = {
   attributes?: { k: string; v: string }[];
   stock_state?: string;
   stock_qty?: number; 
-  price_offer?: number | null; 
+  price_offer?: number | null;
+  price_offer_min_qty?: number | null;
+  // Escalas de precio por cantidad de la tarifa (ej. x10, x50, x100).
+  price_tiers?: { min_qty: number; price: number }[];
   marca?: string;
   marca_name?: string;
   brand?: string;
@@ -495,6 +498,40 @@ function ProductoDetalle() {
   // (stock_qty undefined) no avisamos nada, para no dar un falso "sin stock".
   const sinStock = producto.stock_qty != null && producto.stock_qty <= 0;
 
+  // --- ESCALAS DE PRECIO POR CANTIDAD (tarifa de Odoo) ---
+  // El invitado no ve precios de oferta, así que tampoco ve las escalas.
+  const escalas = (!isGuest && producto.price_tiers) ? producto.price_tiers : [];
+  // Unidades que se están pidiendo: si es masterbox, la cantidad son CAJAS.
+  const unidadesPedidas = cantidad * (mbUnits || 1);
+  // Escala vigente para esa cantidad: la mayor cuyo mínimo ya se alcanzó.
+  const escalaActiva = escalas.length
+    ? [...escalas].reverse().find(e => unidadesPedidas >= e.min_qty) || null
+    : null;
+
+  const tablaEscalas = escalas.length > 0 ? (
+    <View style={styles.tiersBox}>
+      <Text style={styles.tiersTitle}>PRECIOS POR CANTIDAD</Text>
+      {escalas.map((e) => {
+        const activa = escalaActiva?.min_qty === e.min_qty;
+        return (
+          <View key={e.min_qty} style={[styles.tierRow, activa && styles.tierRowActive]}>
+            <Text style={[styles.tierQty, activa && styles.tierTextActive]}>
+              {e.min_qty === 1 ? 'Por unidad' : `Desde ${e.min_qty} u.`}
+            </Text>
+            <Text style={[styles.tierPrice, activa && styles.tierTextActive]}>
+              USD {e.price.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </Text>
+          </View>
+        );
+      })}
+      <Text style={styles.tiersHint}>
+        {escalaActiva
+          ? `Con ${unidadesPedidas} u. te corresponde este precio.`
+          : `Agregá ${escalas[0].min_qty} u. o más para acceder a estos precios.`}
+      </Text>
+    </View>
+  ) : null;
+
   const getBrandString = () => {
     const raw = producto?.marca_name || producto?.brand || producto?.marca;
     if (Array.isArray(raw) && (raw as any).length > 1) return String((raw as any)[1]);
@@ -679,6 +716,8 @@ function ProductoDetalle() {
                     </Text>
                   </View>
                 )}
+
+                {tablaEscalas}
 
                 {sinStock && !isGuest && (
                   <View style={dstyles.sinStockBox}>
@@ -918,6 +957,7 @@ function ProductoDetalle() {
             </Text>
           </View>
         )}
+        {tablaEscalas}
       </View>
 
       {isGuest ? (
@@ -1110,6 +1150,14 @@ const styles = StyleSheet.create({
   masterboxBoxText: { flex: 1, fontFamily: 'BarlowCondensed-SemiBold', fontSize: 15, color: '#B45309', lineHeight: 18 },
   sinStockBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#FEE2E2', borderWidth: 1, borderColor: '#FCA5A5', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 11, marginTop: 12 },
   sinStockBoxText: { flex: 1, fontFamily: 'Rubik', fontSize: 13, color: '#B91C1C', lineHeight: 18 },
+  tiersBox: { borderWidth: 1, borderColor: '#E5E7EB', borderRadius: 10, paddingVertical: 10, paddingHorizontal: 12, marginTop: 12, backgroundColor: '#FAFAFA' },
+  tiersTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#6B7280', letterSpacing: 0.6, marginBottom: 6 },
+  tierRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 5, paddingHorizontal: 6, borderRadius: 6 },
+  tierRowActive: { backgroundColor: '#E3F2FD' },
+  tierQty: { fontFamily: 'Rubik', fontSize: 13, color: '#4B5563' },
+  tierPrice: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#2B2B2B' },
+  tierTextActive: { color: '#0B72A8' },
+  tiersHint: { fontFamily: 'Rubik', fontSize: 11, color: '#9CA3AF', marginTop: 6, lineHeight: 15 },
   qtyOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 15 },
   qtyLabel: { fontSize: 16, fontFamily: 'BarlowCondensed-Bold', color: '#2B2B2B' },
   qtyNum: { fontFamily: 'BarlowCondensed-Bold' },

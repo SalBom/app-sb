@@ -35,6 +35,7 @@ export interface ProductoListado {
   name: string;
   list_price: number;
   price_offer?: number | null;
+  price_offer_min_qty?: number | null;
   image_128?: string | null;
   default_code?: string | null;
   marca?: string | [number, string] | null; 
@@ -213,6 +214,10 @@ const TarjetaProductoListado: React.FC<Props> = ({
                 ) : (
                     <Text numberOfLines={1} style={styles.price}>$ {fmt(Number(producto.list_price || 0))}</Text>
                 )}
+                {/* Aclara desde qué cantidad rige ese precio (escala de tarifa). */}
+                {hasOffer && !!producto.price_offer_min_qty && (
+                    <Text numberOfLines={1} style={styles.minQtyText}>desde {producto.price_offer_min_qty} u.</Text>
+                )}
               </View>
 
               <Text numberOfLines={1} style={styles.title}>
@@ -306,6 +311,7 @@ const styles = StyleSheet.create({
   rightCol: { flex: 1, paddingLeft: 12, justifyContent: 'flex-start', minWidth: 0 },
   cuotas: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, letterSpacing: 0.4, color: '#1F2937', marginBottom: 2 },
   price: { fontFamily: 'BarlowCondensed-Bold', fontSize: 34, lineHeight: 38, color: '#2B2B2B', letterSpacing: -1 },
+  minQtyText: { fontFamily: 'Rubik', fontSize: 10.5, color: '#6B7280', marginTop: 1 },
   priceRow: { flexDirection: 'row', alignItems: 'baseline' }, 
   priceOld: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#9CA3AF', textDecorationLine: 'line-through', marginRight: 8, marginBottom: 0 },
   priceOffer: { fontFamily: 'BarlowCondensed-Bold', fontSize: 34, lineHeight: 38, color: '#D32F2F', letterSpacing: -1 },

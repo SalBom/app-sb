@@ -36,6 +36,7 @@ export interface ProductoListado {
   name: string;
   list_price: number;
   price_offer?: number | null;
+  price_offer_min_qty?: number | null;
   image_128?: string | null;
   default_code?: string | null;
   marca?: string | [number, string] | null; 
@@ -191,6 +192,10 @@ const TarjetaProductoKanban: React.FC<Props> = ({
                     <Text style={[styles.price, styles.priceRed]} numberOfLines={1}>
                         $ {fmt(Number(displayPrice))}
                     </Text>
+                    {/* Aclara desde qué cantidad rige ese precio (escala de tarifa). */}
+                    {!!producto.price_offer_min_qty && (
+                        <Text style={styles.minQtyText} numberOfLines={1}>desde {producto.price_offer_min_qty} u.</Text>
+                    )}
                 </View>
             ) : (
                 <Text style={styles.price} numberOfLines={1}>
@@ -284,6 +289,7 @@ const styles = StyleSheet.create({
   infoContainer: { flex: 1, justifyContent: 'flex-end', paddingBottom: 4 },
   
   price: { fontFamily: 'BarlowCondensed-Bold', fontSize: 28, color: '#2B2B2B', lineHeight: 28 },
+  minQtyText: { fontFamily: 'Rubik', fontSize: 10, color: '#6B7280', marginTop: 1 },
   priceRed: { color: '#D32F2F' },
   offerRowTop: { flexDirection: 'row', alignItems: 'center', marginBottom: 0 },
   priceOld: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#9CA3AF', textDecorationLine: 'line-through', marginRight: 6 },

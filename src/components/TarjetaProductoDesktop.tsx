@@ -28,6 +28,7 @@ export interface ProductoDesktop {
   name: string;
   list_price: number;
   price_offer?: number | null;
+  price_offer_min_qty?: number | null;
   image_128?: string | null;
   default_code?: string | null;
   marca?: string | [number, string] | null;
@@ -126,11 +127,18 @@ const TarjetaProductoDesktop: React.FC<Props> = ({ producto, isFavorite, onPress
         <Text style={styles.masterboxText}>MASTERBOX · CAJA x{masterboxUnidades(producto.default_code)} u.</Text>
       )}
       {hasOffer ? (
-        <View style={styles.priceRow}>
-          <Text style={styles.priceStriked}>${fmt(producto.list_price)}</Text>
-          <Text style={styles.priceOffer}>${fmt(finalPrice)}</Text>
-          <View style={styles.offerBadge}><Text style={styles.offerBadgeText}>OFERTA</Text></View>
-        </View>
+        <>
+          <View style={styles.priceRow}>
+            <Text style={styles.priceStriked}>${fmt(producto.list_price)}</Text>
+            <Text style={styles.priceOffer}>${fmt(finalPrice)}</Text>
+            <View style={styles.offerBadge}><Text style={styles.offerBadgeText}>OFERTA</Text></View>
+          </View>
+          {/* El precio mostrado es el de la escala más barata: hay que aclarar
+              desde qué cantidad se consigue, si no promete algo inalcanzable. */}
+          {!!producto.price_offer_min_qty && (
+            <Text style={styles.minQtyText}>comprando {producto.price_offer_min_qty} u. o más</Text>
+          )}
+        </>
       ) : (
         <Text style={styles.price}>${fmt(finalPrice)}</Text>
       )}
@@ -168,6 +176,7 @@ const styles = StyleSheet.create({
   offerBadge: { backgroundColor: '#FEE2E2', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, borderWidth: 1, borderColor: '#FECACA' },
   offerBadgeText: { color: '#D32F2F', fontFamily: 'BarlowCondensed-Bold', fontSize: 10, letterSpacing: 0.5 },
   price: { fontFamily: 'BarlowCondensed-Bold', fontSize: 20, color: '#313131', marginTop: 6 },
+  minQtyText: { fontFamily: 'Rubik', fontSize: 10.5, color: '#6B7280', marginTop: 2 },
 });
 
 export default TarjetaProductoDesktop;
