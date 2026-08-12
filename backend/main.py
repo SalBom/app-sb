@@ -3604,14 +3604,26 @@ def _fetch_clientes_vendedor(cuit, q):
                 pg_conn = None
 
         # 3. Definir Dominio de Búsqueda
+        #
+        # OJO con customer_rank: en Odoo sube recién cuando se CONFIRMA una venta.
+        # Un cliente recién cargado (o con presupuestos sin confirmar) queda en 0,
+        # así que exigirlo generaba un círculo vicioso: el vendedor no podía
+        # elegirlo para venderle porque no aparecía, y no aparecía porque nunca
+        # le había vendido. Para el vendedor alcanza con que el cliente esté
+        # ASIGNADO a él (user_id), que ya es un filtro fuerte.
+        #
+        # 'type' tampoco se compara con "contact" a secas: los contactos
+        # importados o creados por otras vías pueden traerlo vacío y quedaban
+        # afuera. Se excluyen solamente las direcciones de envío/facturación.
         base_domain = [
-            ("customer_rank", ">", 0),
             ("active", "=", True),
-            ("type", "=", "contact")
+            ("type", "not in", ["delivery", "invoice", "private"]),
         ]
 
         if is_admin:
-            domain = base_domain
+            # El admin ve todos los clientes: los que ya compraron y los que
+            # están asignados a algún vendedor aunque todavía no hayan comprado.
+            domain = ["|", ("customer_rank", ">", 0), ("user_id", "!=", False)] + base_domain
         else:
             user_id = user[0].id if user else 0
             domain = [("user_id", "=", user_id)] + base_domain
@@ -3649,6 +3661,54 @@ def _fetch_clientes_vendedor(cuit, q):
         if pg_conn:
             pg_conn.close()
         release_odoo_client(client)
+
+
+@app.route("/admin/diag-cliente", methods=["GET"])
+def diag_cliente():
+    """
+    Diagnóstico: dice por qué un cliente aparece o no en el selector del carrito.
+    Uso: /admin/diag-cliente?cuit=<CUIT_ADMIN>&q=<nombre o CUIT del cliente>
+    Solo ADMIN.
+    """
+    if not _cuit_is_admin(request.args.get("cuit")):
+        return jsonify({"error": "No autorizado"}), 403
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify({"error": "Falta q (nombre o CUIT del cliente)"}), 400
+
+    def _op(cli):
+        encontrados = cli.env["res.partner"].search_read(
+            ["|", ("name", "ilike", q), ("vat", "ilike", q)],
+            ["id", "name", "vat", "active", "type", "customer_rank", "user_id", "parent_id"],
+            limit=20,
+        )
+        salida = []
+        for p in encontrados:
+            motivos = []
+            if not p.get("active"):
+                motivos.append("está archivado (active = False)")
+            if p.get("type") in ("delivery", "invoice", "private"):
+                motivos.append(f"es una dirección de tipo '{p.get('type')}', no un cliente")
+            if not p.get("user_id"):
+                motivos.append("NO tiene vendedor asignado (campo 'Vendedor' vacío)")
+            salida.append({
+                "id": p["id"],
+                "nombre": p.get("name"),
+                "cuit": p.get("vat"),
+                "vendedor_asignado": p["user_id"][1] if p.get("user_id") else None,
+                "customer_rank": p.get("customer_rank"),
+                "type": p.get("type"),
+                "activo": p.get("active"),
+                "visible_para_su_vendedor": len(motivos) == 0,
+                "motivos_por_los_que_no_aparece": motivos,
+            })
+        return {"encontrados": len(salida), "clientes": salida}
+
+    try:
+        return jsonify(execute_odoo_operation(_op))
+    except Exception as e:
+        log.error(f"❌ /admin/diag-cliente: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/clientes-del-vendedor", methods=["GET"])
