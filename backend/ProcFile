@@ -1,1 +1,1 @@
-web: gunicorn main:app --workers 3 --threads 1 --timeout 120 --graceful-timeout 30 --max-requests 400 --max-requests-jitter 50 --log-file -
+web: gunicorn main:app --worker-class sync --workers 3 --timeout 120 --graceful-timeout 30 --max-requests 400 --max-requests-jitter 50 --log-file -

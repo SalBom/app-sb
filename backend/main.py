@@ -124,16 +124,28 @@ def get_month_range(year, month):
     return start_date, next_month
 
 # -------------------------------------------------------------------------
-# GESTIÓN DE CONEXIONES ROBUSTA (Thread Local + Login Lock)
+# GESTIÓN DE CONEXIONES ROBUSTA (un cliente por proceso + candado de acceso)
 # -------------------------------------------------------------------------
-
-# Almacenamiento local para cada hilo
-_thread_local = threading.local()
 
 # Lock global SOLO para el momento de crear/loguear el cliente
 # Esto evita que dos hilos intenten hacer el handshake SSL/XMLRPC al mismo tiempo
 # y corrompan el estado del socket (causa del CannotSendRequest).
 _login_lock = threading.Lock()
+
+def _purge_odooly_cache():
+    """
+    odooly guarda los Env (y con ellos el cliente y su socket) en Env._cache,
+    que es un atributo DE CLASE: la clave es (key, db_name, server_url), igual
+    para todos los hilos. Por eso no alcanza con tener un cliente por hilo: al
+    crear uno nuevo, odooly devuelve el Env cacheado de OTRO hilo, con su misma
+    conexión HTTP. Dos hilos escribiendo el mismo socket = CannotSendRequest /
+    ResponseNotReady. Al resetear tenemos que vaciar ese caché, si no la
+    conexión rota se sigue repartiendo aunque pidamos un cliente nuevo.
+    """
+    try:
+        odoo.Env._cache.clear()
+    except Exception:
+        pass
 
 def is_connection_error(e):
     """Detecta si el error es por conexión rota o estado inválido de Odoo/XMLRPC"""
@@ -143,27 +155,36 @@ def is_connection_error(e):
         "ProtocolError", "Connection reset", "Broken pipe", "Idle", "Request-sent"
     ])
 
-def get_odoo_client():
-    """
-    Obtiene un cliente Odoo único para el hilo actual (Thread-Safe).
-    Usa un Lock durante la creación para evitar condiciones de carrera en el login.
-    """
-    # 1. Si este hilo ya tiene cliente vivo, lo devuelve (Rápido, sin lock)
-    if hasattr(_thread_local, 'client') and _thread_local.client:
-        return _thread_local.client
+# UN solo cliente Odoo por PROCESO (no por hilo).
+#
+# Tener un cliente por hilo no servía de nada: odooly guarda los Env en
+# Env._cache, que es un atributo DE CLASE con clave (key, db_name, server_url).
+# Como todos los hilos usan la misma base y el mismo servidor, al crear un
+# cliente nuevo odooly le devolvía el Env cacheado de OTRO hilo — junto con su
+# conexión HTTP. Por eso fallaba incluso al loguear un cliente recién creado:
+#   odooly _login -> env['res.users'].context_get() -> CannotSendRequest
+# Con un único cliente por proceso, siempre usado bajo el candado de abajo, hay
+# exactamente un socket y nadie hereda el socket roto de otro.
+_odoo_client = None
 
-    # 2. Si no, entramos en modo exclusivo para crear la conexión
+def get_odoo_client():
+    """Devuelve el cliente Odoo del proceso, creándolo si hace falta."""
+    global _odoo_client
+    if _odoo_client is not None:
+        return _odoo_client
+
     with _login_lock:
-        # Doble chequeo por si otro hilo lo creó mientras esperábamos el lock (raro en thread-local, pero buena práctica)
-        if hasattr(_thread_local, 'client') and _thread_local.client:
-            return _thread_local.client
-            
+        if _odoo_client is not None:  # otro hilo lo creó mientras esperábamos
+            return _odoo_client
         try:
-            # Creamos la conexión de forma segura
-            client = odoo.Client(ODOO_SERVER, ODOO_DB, ODOO_USER, ODOO_PASSWORD)
-            _thread_local.client = client
-            return client
+            # Se limpia el caché de odooly ANTES de loguear: si quedó un Env con
+            # una conexión a medio usar, el cliente nuevo lo heredaría y nacería
+            # roto. Así arranca siempre con su propia conexión.
+            _purge_odooly_cache()
+            _odoo_client = odoo.Client(ODOO_SERVER, ODOO_DB, ODOO_USER, ODOO_PASSWORD)
+            return _odoo_client
         except Exception as e:
+            _odoo_client = None
             log.error(f"❌ Error conectando a Odoo (Login): {str(e)}")
             raise e
 
@@ -206,29 +227,15 @@ def _soltar_candado_odoo(exc=None):
         try: _odoo_access_lock.release()
         except Exception: pass
 
-def _purge_odooly_cache():
-    """
-    odooly guarda los Env (y con ellos el cliente y su socket) en Env._cache,
-    que es un atributo DE CLASE: la clave es (key, db_name, server_url), igual
-    para todos los hilos. Por eso no alcanza con tener un cliente por hilo: al
-    crear uno nuevo, odooly devuelve el Env cacheado de OTRO hilo, con su misma
-    conexión HTTP. Dos hilos escribiendo el mismo socket = CannotSendRequest /
-    ResponseNotReady. Al resetear tenemos que vaciar ese caché, si no la
-    conexión rota se sigue repartiendo aunque pidamos un cliente nuevo.
-    """
-    try:
-        odoo.Env._cache.clear()
-    except Exception:
-        pass
-
 def release_odoo_client(client, destroy=False):
     """
-    Si destroy=True, borramos la referencia para forzar reconexión la próxima vez.
+    Si destroy=True, tiramos la conexión del proceso para que la próxima llamada
+    cree una nueva y limpia. Hay que purgar TAMBIÉN el caché de odooly: si no, el
+    cliente nuevo hereda el Env viejo con la conexión rota y nace fallado.
     """
+    global _odoo_client
     if destroy:
-        if hasattr(_thread_local, 'client'):
-            # Eliminamos la referencia para que el GC se encargue y el próximo get_odoo_client cree uno nuevo
-            del _thread_local.client
+        _odoo_client = None
         _purge_odooly_cache()
 
 def execute_odoo_operation(func):
