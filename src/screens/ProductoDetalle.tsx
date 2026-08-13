@@ -31,6 +31,7 @@ import { getCuitFromStorage } from '../utils/authStorage';
 import DesktopMiniCart from '../components/DesktopMiniCart';
 import EditarCaracteristicasModal from '../components/EditarCaracteristicasModal';
 import { masterboxUnidades } from '../config/masterbox';
+import { precioSegunCantidad, escalaVigente } from '../config/escalasPrecio';
 
 // COMPONENTE SEMÁFORO
 import StockSemaphore from '../components/StockSemaphore';
@@ -370,17 +371,23 @@ function ProductoDetalle() {
     // reales (cajas × unidades por caja). Producto normal: step = 1.
     const step = masterboxUnidades(producto.default_code) || 1;
     const delta = cantidad * step;
+    const tiers = producto.price_tiers || null;
     const existingItem = items.find(it => it.product_id === producto.id);
     if (existingItem) {
+      // updateQuantity ya reevalúa la escala con la cantidad final.
       updateQuantity(producto.id, existingItem.product_uom_qty + delta);
     } else {
+      // El precio depende de CUÁNTAS unidades se agregan: si pide 50, tiene que
+      // entrar con el precio de la escala de 50, no con el de la de 10.
+      const precioUnitario = precioSegunCantidad(tiers, delta, precioBase);
       addToCart({
         product_id: producto.id,
         name: producto.name,
-        price_unit: precioBase,
+        price_unit: precioUnitario,
         list_price: producto.list_price,
         product_uom_qty: delta,
-        default_code: producto.default_code || ''
+        default_code: producto.default_code || '',
+        price_tiers: tiers,
       });
     }
     setCantidad(1);
@@ -504,9 +511,7 @@ function ProductoDetalle() {
   // Unidades que se están pidiendo: si es masterbox, la cantidad son CAJAS.
   const unidadesPedidas = cantidad * (mbUnits || 1);
   // Escala vigente para esa cantidad: la mayor cuyo mínimo ya se alcanzó.
-  const escalaActiva = escalas.length
-    ? [...escalas].reverse().find(e => unidadesPedidas >= e.min_qty) || null
-    : null;
+  const escalaActiva = escalaVigente(escalas, unidadesPedidas);
 
   const tablaEscalas = escalas.length > 0 ? (
     <View style={styles.tiersBox}>

@@ -22,6 +22,7 @@ const IconList = () => ( <Svg width="22" height="22" viewBox="0 0 24 24" fill="n
 
 import { API_URL } from '../config';
 import { masterboxStep } from '../config/masterbox';
+import { precioSegunCantidad } from '../config/escalasPrecio';
 const HEADER_PAD = 12;
 
 export default function Favoritos() {
@@ -85,7 +86,9 @@ export default function Favoritos() {
         updateQuantity(item.id, Math.max(0, existing.product_uom_qty + delta));
     } else if (delta > 0) {
         addToCart({
-            product_id: item.id, name: item.name, price_unit: finalPrice, list_price: item.list_price,
+            product_id: item.id, name: item.name,
+            price_unit: precioSegunCantidad(item.price_tiers || null, delta, finalPrice),
+            list_price: item.list_price, price_tiers: item.price_tiers || null,
             product_uom_qty: delta, default_code: item.default_code || '',
             image_md_url: item.image_md_url, image_thumb_url: item.image_thumb_url,
         });

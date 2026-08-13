@@ -37,6 +37,7 @@ import useIsGuest from '../hooks/useIsGuest';
 import type { RootStackParamList } from '../types/navigation';
 import { API_URL } from '../config';
 import { masterboxStep } from '../config/masterbox';
+import { precioSegunCantidad } from '../config/escalasPrecio';
 
 import TarjetaProductoListado from '../components/TarjetaProductoListado';
 import TarjetaProductoKanban from '../components/TarjetaProductoKanban';
@@ -554,12 +555,15 @@ const Productos = () => {
         if (existing) {
             updateQuantity(item.id, Math.max(0, existing.product_uom_qty + delta));
         } else if (delta > 0) {
+            // El precio depende de la cantidad: se evalúa la escala de la tarifa.
+            const tiers = (item as any).price_tiers || null;
             addToCart({
                 product_id: item.id,
                 name: item.name,
-                price_unit: finalPrice,
+                price_unit: precioSegunCantidad(tiers, delta, finalPrice),
                 list_price: item.list_price,
                 product_uom_qty: delta,
+                price_tiers: tiers,
                 default_code: item.default_code || '',
                 image_md_url: item.image_md_url ?? null,
                 image_thumb_url: item.image_thumb_url ?? null,

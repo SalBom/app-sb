@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import axios from 'axios';
 import { getCuitFromStorage } from '../utils/authStorage';
-import { API_URL } from '../config'; 
+import { API_URL } from '../config';
+import { precioSegunCantidad, type EscalaPrecio } from '../config/escalasPrecio';
 
 // --- FUNCIÓN PARA GUARDAR EN LA NUBE ---
 const syncCartToBackend = async (items: any[]) => {
@@ -60,8 +61,15 @@ export type ProductoBase = {
   discount2?: number;
   discount3?: number;
   image_thumb_url?: string | null;
+  image_md_url?: string | null;
   payment_term_id?: number; 
   corte_por_bulto?: string | null;
+  // Escalas de precio por cantidad (x10/x50/x100). Se guardan en el ítem para
+  // poder recalcular el precio unitario cuando cambia la cantidad.
+  price_tiers?: EscalaPrecio[] | null;
+  // Precio puesto a mano por un ADMIN en el paso de confirmación: si está en
+  // true, la app NO vuelve a pisarlo al cambiar la cantidad.
+  precio_manual?: boolean;
 };
 
 export type ProductoCarrito = ProductoBase & {
@@ -151,7 +159,14 @@ export const useCartStore = create<CartState>((set, get) => ({
       let newItems;
       if (exists) {
         if (product.product_id === PRODUCTO_TRANSPORTE_ID) return { items: state.items };
-        newItems = state.items.map((it) => it.product_id === product.product_id ? { ...it, product_uom_qty: it.product_uom_qty + 1 } : it);
+        newItems = state.items.map((it) => {
+          if (it.product_id !== product.product_id) return it;
+          // Sumar de nuevo también cambia la cantidad → reevaluamos la escala.
+          const nuevaQty = it.product_uom_qty + (product.product_uom_qty ?? 1);
+          const sinEscalas = !it.price_tiers || it.price_tiers.length === 0;
+          if (sinEscalas || it.precio_manual) return { ...it, product_uom_qty: nuevaQty };
+          return { ...it, product_uom_qty: nuevaQty, price_unit: precioSegunCantidad(it.price_tiers, nuevaQty, it.list_price) };
+        });
       } else {
         // Un producto nuevo debe heredar el plazo GENERAL ya elegido (si existe),
         // en vez de un "Contado" hardcodeado. Si no lo hace, este ítem queda
@@ -169,7 +184,20 @@ export const useCartStore = create<CartState>((set, get) => ({
 
   updateQuantity: (productId, quantity) => {
     set((state) => {
-      const newItems = state.items.map((item) => item.product_id === productId ? { ...item, product_uom_qty: quantity } : item);
+      const newItems = state.items.map((item) => {
+        if (item.product_id !== productId) return item;
+        // El precio unitario depende de la cantidad: al cambiarla hay que
+        // reevaluar la escala de la tarifa. Sin escalas (o con precio puesto a
+        // mano por un admin) el precio queda como está.
+        const sinEscalas = !item.price_tiers || item.price_tiers.length === 0;
+        if (sinEscalas || item.precio_manual) {
+          return { ...item, product_uom_qty: quantity };
+        }
+        // Si la cantidad baja y ya no alcanza ninguna escala, vuelve al precio
+        // de lista (las escalas SON la oferta, no un descuento adicional).
+        const price_unit = precioSegunCantidad(item.price_tiers, quantity, item.list_price);
+        return { ...item, product_uom_qty: quantity, price_unit };
+      });
       syncCartToBackend(newItems);
       return { items: newItems };
     });

@@ -1016,6 +1016,9 @@ def get_productos():
                 "list_price": list_price,
                 "price_offer": offer_price,
                 "price_offer_min_qty": offer_min_qty,
+                # Escalas completas: la app las guarda en el carrito para
+                # recalcular el precio unitario cuando cambia la cantidad.
+                "price_tiers": escalas_prod,
                 "default_code": sku,
                 "write_date": wd,
                 "categ_id": r.get("categ_id"),

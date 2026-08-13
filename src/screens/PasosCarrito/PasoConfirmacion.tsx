@@ -384,7 +384,9 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       const currentItems = useCartStore.getState().items;
       const newItems = currentItems.map((it: any) => {
           if (it.product_id === editingItem.product_id) {
-              return { ...it, price_unit: newPrice, discount1: nd1, discount2: nd2, discount3: nd3 };
+              // precio_manual: el admin fijó este precio a mano, así que la app
+              // no debe recalcularlo por escala si después cambia la cantidad.
+              return { ...it, price_unit: newPrice, precio_manual: true, discount1: nd1, discount2: nd2, discount3: nd3 };
           }
           return it;
       });
