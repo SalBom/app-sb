@@ -40,3 +40,30 @@ export function escalaVigente(
   if (alcanzadas.length === 0) return null;
   return alcanzadas.reduce((a, b) => (b.price < a.price ? b : a));
 }
+
+/**
+ * Precio unitario definitivo para una cantidad dada.
+ *
+ * Regla: si el producto tiene escalas por cantidad, el precio de oferta SOLO
+ * corresponde si se alcanza el mínimo. Comprando menos, va precio de LISTA
+ * (las escalas tienen cantidad mínima; no son un descuento suelto).
+ * Si no tiene escalas, se respeta la oferta simple de siempre.
+ */
+export function precioUnitarioPara(
+  producto: {
+    price_tiers?: EscalaPrecio[] | null;
+    list_price?: number | null;
+    price_offer?: number | null;
+  },
+  cantidad: number
+): number {
+  const lista = Number(producto?.list_price) || 0;
+  const escalas = producto?.price_tiers;
+
+  if (Array.isArray(escalas) && escalas.length > 0) {
+    return precioSegunCantidad(escalas, cantidad, lista);
+  }
+
+  const oferta = Number(producto?.price_offer) || 0;
+  return oferta > 0 && oferta < lista ? oferta : lista;
+}

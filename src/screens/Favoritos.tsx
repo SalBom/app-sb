@@ -22,7 +22,7 @@ const IconList = () => ( <Svg width="22" height="22" viewBox="0 0 24 24" fill="n
 
 import { API_URL } from '../config';
 import { masterboxStep } from '../config/masterbox';
-import { precioSegunCantidad } from '../config/escalasPrecio';
+import { precioUnitarioPara } from '../config/escalasPrecio';
 const HEADER_PAD = 12;
 
 export default function Favoritos() {
@@ -79,7 +79,6 @@ export default function Favoritos() {
 
   const handlePressAgregar = (item: any, quantity: number) => {
     const existing = itemsInCart.find(it => it.product_id === item.id);
-    const finalPrice = (item.price_offer && item.price_offer > 0) ? item.price_offer : item.list_price;
     // Masterbox: 1 caja = N unidades reales (ver Productos.tsx).
     const delta = quantity * masterboxStep(item.default_code);
     if (existing) {
@@ -87,7 +86,7 @@ export default function Favoritos() {
     } else if (delta > 0) {
         addToCart({
             product_id: item.id, name: item.name,
-            price_unit: precioSegunCantidad(item.price_tiers || null, delta, finalPrice),
+            price_unit: precioUnitarioPara(item, delta),
             list_price: item.list_price, price_tiers: item.price_tiers || null,
             product_uom_qty: delta, default_code: item.default_code || '',
             image_md_url: item.image_md_url, image_thumb_url: item.image_thumb_url,

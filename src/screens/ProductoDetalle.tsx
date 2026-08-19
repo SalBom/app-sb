@@ -31,7 +31,7 @@ import { getCuitFromStorage } from '../utils/authStorage';
 import DesktopMiniCart from '../components/DesktopMiniCart';
 import EditarCaracteristicasModal from '../components/EditarCaracteristicasModal';
 import { masterboxUnidades } from '../config/masterbox';
-import { precioSegunCantidad, escalaVigente } from '../config/escalasPrecio';
+import { precioSegunCantidad, escalaVigente, precioUnitarioPara } from '../config/escalasPrecio';
 
 // COMPONENTE SEMÁFORO
 import StockSemaphore from '../components/StockSemaphore';
@@ -256,13 +256,25 @@ function ProductoDetalle() {
     return () => { active = false; };
   }, [numericId]);
 
-  // 4. LÓGICA DE PRECIO (SOPORTE OFERTA REACTIVO)
-  const precioBase = useMemo(() => {
-    if (producto?.price_offer && producto.price_offer > 0) return producto.price_offer;
-    return producto?.list_price || 0;
-  }, [producto?.price_offer, producto?.list_price]);
+  // 4. LÓGICA DE PRECIO
+  // El precio depende de la CANTIDAD elegida: si el producto tiene escalas con
+  // mínimo (x10/x50/x100) y todavía no se alcanza ninguna, corresponde precio
+  // de LISTA, no el de oferta. Por eso se recalcula con `cantidad`.
+  const unidadesElegidas = useMemo(
+    () => cantidad * (masterboxUnidades(producto?.default_code) || 1),
+    [cantidad, producto?.default_code]
+  );
 
-  const esOferta = useMemo(() => !!(producto?.price_offer && producto.price_offer > 0), [producto?.price_offer]);
+  const precioBase = useMemo(
+    () => precioUnitarioPara(producto || {}, unidadesElegidas),
+    [producto?.price_tiers, producto?.price_offer, producto?.list_price, unidadesElegidas]
+  );
+
+  // Sólo es "oferta" si el precio que corresponde es menor al de lista.
+  const esOferta = useMemo(
+    () => !!(producto?.list_price && precioBase > 0 && precioBase < producto.list_price),
+    [precioBase, producto?.list_price]
+  );
 
   // El invitado no ve precios de oferta ni stock: siempre precio de lista.
   const mostrarOferta = esOferta && !isGuest;
@@ -377,9 +389,9 @@ function ProductoDetalle() {
       // updateQuantity ya reevalúa la escala con la cantidad final.
       updateQuantity(producto.id, existingItem.product_uom_qty + delta);
     } else {
-      // El precio depende de CUÁNTAS unidades se agregan: si pide 50, tiene que
-      // entrar con el precio de la escala de 50, no con el de la de 10.
-      const precioUnitario = precioSegunCantidad(tiers, delta, precioBase);
+      // El precio depende de CUÁNTAS unidades se agregan: con 50 entra a la
+      // escala de 50; con menos del mínimo va precio de lista (no la oferta).
+      const precioUnitario = precioUnitarioPara(producto, delta);
       addToCart({
         product_id: producto.id,
         name: producto.name,
