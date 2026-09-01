@@ -1,6 +1,7 @@
 # main.py
 import os
 import json
+import re
 import base64
 import traceback
 import time
@@ -909,6 +910,41 @@ def _inject_corte_por_bulto(client, page_slice):
 
     return result
 
+def _variantes_sku(term):
+    """
+    Patrones `ilike` para que el SKU se encuentre aunque se escriba con otros
+    separadores (o sin ninguno). Ej.: el SKU es "SH-RH36K" y el vendedor escribe
+    "SHRH36K" — sin esto no aparecía nada.
+
+    Se devuelven:
+      - el término tal cual
+      - el término sin separadores (si el SKU no los tiene y el usuario sí los puso)
+      - el término con un '_' intercalado en cada posición: en ILIKE, '_' es
+        comodín de UN carácter, así que "SH_RH36K" matchea "SH-RH36K" y también
+        "SH RH36K". Cubre el caso de un separador en cualquier lugar.
+    """
+    t = (term or "").strip()
+    if not t:
+        return []
+    variantes = [t]
+    plano = re.sub(r"[^0-9A-Za-z]", "", t)
+
+    if plano and plano.lower() != t.lower():
+        # Escribió con separador; el SKU podría no tenerlo.
+        variantes.append(plano)
+    elif 3 <= len(plano) <= 24:
+        # Escribió sin separadores; el SKU podría tener uno en cualquier posición.
+        for i in range(1, len(plano)):
+            variantes.append(plano[:i] + "_" + plano[i:])
+
+    vistos, salida = set(), []
+    for v in variantes:
+        k = v.lower()
+        if k not in vistos:
+            vistos.add(k)
+            salida.append(v)
+    return salida
+
 @app.route("/productos", methods=["GET"])
 def get_productos():
     client = get_odoo_client()
@@ -940,11 +976,13 @@ def get_productos():
         
         if search:
             for term in search.split():
-                domain.append("|")
-                domain.append("|")
-                domain.append(["name", "ilike", term])
-                domain.append(["default_code", "ilike", term])
-                domain.append(["categ_id.complete_name", "ilike", term])
+                # El SKU se busca con variantes (ver _variantes_sku) para tolerar
+                # separadores distintos; nombre y categoría van tal cual.
+                hojas = [["name", "ilike", term], ["categ_id.complete_name", "ilike", term]]
+                hojas += [["default_code", "ilike", v] for v in _variantes_sku(term)]
+                # N hojas en OR necesitan N-1 operadores '|' delante (notación prefija).
+                domain.extend(["|"] * (len(hojas) - 1))
+                domain.extend(hojas)
 
         if marca_id and campo_marca: 
             domain.append([campo_marca, "=", int(marca_id)])
