@@ -219,6 +219,12 @@ def _tomar_candado_odoo():
     Toma el candado de Odoo al inicio de cada petición y lo suelta al terminar.
     Se hace acá (y no en los ~40 endpoints) para cubrirlos a todos sin tocarlos.
     """
+    # La subida de archivos a Firebase no habla con Odoo (salvo el catálogo de SKUs,
+    # que toma el candado solo para esa consulta): no bloqueamos a los vendedores
+    # mientras el admin sube un lote de fotos.
+    if request.path.startswith('/admin/media/'):
+        g._odoo_lock_held = False
+        return
     g._odoo_lock_held = _odoo_access_lock.acquire(timeout=_ODOO_LOCK_TIMEOUT)
 
 @app.teardown_request
@@ -6093,6 +6099,376 @@ def admin_delete_masterbox(sku):
         return jsonify({"error": "No se pudo borrar."}), 500
     finally:
         if conn: conn.close()
+
+
+# ===============================================================
+#  SUBIDA DE FOTOS / FICHAS / MANUALES A FIREBASE (solo ADMIN)
+# ===============================================================
+# Estructura del bucket, la misma que ya lee la app:
+#   products/{SKU}/{SKU}.webp         foto principal
+#   products/{SKU}/{SKU}_1..3.webp    fotos extra de la galería
+#   fichas_tecnicas/{SKU}.webp        ficha técnica
+#   manuales/{SKU}.pdf                manual
+# Sube el backend con una cuenta de servicio (variable FIREBASE_SERVICE_ACCOUNT_JSON
+# en Railway), así las reglas del bucket siguen sin permitir escribir desde afuera.
+
+_MEDIA_TIPOS = ("fotos", "ficha", "manual")
+_MEDIA_MAX_BYTES = 40 * 1024 * 1024
+_MEDIA_MAX_EXTRAS = 3  # ProductoDetalle busca _1, _2 y _3
+_MEDIA_IMG_EXTS = {".webp", ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff"}
+# La IA manda la ficha en base64 y la API acepta hasta 5 MB codificados (~3,75 MB crudos).
+_MEDIA_FICHA_MAX_BYTES = int(3.5 * 1024 * 1024)
+_SKU_INVALIDO_RE = re.compile(r"[/\\#\[\]*?\x00-\x1f]")
+_SUFIJOS_FOTO = [
+    re.compile(r"^(.+?)_(\d{1,2})$"),         # SKU_2
+    re.compile(r"^(.+?)\s*\((\d{1,2})\)$"),   # SKU (2)
+    re.compile(r"^(.+?)[\s\-](\d{1,2})$"),    # SKU-2 / SKU 2
+]
+
+_gcs_creds = None
+_gcs_creds_lock = threading.Lock()
+_gcs_listados = {}  # prefijo -> (timestamp, set(nombres)); caché corto por proceso
+
+
+def _gcs_token():
+    global _gcs_creds
+    raw = (os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON") or "").strip()
+    if not raw:
+        raise RuntimeError("Falta configurar FIREBASE_SERVICE_ACCOUNT_JSON en el servidor.")
+    with _gcs_creds_lock:
+        if _gcs_creds is None:
+            from google.oauth2 import service_account
+            if not raw.startswith("{"):
+                raw = base64.b64decode(raw).decode("utf-8")  # también se acepta en base64
+            _gcs_creds = service_account.Credentials.from_service_account_info(
+                json.loads(raw),
+                scopes=["https://www.googleapis.com/auth/devstorage.read_write"],
+            )
+        if not _gcs_creds.valid:
+            from google.auth.transport.requests import Request as _GoogleRequest
+            _gcs_creds.refresh(_GoogleRequest())
+        return _gcs_creds.token
+
+
+def _gcs_existentes(prefijo, ttl=120):
+    """Nombres de objetos del bucket bajo `prefijo` (cacheado unos minutos)."""
+    hit = _gcs_listados.get(prefijo)
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1]
+    headers = {"Authorization": f"Bearer {_gcs_token()}"}
+    nombres, page = set(), None
+    while True:
+        params = {"prefix": prefijo, "fields": "items(name),nextPageToken", "maxResults": 1000}
+        if page:
+            params["pageToken"] = page
+        r = requests.get(f"https://storage.googleapis.com/storage/v1/b/{FIREBASE_BUCKET}/o",
+                         params=params, headers=headers, timeout=30)
+        if r.status_code != 200:
+            raise RuntimeError(f"Firebase respondió {r.status_code}: {r.text[:200]}")
+        d = r.json()
+        nombres.update(it["name"] for it in d.get("items", []))
+        page = d.get("nextPageToken")
+        if not page:
+            break
+    _gcs_listados[prefijo] = (time.time(), nombres)
+    return nombres
+
+
+def _gcs_subir(destino, contenido, content_type):
+    import uuid
+    meta = {
+        "name": destino,
+        "contentType": content_type,
+        # Corto a propósito: si se reemplaza una foto, que se vea la nueva en minutos.
+        "cacheControl": "public, max-age=300",
+        # Igual que las subidas desde la consola de Firebase (así la consola la previsualiza).
+        "metadata": {"firebaseStorageDownloadTokens": str(uuid.uuid4())},
+    }
+    b = "salbom" + uuid.uuid4().hex
+    cuerpo = (
+        f"--{b}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{json.dumps(meta)}\r\n"
+        f"--{b}\r\nContent-Type: {content_type}\r\n\r\n"
+    ).encode("utf-8") + contenido + f"\r\n--{b}--\r\n".encode("utf-8")
+    r = requests.post(
+        f"https://storage.googleapis.com/upload/storage/v1/b/{FIREBASE_BUCKET}/o",
+        params={"uploadType": "multipart"},
+        data=cuerpo,
+        headers={"Authorization": f"Bearer {_gcs_token()}",
+                 "Content-Type": f"multipart/related; boundary={b}"},
+        timeout=180,
+    )
+    if r.status_code not in (200, 201):
+        raise RuntimeError(f"Firebase respondió {r.status_code}: {r.text[:200]}")
+    for prefijo, (_, nombres) in list(_gcs_listados.items()):
+        if destino.startswith(prefijo):
+            nombres.add(destino)
+
+
+def _media_prefijo(tipo):
+    return {"fotos": "products/", "ficha": "fichas_tecnicas/", "manual": "manuales/"}[tipo]
+
+
+def _media_destino(tipo, sku, slot=0):
+    if tipo == "fotos":
+        return f"products/{sku}/{sku}.webp" if not slot else f"products/{sku}/{sku}_{slot}.webp"
+    if tipo == "ficha":
+        return f"fichas_tecnicas/{sku}.webp"
+    return f"manuales/{sku}.pdf"
+
+
+def _media_sku_invalido(sku):
+    if not sku:
+        return "Falta el SKU."
+    if len(sku) > 80 or sku in (".", "..") or _SKU_INVALIDO_RE.search(sku):
+        return "El SKU tiene caracteres que no se pueden usar en un nombre de archivo."
+    return None
+
+
+def _media_catalogo_skus():
+    """Todos los SKUs de Odoo (cacheado 10 min). Lista vacía si no se pudo consultar."""
+    ck = "media_sku_catalogo_v1"
+    cached = cache_get(ck)
+    if cached:
+        return cached
+    try:
+        with odoo_access():
+            rows = execute_odoo_operation(lambda c: c.env["product.product"].search_read(
+                [("default_code", "!=", False)], ["default_code"], limit=30000)) or []
+    except Exception as e:
+        log.error(f"Error leyendo SKUs para media: {e}")
+        return []
+    skus = sorted({(r.get("default_code") or "").strip() for r in rows} - {""})
+    if skus:
+        cache_setex(ck, 600, skus)
+    return skus
+
+
+def _media_indices(skus):
+    lower, plano = {}, {}
+    for s in skus:
+        lower.setdefault(s.lower(), []).append(s)
+        plano.setdefault(re.sub(r"[^0-9a-z]", "", s.lower()), []).append(s)
+    return set(skus), lower, plano
+
+
+def _media_resolver_sku(candidato, indices):
+    """(sku_del_catalogo | None, 'exacto' | 'corregido' | 'ambiguo' | None)"""
+    exacto, lower, plano = indices
+    c = (candidato or "").strip()
+    if not c:
+        return None, None
+    if c in exacto:
+        return c, "exacto"
+    por_lower = lower.get(c.lower()) or []
+    if len(por_lower) == 1:
+        return por_lower[0], "corregido"
+    por_plano = plano.get(re.sub(r"[^0-9a-z]", "", c.lower())) or []
+    if len(por_plano) == 1:
+        return por_plano[0], "corregido"
+    if len(por_lower) > 1 or len(por_plano) > 1:
+        return None, "ambiguo"
+    return None, None
+
+
+def _media_interpretar_nombre(stem, tipo, indices):
+    """Deduce (sku, slot, como) del nombre del archivo, priorizando lo que existe en el catálogo."""
+    candidatos = [(stem, 0)]
+    if tipo == "fotos":
+        for rx in _SUFIJOS_FOTO:
+            m = rx.match(stem)
+            if m:
+                candidatos.append((m.group(1).strip(), int(m.group(2))))
+    ambiguo = False
+    for cand, slot in candidatos:
+        sku, como = _media_resolver_sku(cand, indices)
+        if sku:
+            return sku, slot, como
+        ambiguo = ambiguo or como == "ambiguo"
+    # No está en el catálogo: la mejor adivinanza es "SKU_N" literal o el nombre entero.
+    m = _SUFIJOS_FOTO[0].match(stem) if tipo == "fotos" else None
+    sku, slot = (m.group(1), int(m.group(2))) if m else (stem.strip(), 0)
+    return sku, slot, ("ambiguo" if ambiguo else "no_encontrado")
+
+
+def _media_a_webp(data, max_lado, max_bytes=None):
+    import io
+    from PIL import Image, ImageOps
+    Image.MAX_IMAGE_PIXELS = 120_000_000
+    try:
+        im = Image.open(io.BytesIO(data))
+        im.load()
+    except Exception:
+        raise ValueError("No se pudo leer la imagen. Si es HEIC (iPhone), exportala como JPG o PNG.")
+    if im.format == "WEBP" and max(im.size) <= max_lado and (not max_bytes or len(data) <= max_bytes):
+        return data  # ya está bien: no la recomprimimos
+    im = ImageOps.exif_transpose(im)
+    im = im.convert("RGBA") if im.mode in ("RGBA", "LA", "P", "PA") else im.convert("RGB")
+    for lado, calidad in ((max_lado, 88), (max_lado, 78), (int(max_lado * 0.75), 78), (int(max_lado * 0.6), 72)):
+        copia = im.copy()
+        if max(copia.size) > lado:
+            copia.thumbnail((lado, lado), Image.LANCZOS)
+        out = io.BytesIO()
+        copia.save(out, "WEBP", quality=calidad, method=4)
+        if not max_bytes or out.tell() <= max_bytes:
+            return out.getvalue()
+    raise ValueError("La imagen es demasiado pesada incluso comprimida.")
+
+
+@app.route('/admin/media/estado', methods=['GET'])
+def admin_media_estado():
+    if not _cuit_is_admin(request.args.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    info = {"bucket": FIREBASE_BUCKET,
+            "configurado": bool((os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON") or "").strip())}
+    if not info["configurado"]:
+        return jsonify({**info, "ok": False,
+                        "error": "Falta configurar FIREBASE_SERVICE_ACCOUNT_JSON en Railway."})
+    try:
+        headers = {"Authorization": f"Bearer {_gcs_token()}"}
+        r = requests.get(f"https://storage.googleapis.com/storage/v1/b/{FIREBASE_BUCKET}/o",
+                         params={"maxResults": 1, "fields": "items(name)"}, headers=headers, timeout=20)
+        if r.status_code != 200:
+            return jsonify({**info, "ok": False, "error": f"Firebase respondió {r.status_code}: {r.text[:200]}"})
+        return jsonify({**info, "ok": True, "cuenta": getattr(_gcs_creds, "service_account_email", "")})
+    except Exception as e:
+        return jsonify({**info, "ok": False, "error": str(e)})
+
+
+@app.route('/admin/media/analizar', methods=['POST'])
+def admin_media_analizar():
+    """
+    Recibe la lista de archivos elegidos (solo nombres) y devuelve, para cada uno,
+    a qué SKU y a qué ruta de Firebase va, y si reemplaza algo que ya existe.
+    Cada archivo puede traer `sku`/`slot` corregidos a mano desde el panel.
+    """
+    data = request.get_json(silent=True) or {}
+    if not _cuit_is_admin(data.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    tipo = data.get('tipo')
+    if tipo not in _MEDIA_TIPOS:
+        return jsonify({"error": "Tipo inválido."}), 400
+    archivos = data.get('archivos') or []
+    if not isinstance(archivos, list) or len(archivos) > 1000:
+        return jsonify({"error": "Máximo 1000 archivos por lote."}), 400
+
+    skus = _media_catalogo_skus()
+    indices = _media_indices(skus)
+    firebase_error = None
+    try:
+        existentes = _gcs_existentes(_media_prefijo(tipo))
+    except Exception as e:
+        existentes, firebase_error = set(), str(e)
+
+    items = []
+    for a in archivos:
+        a = a if isinstance(a, dict) else {}
+        nombre = str(a.get('nombre') or '')
+        stem, ext = os.path.splitext(os.path.basename(nombre.replace("\\", "/")))
+        ext = ext.lower()
+        item = {"nombre": nombre, "sku": "", "slot": 0, "destino": "", "existe": False,
+                "estado": "ok", "mensaje": ""}
+        items.append(item)
+
+        if tipo == "manual" and ext != ".pdf":
+            item.update(estado="error", mensaje="El manual tiene que ser un PDF.")
+            continue
+        if tipo != "manual" and ext not in _MEDIA_IMG_EXTS:
+            item.update(estado="error", mensaje="Formato no soportado. Usá JPG, PNG o WEBP.")
+            continue
+
+        manual_sku = str(a.get('sku') or '').strip()
+        if manual_sku:
+            sku, como = _media_resolver_sku(manual_sku, indices)
+            if not sku:
+                sku, como = manual_sku, (como or "no_encontrado")
+            try:
+                slot = int(a.get('slot') or 0) if tipo == "fotos" else 0
+            except Exception:
+                slot = 0
+        else:
+            sku, slot, como = _media_interpretar_nombre(stem, tipo, indices)
+        item.update(sku=sku, slot=slot)
+
+        invalido = _media_sku_invalido(sku)
+        if invalido:
+            item.update(estado="error", mensaje=invalido)
+            continue
+        if slot < 0 or slot > _MEDIA_MAX_EXTRAS:
+            item.update(estado="error",
+                        mensaje=f"La app muestra la foto principal y hasta {_MEDIA_MAX_EXTRAS} extra (_1 a _{_MEDIA_MAX_EXTRAS}).")
+            continue
+
+        destino = _media_destino(tipo, sku, slot)
+        item.update(destino=destino, existe=destino in existentes)
+        if como == "corregido":
+            item.update(estado="corregido", mensaje=f"Se guarda como {sku}, que es el SKU exacto en Odoo.")
+        elif como == "ambiguo":
+            item.update(estado="ambiguo", mensaje="Coincide con más de un SKU. Escribilo exacto.")
+        elif como == "no_encontrado" and skus:
+            item.update(estado="no_encontrado", mensaje="Ese SKU no está en Odoo.")
+
+    # Dos archivos del lote que irían al mismo lugar: se pisarían entre sí.
+    por_destino = {}
+    for it in items:
+        if it["destino"]:
+            por_destino.setdefault(it["destino"], []).append(it)
+    for grupo in por_destino.values():
+        if len(grupo) > 1:
+            for it in grupo:
+                if it["estado"] != "error":
+                    it.update(estado="duplicado", mensaje="Hay otro archivo del lote que va al mismo lugar.")
+
+    return jsonify({"items": items, "catalogo_ok": bool(skus),
+                    "firebase_ok": firebase_error is None, "firebase_error": firebase_error})
+
+
+@app.route('/admin/media/subir', methods=['POST'])
+def admin_media_subir():
+    """Sube UN archivo (el panel los manda de a uno para mostrar el avance)."""
+    if not _cuit_is_admin(request.form.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    tipo = request.form.get('tipo')
+    if tipo not in _MEDIA_TIPOS:
+        return jsonify({"error": "Tipo inválido."}), 400
+    sku = (request.form.get('sku') or "").strip()
+    invalido = _media_sku_invalido(sku)
+    if invalido:
+        return jsonify({"error": invalido}), 400
+    try:
+        slot = int(request.form.get('slot') or 0) if tipo == "fotos" else 0
+    except Exception:
+        slot = -1
+    if slot < 0 or slot > _MEDIA_MAX_EXTRAS:
+        return jsonify({"error": "Número de foto inválido."}), 400
+
+    f = request.files.get('archivo')
+    if not f:
+        return jsonify({"error": "No llegó ningún archivo."}), 400
+    contenido = f.read(_MEDIA_MAX_BYTES + 1)
+    if len(contenido) > _MEDIA_MAX_BYTES:
+        return jsonify({"error": "El archivo pesa más de 40 MB."}), 413
+    if not contenido:
+        return jsonify({"error": "El archivo está vacío."}), 400
+
+    try:
+        if tipo == "manual":
+            if not contenido.startswith(b"%PDF"):
+                return jsonify({"error": "El archivo no es un PDF válido."}), 400
+            payload, content_type = contenido, "application/pdf"
+        elif tipo == "ficha":
+            payload, content_type = _media_a_webp(contenido, 3000, _MEDIA_FICHA_MAX_BYTES), "image/webp"
+        else:
+            payload, content_type = _media_a_webp(contenido, 2000), "image/webp"
+        destino = _media_destino(tipo, sku, slot)
+        _gcs_subir(destino, payload, content_type)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        log.error(f"⚠️ subir media {tipo} {sku}: {e}")
+        return jsonify({"error": f"No se pudo subir a Firebase: {e}"}), 502
+
+    log.info(f"📤 Media subida: {destino} ({len(payload)} bytes)")
+    return jsonify({"ok": True, "destino": destino, "url": fb_url(destino), "bytes": len(payload)})
 
 
 # ─────────────────────────── Run ──────────────────────────────

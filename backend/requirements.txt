@@ -9,3 +9,5 @@ python-dotenv==1.0.1
 Werkzeug==3.0.1
 odooly==2.1.9
 anthropic>=0.40.0
+google-auth>=2.20.0
+Pillow>=10.0.0

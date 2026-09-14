@@ -1,6 +1,6 @@
 // src/screens/AdminPanel.tsx
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image, Platform } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { Ionicons } from '@expo/vector-icons';
 
@@ -10,6 +10,7 @@ import FlechaHeaderSvg from '../../assets/flechaHeader.svg';
 import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 import BackfillIAModal from '../components/BackfillIAModal';
 import MasterboxAdminModal from '../components/MasterboxAdminModal';
+import MediaUploadAdminModal from '../components/MediaUploadAdminModal';
 
 const AvatarPlaceholder = require('../../assets/avatarPlaceholder.png');
 
@@ -46,6 +47,7 @@ export default function AdminPanel() {
   const [user, setUser] = useState<UserState>({ name: 'USUARIO', image: null });
   const [backfillVisible, setBackfillVisible] = useState(false);
   const [masterboxVisible, setMasterboxVisible] = useState(false);
+  const [mediaVisible, setMediaVisible] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -87,11 +89,13 @@ export default function AdminPanel() {
               <AdminCardD icon="image-outline" label="Banners" onPress={() => navigation.navigate('AdminBanners')} />
               <AdminCardD icon="sparkles-outline" label="Fichas con IA (lote)" sub="Completar atributos automáticamente" onPress={() => setBackfillVisible(true)} />
               <AdminCardD icon="cube-outline" label="Masterbox" sub="Productos que se venden por caja" onPress={() => setMasterboxVisible(true)} />
+              <AdminCardD icon="cloud-upload-outline" label="Subir fotos, fichas y manuales" sub="Carga por lote a Firebase" onPress={() => setMediaVisible(true)} />
             </View>
           </View>
         </ScrollView>
         <BackfillIAModal visible={backfillVisible} onClose={() => setBackfillVisible(false)} />
         <MasterboxAdminModal visible={masterboxVisible} onClose={() => setMasterboxVisible(false)} />
+        <MediaUploadAdminModal visible={mediaVisible} onClose={() => setMediaVisible(false)} />
       </View>
     );
   }
@@ -200,10 +204,26 @@ export default function AdminPanel() {
            <Ionicons name="chevron-forward" size={22} color="#333" style={{ marginLeft: 'auto' }} />
         </TouchableOpacity>
 
+        {/* Subida a Firebase: usa el selector de archivos del navegador, así que solo en web. */}
+        {Platform.OS === 'web' && (
+          <>
+            <View style={styles.separator} />
+            <TouchableOpacity style={styles.mainMenuItem} onPress={() => setMediaVisible(true)}>
+               <Ionicons name="cloud-upload-outline" size={22} color="#1C9BD8" style={{ marginRight: 10 }} />
+               <View>
+                 <Text style={styles.mainMenuText}>SUBIR FOTOS, FICHAS Y MANUALES</Text>
+                 <Text style={[styles.proxText, { color: '#666', marginTop: 0 }]}>Carga por lote a Firebase</Text>
+               </View>
+               <Ionicons name="chevron-forward" size={22} color="#333" style={{ marginLeft: 'auto' }} />
+            </TouchableOpacity>
+          </>
+        )}
+
       </View>
 
       <BackfillIAModal visible={backfillVisible} onClose={() => setBackfillVisible(false)} />
       <MasterboxAdminModal visible={masterboxVisible} onClose={() => setMasterboxVisible(false)} />
+      {Platform.OS === 'web' && <MediaUploadAdminModal visible={mediaVisible} onClose={() => setMediaVisible(false)} />}
     </ScrollView>
   );
 }
