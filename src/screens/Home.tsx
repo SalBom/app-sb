@@ -751,7 +751,16 @@ const go = (keyword: string) => {
             <Text style={sw.distribuidoresText}>SOMOS DISTRIBUIDORES{"\n"}OFICIALES DE</Text>
           </View>
           <View style={sw.distribuidoresRight}>
-            <ShimuraDestacadoSvg width={220} height={80} />
+            {/* Cada logo va en una caja del mismo ancho: así el separador queda justo en
+                el centro del panel. Tamaños ajustados a ojo para que pesen parecido
+                (Issei es más compacto y macizo que Shimura). */}
+            <View style={sw.distribuidoresLogo}>
+              <ShimuraDestacadoSvg width={150} height={34} preserveAspectRatio="xMidYMid meet" />
+            </View>
+            <View style={sw.distribuidoresDivider} />
+            <View style={sw.distribuidoresLogo}>
+              <IsseiDestacadoSvg width={112} height={32} preserveAspectRatio="xMidYMid meet" />
+            </View>
           </View>
         </View>
 
@@ -1204,7 +1213,9 @@ const sw = StyleSheet.create({
   distribuidoresRow: { width: '100%', flexDirection: 'row', minHeight: 150 },
   distribuidoresLeft: { flex: 1, backgroundColor: WEB_BLUE, alignItems: 'flex-end', justifyContent: 'center', paddingRight: 40 },
   distribuidoresText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 44, lineHeight: 44, color: '#FFFFFF', textAlign: 'right' },
-  distribuidoresRight: { flex: 1, backgroundColor: '#111111', alignItems: 'center', justifyContent: 'center' },
+  distribuidoresRight: { flex: 1, backgroundColor: '#111111', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 28, paddingHorizontal: 20 },
+  distribuidoresLogo: { width: 170, alignItems: 'center', justifyContent: 'center' },
+  distribuidoresDivider: { width: 1, height: 44, backgroundColor: '#3A3A3A' },
 
   // FOOTER — banda full-bleed, columnas centradas a 1440
   footer: { width: '100%', backgroundColor: WEB_FOOTERBG, paddingVertical: 40 },

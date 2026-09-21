@@ -8,6 +8,7 @@ import {
   TouchableWithoutFeedback, 
   RefreshControl,
   Alert,
+  Platform,
   ActivityIndicator,
   Dimensions,
   Modal,
@@ -258,10 +259,33 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
   };
   const itemsSinStock = items.filter(itemSinStock);
 
+  // Subtotal sin descuentos ni flete: es contra lo que se mide el mínimo de cada plazo
+  // (el backend valida lo mismo al guardar el pedido).
   const subtotalBase = items.reduce(
-    (acc, item) => acc + (Number(item.price_unit) || 0) * (item.product_uom_qty || 1),
+    (acc, item) => item.product_id === PRODUCTO_TRANSPORTE_ID
+      ? acc
+      : acc + (Number(item.price_unit) || 0) * (item.product_uom_qty || 1),
     0
   );
+
+  // Mínimo de compra configurado en Admin → Plazos y descuentos (Contado nunca tiene).
+  const minimoDePlazo = (plazoId?: number | null) => {
+    if (!plazoId || plazoId === 1) return 0;
+    return parseFloat(discountRules[plazoId]?.min_compra || 0) || 0;
+  };
+  const fmtUSD = (n: number) => n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const minimoPlazoActual = minimoDePlazo(plazoSeleccionado?.id);
+  const faltaParaPlazo = plazoSeleccionado && subtotalBase < minimoPlazoActual
+    ? minimoPlazoActual - subtotalBase
+    : 0;
+
+  // Alert.alert no se ve en la web (react-native-web): ahí usamos window.alert.
+  const avisar = (titulo: string, msg: string) => {
+    if (Platform.OS === 'web') { if (typeof window !== 'undefined') window.alert(`${titulo}
+
+${msg}`); }
+    else Alert.alert(titulo, msg, [{ text: 'Entendido' }]);
+  };
 
   const getItemDiscounts = (item: any) => {
       const price = Number(item.price_unit || 0);
@@ -296,15 +320,23 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
 
   const handleContinue = () => {
       if (items.length === 0) {
-          Alert.alert("Atención", "Agregá al menos un producto para continuar.", [{ text: "Entendido" }]);
+          avisar("Atención", "Agregá al menos un producto para continuar.");
           return;
       }
       if (!clienteSeleccionado) {
-          Alert.alert("Atención", "Por favor seleccioná un cliente para el pedido.", [{ text: "Entendido" }]);
+          avisar("Atención", "Por favor seleccioná un cliente para el pedido.");
           return;
       }
       if (!plazoSeleccionado) {
-          Alert.alert("Atención", "Por favor seleccioná un plazo de pago para el pedido.", [{ text: "Entendido" }]);
+          avisar("Atención", "Por favor seleccioná un plazo de pago para el pedido.");
+          return;
+      }
+      if (faltaParaPlazo > 0) {
+          avisar(
+            "Monto mínimo no alcanzado",
+            `El plazo ${plazoSeleccionado?.nombre || ''} requiere una compra mínima de USD ${fmtUSD(minimoPlazoActual)}. ` +
+            `Faltan USD ${fmtUSD(faltaParaPlazo)}: agregá productos o elegí otro plazo.`
+          );
           return;
       }
 
@@ -419,6 +451,15 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
               </Text>
               <Text style={styles.chevron}>▾</Text>
             </Pressable>
+            {faltaParaPlazo > 0 && (
+              <View style={styles.minimoBanner}>
+                <Feather name="alert-triangle" size={14} color="#B45309" />
+                <Text style={styles.minimoBannerText}>
+                  Este plazo requiere un mínimo de USD {fmtUSD(minimoPlazoActual)} (sin IVA ni flete).
+                  Faltan USD {fmtUSD(faltaParaPlazo)}: agregá productos o elegí otro plazo.
+                </Text>
+              </View>
+            )}
         </View>
     </View>
   );
@@ -515,14 +556,24 @@ const PasoProductos: React.FC<Props> = ({ onNext }) => {
                 keyExtractor={(item) => String(item.id)}
                 renderItem={({ item }) => {
                     const isSel = item.id === plazoSeleccionado?.id;
+                    const minimo = minimoDePlazo(item.id);
+                    const bloqueado = subtotalBase < minimo;
                     return (
                         <Pressable
-                            style={styles.modalItem}
+                            style={[styles.modalItem, bloqueado && { opacity: 0.45 }]}
+                            disabled={bloqueado}
                             onPress={() => { setGlobalPaymentTerm({ id: item.id, nombre: item.nombre }); setModalPlazo(false); }}
                         >
                             <Text style={[styles.modalItemText, isSel && { color: '#139EDB', fontWeight: 'bold' }]}>
                                 {item.nombre}
                             </Text>
+                            {minimo > 0 && (
+                                <Text style={[styles.modalItemSub, bloqueado && { color: '#B45309' }]}>
+                                    {bloqueado
+                                        ? `Mínimo USD ${fmtUSD(minimo)} · faltan USD ${fmtUSD(minimo - subtotalBase)}`
+                                        : `Mínimo USD ${fmtUSD(minimo)}`}
+                                </Text>
+                            )}
                         </Pressable>
                     );
                 }}
@@ -587,6 +638,13 @@ const styles = StyleSheet.create({
   searchInput: { flex: 1, marginLeft: 8, fontSize: 16, color: '#333', fontWeight: '500' },
   modalItem: { paddingVertical: 12, paddingHorizontal: 16, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: '#E7EAED' },
   modalItemText: { fontSize: 16 },
+  modalItemSub: { fontSize: 12, color: '#6B7280', marginTop: 2, fontFamily: 'Rubik' },
+  minimoBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8,
+    backgroundColor: '#FEF3C7', borderWidth: 1, borderColor: '#FCD34D',
+    borderRadius: 10, paddingHorizontal: 12, paddingVertical: 9,
+  },
+  minimoBannerText: { flex: 1, color: '#92400E', fontFamily: 'Rubik', fontSize: 12.5, lineHeight: 17 },
   modalClose: { alignSelf: 'center', marginVertical: 12, paddingHorizontal: 16, paddingVertical: 10 },
   modalCloseText: { fontWeight: '700', color: '#1C9BD8' },
 });

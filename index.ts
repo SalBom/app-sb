@@ -1,4 +1,6 @@
 import { registerRootComponent } from 'expo';
+// Primero de todo: protege la web de los traductores del navegador (no hace nada en el APK).
+import './src/utils/webDomGuard';
 
 import App from './App';
 

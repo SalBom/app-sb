@@ -2573,6 +2573,51 @@ def clean_int(val):
     except:
         return False
 
+def _validar_minimo_plazos(items, global_term_id):
+    """
+    Cada plazo puede tener un monto mínimo (Admin → Plazos y descuentos). Se mide
+    contra el subtotal del pedido sin descuentos, sin IVA y sin flete, igual que en
+    el carrito. Devuelve el mensaje de error o None si está todo bien.
+    """
+    if not DATABASE_URL:
+        return None
+    subtotal = 0.0
+    plazos = set()
+    for it in items:
+        if str(clean_int(it.get('product_id'))) == '33627':  # flete
+            continue
+        try:
+            qty = float(it.get('qty') or it.get('product_uom_qty') or it.get('quantity') or 1)
+            subtotal += float(it.get('price_unit') or 0) * qty
+        except Exception:
+            pass
+        t = clean_int(it.get('payment_term_id')) or global_term_id
+        if t and t != 1:  # Contado (1) nunca tiene mínimo
+            plazos.add(t)
+    if not plazos:
+        return None
+    conn = get_pg_connection()
+    if not conn:
+        return None  # sin base no bloqueamos la venta
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT payment_term_id, min_amount FROM app_payment_discounts WHERE payment_term_id = ANY(%s)",
+                    (list(plazos),))
+        minimos = {int(r[0]): float(r[1] or 0) for r in cur.fetchall()}
+        cur.close()
+    except Exception as e:
+        log.error(f"Error leyendo mínimos de plazos: {e}")
+        return None
+    finally:
+        conn.close()
+    for t in sorted(plazos):
+        minimo = minimos.get(t, 0.0)
+        if subtotal + 0.005 < minimo:
+            return (f"El plazo elegido requiere una compra mínima de USD {minimo:,.2f} (sin IVA ni flete) "
+                    f"y el pedido suma USD {subtotal:,.2f}. Agregá productos o elegí otro plazo.")
+    return None
+
+
 def _upsert_order_logic(client, data):
     order_id_to_update  = clean_int(data.get('order_id_to_update') or data.get('order_id') or data.get('pedido_id'))
     cliente_cuit        = data.get('cliente_cuit') or data.get('partner_vat')
@@ -2587,6 +2632,10 @@ def _upsert_order_logic(client, data):
 
     if not cliente_cuit: return jsonify({"error": "Falta cliente_cuit"}), 400
     if not items: return jsonify({"error": "El pedido no tiene items"}), 400
+
+    error_minimo = _validar_minimo_plazos(items, global_term_id)
+    if error_minimo:
+        return jsonify({"error": error_minimo, "code": "MIN_PLAZO"}), 400
 
     cliente = client.env['res.partner'].search([('vat', '=', cliente_cuit)], limit=1)
     if not cliente: return jsonify({"error": "Cliente no encontrado"}), 404
