@@ -94,6 +94,10 @@ type CartState = {
   
   consultaResumen: ConsultaResumen | null;
   orderId: number | null;
+  // Llave única del pedido en armado: el backend la usa para no crear el mismo
+  // pedido dos veces (doble toque, reintentos por conexión). Se renueva al vaciar.
+  orderKey: string | null;
+  getOrderKey: () => string;
 
   setItems: (items: ProductoCarrito[]) => void; 
   addToCart: (product: ProductoBase) => void;
@@ -133,6 +137,14 @@ export const useCartStore = create<CartState>((set, get) => ({
   
   consultaResumen: null,
   orderId: null,
+  orderKey: null,
+  getOrderKey: () => {
+    const actual = get().orderKey;
+    if (actual) return actual;
+    const nueva = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    set({ orderKey: nueva });
+    return nueva;
+  },
 
   // NO llama a updateMaxPaymentTerm: se usa para restaurar el carrito guardado
   // (arranque de la app, post-login), y el plazo general es una elección
@@ -248,7 +260,7 @@ export const useCartStore = create<CartState>((set, get) => ({
   clearCart: () => {
       set({ 
         items: [], clienteSeleccionado: null, plazoSeleccionado: null, envioSeleccionado: null, direccionEntrega: null, 
-        transporte: null, transporteAsignado: null, notas: null, consultaResumen: null, orderId: null 
+        transporte: null, transporteAsignado: null, notas: null, consultaResumen: null, orderId: null, orderKey: null 
       });
       syncCartToBackend([]); 
   },

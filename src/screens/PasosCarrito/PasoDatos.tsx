@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import {
   View, Text, StyleSheet, Modal, FlatList, Pressable, ImageBackground,
-  Image as RNImage, Dimensions, Animated, Easing, Alert, TouchableOpacity
+  Image as RNImage, Dimensions, Animated, Easing, Alert, TouchableOpacity, ActivityIndicator, Platform
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import CarritoHeader from '../../components/CarritoHeader';
@@ -134,10 +134,30 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
   const deliveryName = (addrSelected?.name || 'DOMICILIO DE ENTREGA').trim();
   const deliveryAddress = [addrSelected?.street, addrSelected?.city, addrSelected?.state, addrSelected?.zip].filter(Boolean).join(', ');
 
+  // Crear el pedido en Odoo tarda unos segundos: mientras tanto el botón queda
+  // bloqueado (el doble toque era una de las formas de duplicar pedidos).
+  const enviandoRef = useRef(false);
+  const [enviando, setEnviando] = useState(false);
   const handleContinuar = async () => {
+    if (enviandoRef.current) return;
+    enviandoRef.current = true;
+    setEnviando(true);
+    try { await continuarInterno(); }
+    finally { enviandoRef.current = false; setEnviando(false); }
+  };
+
+  // Alert.alert no se ve en la web: ahí usamos window.alert.
+  const avisar = (titulo: string, msg: string) => {
+    if (Platform.OS === 'web') { if (typeof window !== 'undefined') window.alert(`${titulo}
+
+${msg}`); }
+    else Alert.alert(titulo, msg);
+  };
+
+  const continuarInterno = async () => {
     const clienteObj = clienteSel ? { id: clienteSel.id, name: clienteSel.name, vat: clienteSel.vat } : null;
     const plazoIdFinal = (plazoSeleccionado as any)?.id;
-    if (!clienteObj?.id || !plazoIdFinal) { Alert.alert('Error', 'Faltan datos del cliente o plazo.'); return; }
+    if (!clienteObj?.id || !plazoIdFinal) { avisar('Error', 'Faltan datos del cliente o plazo.'); return; }
 
     const st = getStore();
     const objTransporte = st.transporte;
@@ -273,6 +293,9 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
             // /actualizar-pedido) — así es como se duplicaban los pedidos al
             // volver atrás y volver a avanzar.
             order_id_to_update: existingOrderId || null,
+            // Llave anti-duplicados: si este pedido llega dos veces, el backend
+            // actualiza el que ya creó en vez de crear otro.
+            idempotency_key: getStore().getOrderKey(),
             cliente_cuit: clienteObj.vat,
             payment_term_id: plazoIdFinal,
             items: odooItems,
@@ -302,8 +325,8 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
                 } 
             });
             onNext();
-        } else { Alert.alert('Error', d.error || 'No se pudo procesar.'); }
-    } catch (e) { Alert.alert('Error de conexión', 'Verifica tu internet.'); }
+        } else { avisar('Error', d.error || 'No se pudo procesar.'); }
+    } catch (e) { avisar('Error de conexión', 'Verificá tu internet y volvé a tocar CONTINUAR: no se va a duplicar el pedido.'); }
   };
 
   const direccionBlock = metodoEnvio === 'domicilio' ? (
@@ -423,7 +446,7 @@ const PasoDatos: React.FC<Props> = ({ onNext, onBack }) => {
       <View style={[styles.footerContainer, isDesktopWeb && dstyles.footerContainer, { paddingBottom: Math.max(20, insets.bottom + 35) }]}>
         <View style={[styles.buttonsRow, isDesktopWeb && dstyles.buttonsRow]}>
             <TouchableOpacity onPress={onBack} style={[styles.btnVolver, isDesktopWeb && dstyles.btnVolver]}><Text style={styles.btnTextVolver}>VOLVER</Text></TouchableOpacity>
-            <TouchableOpacity disabled={!ready} onPress={handleContinuar} style={[styles.btnContinuar, isDesktopWeb && dstyles.btnContinuar, !ready && { opacity: 0.5 }]}><Text style={styles.btnTextContinuar}>CONTINUAR</Text></TouchableOpacity>
+            <TouchableOpacity disabled={!ready || enviando} onPress={handleContinuar} style={[styles.btnContinuar, isDesktopWeb && dstyles.btnContinuar, (!ready || enviando) && { opacity: 0.5 }]}>{enviando ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.btnTextContinuar}>CONTINUAR</Text>}</TouchableOpacity>
         </View>
       </View>
 

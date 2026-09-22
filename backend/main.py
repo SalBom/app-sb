@@ -992,10 +992,11 @@ def get_productos():
 
         if marca_id and campo_marca: 
             domain.append([campo_marca, "=", int(marca_id)])
-        if categ_id: 
-            domain.append(["categ_id", "=", int(categ_id)])
+        if categ_id:
+            # child_of: elegir una categoría padre trae también la de sus subcategorías.
+            domain.append(["categ_id", "child_of", int(categ_id)])
 
-        base_fields = ["id", "name", "list_price", "default_code", "write_date", "categ_id"]
+        base_fields =["id", "name", "list_price", "default_code", "write_date", "categ_id"]
         if campo_marca: 
             base_fields.append(campo_marca)
 
@@ -1070,6 +1071,7 @@ def get_productos():
                 "image_thumb_url": get_fb_url(thumb_path) + (f"&v={wd}" if thumb_path else ""),
                 "image_md_url":    get_fb_url(md_path)    + (f"&v={wd}" if md_path else ""),
                 "stock_state": st_info['state'],
+                "stock_level": st_info.get('nivel', 'ok'),
                 "stock_qty": st_info['quantity'],
                 "corte_por_bulto": corte_por_bulto_map.get(pid),
             })
@@ -1170,6 +1172,44 @@ def get_marcas():
 def get_categorias():
     client = get_odoo_client()
     try:
+        if request.args.get("arbol"):
+            # Árbol completo para el buscador agrupado de la app: las categorías con
+            # productos de la APP + todos sus padres (aunque el padre no tenga
+            # productos propios), con la ruta y cuántos productos hay debajo.
+            def query_arbol():
+                products = client.env["product.template"].search_read(
+                    [("product_tag_ids", "ilike", "APP")], ["categ_id"]
+                )
+                propios = {}
+                for p in products:
+                    pc = p.get("categ_id")
+                    if pc and isinstance(pc, (list, tuple)) and pc:
+                        propios[pc[0]] = propios.get(pc[0], 0) + 1
+                if not propios:
+                    return []
+                cats = client.env["product.category"].search_read(
+                    [("id", "parent_of", list(propios.keys()))],
+                    ["id", "name", "complete_name", "parent_id"],
+                    order="complete_name asc"
+                )
+                padre = {c["id"]: (c["parent_id"][0] if c.get("parent_id") else None) for c in cats}
+                total = dict.fromkeys(padre, 0)
+                for cid, n in propios.items():
+                    actual, vistos = cid, set()
+                    while actual in total and actual not in vistos:  # suma hacia arriba
+                        vistos.add(actual)
+                        total[actual] += n
+                        actual = padre.get(actual)
+                return [{
+                    "id": c["id"],
+                    "name": c.get("name") or "",
+                    "complete_name": c.get("complete_name") or c.get("name") or "",
+                    "parent_id": padre.get(c["id"]),
+                    "cantidad": total.get(c["id"], 0),
+                } for c in cats]
+
+            return jsonify(get_cache_or_execute("categorias_arbol_app_v1", fallback_fn=query_arbol))
+
         key = "categorias_filtradas_app"
 
         def query():
@@ -1394,7 +1434,7 @@ def delete_admin_promocion(promo_id):
 def get_product_attributes(product_id):
     # Cache key v16: sube de versión porque la respuesta ahora incluye price_tiers
     # de la base externa (product_specs) sobre los atributos de Odoo.
-    key = f"prod_info_v16:{product_id}"
+    key = f"prod_info_v17:{product_id}"
 
     def query():
         # Usamos el wrapper seguro para evitar "Request-sent" loops
@@ -1443,6 +1483,7 @@ def get_product_attributes(product_id):
                 'attributes': attributes_list,
                 'description': desc,
                 'stock_state': st_data.get('state', 'green'),
+                'stock_level': st_data.get('nivel', 'ok'),
                 'stock_qty': st_data.get('quantity', 0),
                 'price_tiers': escalas.get(product_id, [])
             }
@@ -2618,7 +2659,90 @@ def _validar_minimo_plazos(items, global_term_id):
     return None
 
 
+# ---------------------------------------------------------------
+# ANTI-DUPLICADOS DE PEDIDOS
+# La app manda una llave única por carrito (idempotency_key). Con ella:
+#  - el pedido se guarda en Odoo con client_order_ref = "APP-<llave>";
+#  - si llega otra vez la creación (doble toque, reintento por conexión caída
+#    después de que Odoo ya lo había creado, respuesta perdida), se busca el
+#    pedido por esa referencia y se ACTUALIZA en lugar de crear otro;
+#  - un candado en Redis evita que dos pedidos idénticos simultáneos se creen
+#    los dos antes de que cualquiera llegue a buscarse.
+# ---------------------------------------------------------------
+_IDEM_RE = re.compile(r"^[A-Za-z0-9\-]{8,64}$")
+_idem_locks_local = {}
+_idem_locks_local_guard = threading.Lock()
+
+
+class _candado_pedido:
+    """Serializa las peticiones con la misma llave (Redis entre workers; si no hay Redis, por proceso)."""
+    def __init__(self, llave):
+        self.llave, self.token, self.local = llave, None, None
+
+    def __enter__(self):
+        if not self.llave:
+            return self
+        if redis_client:
+            import uuid
+            self.token = uuid.uuid4().hex
+            k = f"pedido_lock:{self.llave}"
+            limite = time.time() + 45
+            while time.time() < limite:
+                try:
+                    if redis_client.set(k, self.token, nx=True, ex=120):
+                        return self
+                except Exception as e:
+                    log.warning(f"Candado de pedido sin Redis ({e}); sigo sin él.")
+                    self.token = None
+                    return self
+                time.sleep(0.4)
+            log.warning(f"⚠️ Timeout esperando candado del pedido {self.llave}; sigo igual.")
+            self.token = None
+            return self
+        with _idem_locks_local_guard:
+            self.local = _idem_locks_local.setdefault(self.llave, threading.Lock())
+        self.local.acquire(timeout=45)
+        return self
+
+    def __exit__(self, *exc):
+        if self.token and redis_client:
+            try:
+                k = f"pedido_lock:{self.llave}"
+                if (redis_client.get(k) or b"").decode() == self.token:
+                    redis_client.delete(k)
+            except Exception:
+                pass
+        if self.local:
+            try: self.local.release()
+            except Exception: pass
+        return False
+
+
 def _upsert_order_logic(client, data):
+    llave = str(data.get('idempotency_key') or '').strip()
+    if not _IDEM_RE.match(llave):
+        return _upsert_order_logic_base(client, data)  # app vieja: comportamiento de siempre
+
+    data = dict(data)
+    data['client_order_ref'] = f"APP-{llave}"
+    with _candado_pedido(llave):
+        if not clean_int(data.get('order_id_to_update') or data.get('order_id') or data.get('pedido_id')):
+            try:
+                previo = client.env['sale.order'].search_read(
+                    [('client_order_ref', '=', data['client_order_ref']), ('state', '!=', 'cancel')],
+                    ['id'], order='id desc', limit=1
+                )
+            except Exception as e:
+                if is_connection_error(e):
+                    raise  # que execute_odoo_operation reintente; la búsqueda se repite
+                previo = []
+            if previo:
+                log.warning(f"🛡️ Pedido repetido con llave {llave}: actualizo el #{previo[0]['id']} en vez de crear otro.")
+                data['order_id_to_update'] = previo[0]['id']
+        return _upsert_order_logic_base(client, data)
+
+
+def _upsert_order_logic_base(client, data):
     order_id_to_update  = clean_int(data.get('order_id_to_update') or data.get('order_id') or data.get('pedido_id'))
     cliente_cuit        = data.get('cliente_cuit') or data.get('partner_vat')
     items               = data.get('items', [])
@@ -4854,18 +4978,19 @@ def _compute_stock_states(client, product_templates):
             current = stock_by_tmpl.get(tid, 0)
             last_qty = last_purchase_by_tmpl.get(tid, 0)
             
-            state = 'green'
-            if last_qty > 0:
-                ratio = current / last_qty
-                if ratio <= 0.10: state = 'red'
-                elif ratio <= 0.50: state = 'orange'
-                else: state = 'green'
+            # Semáforo: ROJO solo cuando NO hay stock. Stock crítico (≤10% de la
+            # última compra) y medio (≤50%) son NARANJA; el resto, verde.
+            # 'nivel' distingue crítico de medio para el texto del detalle.
+            if current <= 0:
+                state, nivel = 'red', 'sin_stock'
+            elif last_qty > 0 and current / last_qty <= 0.10:
+                state, nivel = 'orange', 'critico'
+            elif last_qty > 0 and current / last_qty <= 0.50:
+                state, nivel = 'orange', 'medio'
             else:
-                # Si hay stock pero no hay compra registrada, verde. Si es 0, rojo.
-                if current <= 0: state = 'red'
-                else: state = 'green'
+                state, nivel = 'green', 'ok'
 
-            results[tid] = {'state': state, 'quantity': current}
+            results[tid] = {'state': state, 'nivel': nivel, 'quantity': current}
             
         return results
 
@@ -5093,6 +5218,7 @@ def get_favoritos():
                 "image_thumb_url": get_fb_url(thumb_path) + f"&v={wd}",
                 "image_md_url": get_fb_url(md_path) + f"&v={wd}",
                 "stock_state": st_info['state'],
+                "stock_level": st_info.get('nivel', 'ok'),
                 "stock_qty": st_info['quantity'],
                 "categ_id": p.get("categ_id"),
             })
@@ -5711,7 +5837,7 @@ def _sanear_atributos(attributes):
 def _invalidate_product_info_cache(product_id):
     if redis_client:
         try:
-            redis_client.delete(f"prod_info_v16:{product_id}")
+            redis_client.delete(f"prod_info_v17:{product_id}")
         except Exception:
             pass
 

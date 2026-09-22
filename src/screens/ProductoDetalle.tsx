@@ -68,6 +68,7 @@ type ProductoLite = {
   categ_id?: CategOdoo;
   attributes?: { k: string; v: string }[];
   stock_state?: string;
+  stock_level?: 'sin_stock' | 'critico' | 'medio' | 'ok' | string;
   stock_qty?: number; 
   price_offer?: number | null;
   price_offer_min_qty?: number | null;
@@ -1013,7 +1014,10 @@ function ProductoDetalle() {
                   />
                   <View style={{ marginLeft: 16, flexDirection: 'row', alignItems: 'center' }}>
                     <StockSemaphore status={producto?.stock_state} size={12} />
-                    <Text style={styles.stockText}>{sinStock ? 'Sin stock' : producto?.stock_state === 'red' ? 'Stock Crítico' : producto?.stock_state === 'orange' ? 'Stock Medio' : 'Disponible'}</Text>
+                    <Text style={styles.stockText}>{sinStock || producto?.stock_state === 'red' ? 'Sin stock'
+                      : producto?.stock_level === 'critico' ? 'Stock Crítico'
+                      : producto?.stock_level === 'medio' || producto?.stock_state === 'orange' ? 'Stock Medio'
+                      : 'Disponible'}</Text>
                   </View>
                 </View>
                 <View style={styles.qtyControls}>

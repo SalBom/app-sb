@@ -40,6 +40,7 @@ import { masterboxStep } from '../config/masterbox';
 import { precioUnitarioPara } from '../config/escalasPrecio';
 
 import TarjetaProductoListado from '../components/TarjetaProductoListado';
+import CategoriasArbol from '../components/CategoriasArbol';
 import TarjetaProductoKanban from '../components/TarjetaProductoKanban';
 import TarjetaProductoDesktop from '../components/TarjetaProductoDesktop';
 import SkeletonProduct from '../components/SkeletonProduct';
@@ -87,7 +88,7 @@ interface Producto extends ProductoBase {
 }
 
 interface Marca { id: number; name: string; }
-interface Categoria { id: number; name: string; parent_id?: any; }
+interface Categoria { id: number; name: string; complete_name?: string; parent_id?: number | null; cantidad?: number; }
 
 type NavigationProp = NativeStackNavigationProp<RootStackParamList, 'ProductoDetalle'>;
 type SortOption = 'default' | 'price_asc' | 'price_desc' | 'name_asc';
@@ -245,7 +246,6 @@ const Productos = () => {
   const [loadingSugerencias, setLoadingSugerencias] = useState(false);
   const [modalHeight, setModalHeight] = useState(350);
 
-  const [parentCat, setParentCat] = useState<Categoria | null>(null);
 
   // En desktop el menú de filtros/orden es un dropdown compacto, no una hoja
   // casi-a-lo-ancho-de-pantalla como en mobile.
@@ -296,10 +296,14 @@ const Productos = () => {
       try {
         const [resMarcas, resCategorias] = await Promise.all([
           axios.get<Marca[]>(`${API_URL}/marcas`),
-          axios.get<Categoria[]>(`${API_URL}/categorias`),
+          // arbol=1 trae padre + ruta + cantidad para agrupar. Si el backend todavía
+          // no lo soporta, caemos a la lista plana de siempre.
+          axios.get<Categoria[]>(`${API_URL}/categorias`, { params: { arbol: 1 } })
+            .then(r => (Array.isArray(r.data) && r.data.length && 'parent_id' in r.data[0])
+              ? r : axios.get<Categoria[]>(`${API_URL}/categorias`)),
         ]);
         setMarcas(resMarcas.data || []);
-        setCategorias(resCategorias.data || []);
+        setCategorias(Array.isArray(resCategorias.data) ? resCategorias.data : []);
       } catch (e) { }
     })();
   }, []);
@@ -647,7 +651,7 @@ const Productos = () => {
             <FilterPill label={getSortLabel()} IconStart={IconSort} IconEnd={IconChevronDown} onPress={() => setSortModalVisible(true)} active={sortOption !== 'default'} />
             {/* El invitado no ve stock ni ofertas, así que esos filtros no aplican. */}
             {!isGuest && <FilterPill label="SOLO STOCK" IconStart={IconStock} onPress={() => setOnlyStock(!onlyStock)} active={onlyStock} />}
-            <FilterPill label="CATEGORÍA" IconStart={IconFunnel} IconEnd={IconChevronDown} onPress={() => { setParentCat(null); setPickerModal('categoria'); }} active={!!categoriaSeleccionada} />
+            <FilterPill label="CATEGORÍA" IconStart={IconFunnel} IconEnd={IconChevronDown} onPress={() => setPickerModal('categoria')} active={!!categoriaSeleccionada} />
             <FilterPill label="MARCAS" IconStart={IconPuzzle} IconEnd={IconChevronDown} onPress={() => setPickerModal('marca')} active={!!marcaSeleccionada} />
             {!isGuest && soloOfertas && <FilterPill label="OFERTAS 🔥" active={true} onPress={() => setSoloOfertas(false)} />}
             <FilterPill label="LIMPIAR" onPress={limpiarFiltros} active={false} />
@@ -660,17 +664,11 @@ const Productos = () => {
   const bottomPad = 64 + insets.bottom + 32 + 12;
   const showSkeleton = (loading && pagina === 0 && !refreshing) || isResetting;
 
-  const filteredCategories = useMemo(() => {
-    if (!parentCat) return categorias.filter(c => !c.name.includes('/'));
-    const prefix = `${parentCat.name} /`;
-    return categorias.filter(c => c.name.startsWith(prefix));
-  }, [categorias, parentCat]);
 
   // --- PAGINACIÓN DESKTOP: navegación por página (‹ 01 ›), independiente del
   // scroll infinito que usa mobile, para no tocar su lógica de pagina/hasMas. ---
   const [desktopPage, setDesktopPage] = useState(1);
   const [desktopHasMore, setDesktopHasMore] = useState(true);
-  const [showAllCategorias, setShowAllCategorias] = useState(false);
 
   const goToDesktopPage = useCallback(async (page: number) => {
     if (page < 1) return;
@@ -702,8 +700,6 @@ const Productos = () => {
     setDesktopHasMore(true);
   }, [debouncedSearch, marcaSeleccionada, categoriaSeleccionada]);
 
-  const topLevelCategorias = useMemo(() => categorias.filter(c => !c.name.includes('/')), [categorias]);
-  const visibleCategorias = showAllCategorias ? topLevelCategorias : topLevelCategorias.slice(0, 8);
 
   const activeFilterLabel = useMemo(() => {
     if (categoriaSeleccionada) {
@@ -738,20 +734,13 @@ const Productos = () => {
         <View style={dsty.body}>
           <View style={dsty.sidebar}>
             <Text style={dsty.sidebarHeading}>CATEGORÍAS</Text>
-            <View style={{ gap: 10, marginBottom: 22 }}>
-              {visibleCategorias.map((cat) => {
-                const active = String(cat.id) === categoriaSeleccionada;
-                return (
-                  <Pressable key={cat.id} onPress={() => setCategoriaSeleccionada(active ? '' : String(cat.id))}>
-                    <Text style={[dsty.sidebarItem, active && dsty.sidebarItemActive]} numberOfLines={1}>{cat.name}</Text>
-                  </Pressable>
-                );
-              })}
-              {topLevelCategorias.length > 8 && (
-                <Pressable onPress={() => setShowAllCategorias(v => !v)}>
-                  <Text style={dsty.sidebarMore}>{showAllCategorias ? 'Mostrar menos' : 'Mostrar más'}</Text>
-                </Pressable>
-              )}
+            <View style={{ marginBottom: 22 }}>
+              <CategoriasArbol
+                variant="sidebar"
+                categorias={categorias}
+                seleccionada={categoriaSeleccionada}
+                onSelect={setCategoriaSeleccionada}
+              />
             </View>
 
             <Text style={dsty.sidebarHeading}>MARCAS</Text>
@@ -1009,47 +998,37 @@ const Productos = () => {
 
                     <View style={styles.modalInner} onLayout={(e) => setModalHeight(e.nativeEvent.layout.height)}>
                         <View style={styles.modalHeaderRow}>
-                            {pickerModal === 'categoria' && parentCat ? (
-                                <TouchableOpacity onPress={() => setParentCat(null)} style={{ marginRight: 10 }}>
-                                    <Feather name="arrow-left" size={22} color="#374151" />
-                                </TouchableOpacity>
-                            ) : (
-                                <Feather name={pickerModal === 'categoria' ? "grid" : "tag"} size={22} color="#374151" style={{ marginRight: 10 }} />
-                            )}
+                            <Feather name={pickerModal === 'categoria' ? "grid" : "tag"} size={22} color="#374151" style={{ marginRight: 10 }} />
                             <Text style={styles.modalNewTitle}>
-                                {pickerModal === 'categoria' ? (parentCat ? parentCat.name.toUpperCase() : 'CATEGORÍAS') : 'MARCAS'}
+                                {pickerModal === 'categoria' ? 'CATEGORÍAS' : 'MARCAS'}
                             </Text>
                         </View>
                         
-                        <ScrollView style={{ maxHeight: 350 }} showsVerticalScrollIndicator={false}>
-                            {(pickerModal === 'categoria' ? filteredCategories : marcas).map((it) => (
+                        <ScrollView style={{ maxHeight: pickerModal === 'categoria' ? 400 : 350 }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                            {pickerModal === 'categoria' ? (
+                                <CategoriasArbol
+                                    variant="modal"
+                                    categorias={categorias}
+                                    seleccionada={categoriaSeleccionada}
+                                    onSelect={(id) => { setCategoriaSeleccionada(id); setPickerModal(null); }}
+                                />
+                            ) : marcas.map((it) => (
                                 <TouchableOpacity 
                                     key={it.id} 
                                     style={styles.modalNewItem} 
                                     onPress={() => { 
-                                        if (pickerModal === 'categoria') {
-                                            const prefix = `${it.name} /`;
-                                            const hasChildren = categorias.some(c => c.name.startsWith(prefix));
-                                            if (hasChildren && !parentCat) {
-                                                setParentCat(it);
-                                            } else {
-                                                setCategoriaSeleccionada(it.id.toString());
-                                                setPickerModal(null);
-                                            }
-                                        } else {
-                                            setMarcaSeleccionada(it.id.toString());
-                                            setPickerModal(null);
-                                        }
+                                        setMarcaSeleccionada(it.id.toString());
+                                        setPickerModal(null);
                                     }}
                                 >
-                                    <Text style={styles.modalItemText}>{it.name.split(' / ').pop()?.toUpperCase()}</Text>
+                                    <Text style={styles.modalItemText}>{it.name.toUpperCase()}</Text>
                                     <Feather name="chevron-right" size={18} color="#D1D5DB" />
                                 </TouchableOpacity>
                             ))}
                         </ScrollView>
 
                         <View style={styles.modalButtonsRow}>
-                            <TouchableOpacity style={[styles.btnModal, { backgroundColor: '#8FA2AF', flex: 1 }]} onPress={() => setPickerModal(null)}>
+                            <TouchableOpacity style={[styles.btnModal, { backgroundColor: '#8FA2AF' }]} onPress={() => setPickerModal(null)}>
                                 <Text style={styles.btnModalText}>VOLVER</Text>
                             </TouchableOpacity>
                         </View>
@@ -1167,7 +1146,6 @@ const dsty = StyleSheet.create({
   sidebarHeading: { fontFamily: 'BarlowCondensed-Bold', fontSize: 20, color: '#FFFFFF', marginBottom: 12 },
   sidebarItem: { fontFamily: 'Rubik', fontSize: 13, color: 'rgba(255,255,255,0.85)', paddingVertical: 2 },
   sidebarItemActive: { fontFamily: 'Rubik', fontWeight: '700', color: '#FFFFFF', textDecorationLine: 'underline' },
-  sidebarMore: { fontFamily: 'Rubik', fontSize: 13, color: '#FFFFFF', fontWeight: '700', marginTop: 4 },
 
   main: { flex: 1, minWidth: 0, paddingHorizontal: 40, paddingTop: 30, paddingBottom: 60 },
   toolbar: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 },

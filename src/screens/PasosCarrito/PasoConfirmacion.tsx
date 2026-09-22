@@ -298,6 +298,7 @@ const PasoConfirmacion: React.FC<Props> = ({ onBack }) => {
       
       return {
           order_id_to_update: draftOrderId || null,
+          idempotency_key: useCartStore.getState().getOrderKey(),
           pedido_id: draftOrderId || null, 
           cliente_cuit: clienteSeleccionado?.vat || cuitUser,
           payment_term_id: plazoSeleccionado?.id,
