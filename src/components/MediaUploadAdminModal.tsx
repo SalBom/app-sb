@@ -2,7 +2,7 @@
 // Subida por lotes a Firebase (solo ADMIN, solo web): fotos de producto, fichas
 // técnicas y manuales. El SKU sale del nombre del archivo; el backend lo compara
 // con Odoo y arma la ruta exacta que después lee la app:
-//   Fotos   → products/{SKU}/{SKU}.webp  y  {SKU}_1..3.webp
+//   Fotos   → products/{SKU}/{SKU}.webp  y  {SKU}_1..9.webp
 //   Ficha   → fichas_tecnicas/{SKU}.webp
 //   Manual  → manuales/{SKU}.pdf
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -32,7 +32,7 @@ const TIPOS: { key: Tipo; label: string; icon: any; accept: string; exts: string
   {
     key: 'fotos', label: 'Fotos del producto', icon: 'image', accept: 'image/*',
     exts: ['.webp', '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tif', '.tiff'],
-    ayuda: 'SKU.jpg es la foto principal · SKU_1.jpg, SKU_2.jpg y SKU_3.jpg son las extra. Se convierten a WEBP.',
+    ayuda: 'SKU.jpg es la foto principal · SKU_1.jpg … SKU_9.jpg son las extra (hasta 9). Se convierten a WEBP.',
   },
   {
     key: 'ficha', label: 'Ficha técnica', icon: 'file-text', accept: 'image/*',
@@ -59,6 +59,8 @@ const extDe = (nombre: string) => {
   const i = nombre.lastIndexOf('.');
   return i >= 0 ? nombre.slice(i).toLowerCase() : '';
 };
+// Fotos extra admitidas por producto (igual que _MEDIA_MAX_EXTRAS en el backend).
+const MAX_EXTRAS = 9;
 const esBasura = (nombre: string) => nombre.startsWith('.') || /^(thumbs\.db|desktop\.ini)$/i.test(nombre);
 let _seq = 0;
 
@@ -438,15 +440,26 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
                           />
                           {tipo === 'fotos' && (
                             <View style={s.slots}>
-                              {[0, 1, 2, 3].map(n => (
-                                <Pressable key={n} disabled={subiendo || f.subida === 'ok'}
-                                  onPress={() => editarFila(f.id, { slotManual: n })}
-                                  style={[s.slotBtn, slot === n && s.slotBtnActivo]}>
-                                  <Text style={[s.slotText, slot === n && s.slotTextActivo]}>
-                                    {n === 0 ? 'P' : n}
-                                  </Text>
-                                </Pressable>
-                              ))}
+                              {/* Principal + hasta MAX_EXTRAS fotos: con botones para cada número
+                                  no entraban, así que el número se escribe (0 = principal). */}
+                              <Pressable disabled={subiendo || f.subida === 'ok'}
+                                onPress={() => editarFila(f.id, { slotManual: 0 })}
+                                style={[s.slotBtn, slot === 0 && s.slotBtnActivo]}>
+                                <Text style={[s.slotText, slot === 0 && s.slotTextActivo]}>P</Text>
+                              </Pressable>
+                              <TextInput
+                                style={s.slotInput}
+                                value={slot === 0 ? '' : String(slot)}
+                                placeholder="N°"
+                                placeholderTextColor="#9CA3AF"
+                                onChangeText={(t) => {
+                                  const n = parseInt(t.replace(/[^0-9]/g, ''), 10);
+                                  editarFila(f.id, { slotManual: Number.isNaN(n) ? 0 : Math.min(n, MAX_EXTRAS) });
+                                }}
+                                editable={!subiendo && f.subida !== 'ok'}
+                                keyboardType="number-pad"
+                                maxLength={1}
+                              />
                             </View>
                           )}
                         </View>
@@ -593,7 +606,8 @@ const s = StyleSheet.create({
   filaNombre: { fontFamily: 'Rubik', fontSize: 12, color: '#6B7280', marginBottom: 4 },
   filaEdit: { flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
   skuInput: { width: 170, height: 34, borderWidth: 1, borderColor: '#D3D6DB', borderRadius: 8, paddingHorizontal: 10, fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#2B2B2B', backgroundColor: '#FFFFFF' },
-  slots: { flexDirection: 'row', gap: 4 },
+  slots: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  slotInput: { width: 42, height: 30, borderWidth: 1, borderColor: '#D3D6DB', borderRadius: 6, textAlign: 'center', fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#2B2B2B', backgroundColor: '#FFFFFF' },
   slotBtn: { width: 30, height: 30, borderRadius: 6, borderWidth: 1, borderColor: '#D3D6DB', alignItems: 'center', justifyContent: 'center' },
   slotBtnActivo: { backgroundColor: '#2B2B2B', borderColor: '#2B2B2B' },
   slotText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#2B2B2B' },

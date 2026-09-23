@@ -294,20 +294,18 @@ function ProductoDetalle() {
       const sku = producto.default_code.trim();
       const baseUrl = mainImg.split('/o/')[0];
       const folderPath = `products%2F${encodeURIComponent(sku)}%2F`;
-      const candidates = [
-        `${baseUrl}/o/${folderPath}${encodeURIComponent(sku)}_1.webp?alt=media`,
-        `${baseUrl}/o/${folderPath}${encodeURIComponent(sku)}_2.webp?alt=media`,
-        `${baseUrl}/o/${folderPath}${encodeURIComponent(sku)}_3.webp?alt=media`,
-      ];
-      const existing = [mainImg];
-      for (const url of candidates) {
-        try {
-          const res = await fetch(url, { method: 'HEAD' });
-          if (res.ok) existing.push(url);
-        } catch (e) {}
-      }
+      // Fotos extra: SKU_1 .. SKU_9 (mismo tope que el panel de subida).
+      // Se consultan todas a la vez para no encadenar 9 pedidos de red.
+      const MAX_EXTRAS = 9;
+      const candidates = Array.from({ length: MAX_EXTRAS }, (_, i) =>
+        `${baseUrl}/o/${folderPath}${encodeURIComponent(sku)}_${i + 1}.webp?alt=media`);
+      const found = await Promise.all(candidates.map(async (url) => {
+        try { return (await fetch(url, { method: 'HEAD' })).ok ? url : null; }
+        catch { return null; }
+      }));
       if (active) {
-        setValidGallery(existing.sort((a, b) => a === mainImg ? -1 : 0));
+        // La principal primero y las extra en orden (_1, _2, _3, …).
+        setValidGallery([mainImg, ...found.filter((u): u is string => !!u)]);
       }
     }
     if (producto?.id === numericId) checkAvailableImages();

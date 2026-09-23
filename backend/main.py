@@ -6289,7 +6289,7 @@ def admin_delete_masterbox(sku):
 
 _MEDIA_TIPOS = ("fotos", "ficha", "manual")
 _MEDIA_MAX_BYTES = 40 * 1024 * 1024
-_MEDIA_MAX_EXTRAS = 3  # ProductoDetalle busca _1, _2 y _3
+_MEDIA_MAX_EXTRAS = 9  # fotos extra por producto: _1 .. _9 (ProductoDetalle busca hasta ahí)
 _MEDIA_IMG_EXTS = {".webp", ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff"}
 # La IA manda la ficha en base64 y la API acepta hasta 5 MB codificados (~3,75 MB crudos).
 _MEDIA_FICHA_MAX_BYTES = int(3.5 * 1024 * 1024)
@@ -6570,7 +6570,7 @@ def admin_media_analizar():
             continue
         if slot < 0 or slot > _MEDIA_MAX_EXTRAS:
             item.update(estado="error",
-                        mensaje=f"La app muestra la foto principal y hasta {_MEDIA_MAX_EXTRAS} extra (_1 a _{_MEDIA_MAX_EXTRAS}).")
+                        mensaje=f"Se admite la foto principal y hasta {_MEDIA_MAX_EXTRAS} extra (_1 a _{_MEDIA_MAX_EXTRAS}).")
             continue
 
         destino = _media_destino(tipo, sku, slot)
