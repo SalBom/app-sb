@@ -283,6 +283,8 @@ function ProductoDetalle() {
   const precioMostrado = isGuest ? (producto?.list_price || 0) : precioBase;
 
   // 5. GALERÍA DINÁMICA
+  const urlsGaleriaKey = Array.isArray(producto?.image_urls) ? producto.image_urls.join('|') : '';
+
   useEffect(() => {
     let active = true;
     async function checkAvailableImages() {
@@ -319,7 +321,11 @@ function ProductoDetalle() {
     }
     if (producto?.id === numericId) checkAvailableImages();
     return () => { active = false; };
-  }, [producto?.default_code, producto?.id, numericId]);
+    // Ojo con las dependencias: la ficha se pinta primero con los datos que
+    // vienen del listado (sin image_urls) y la lista de fotos llega después, con
+    // /producto/:id/info. Sin la clave de abajo el efecto no se repetía y la
+    // galería quedaba con una sola foto.
+  }, [producto?.default_code, producto?.id, numericId, urlsGaleriaKey]);
 
   const plazosFiltrados = useMemo(() => {
     return plazosData.filter(term => {

@@ -93,6 +93,8 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
   const [subiendo, setSubiendo] = useState(false);
   const [incluirNoEncontrados, setIncluirNoEncontrados] = useState(false);
   const [arrastrando, setArrastrando] = useState(false);
+  const [soloProblemas, setSoloProblemas] = useState(false);
+  const [progreso, setProgreso] = useState<{ hecho: number; total: number } | null>(null);
 
   const filasRef = useRef<Fila[]>([]);
   filasRef.current = filas;
@@ -278,17 +280,38 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
   };
 
   const resumen = useMemo(() => {
-    const r = { listos: 0, reemplazan: 0, problemas: 0, noEncontrados: 0, subidos: 0, fallidos: 0 };
+    const r = { listos: 0, reemplazan: 0, problemas: 0, noEncontrados: 0, subidos: 0, fallidos: 0, duplicados: 0 };
     for (const f of filas) {
       if (f.subida === 'ok') { r.subidos++; continue; }
       if (f.subida === 'error') r.fallidos++;
       const e = f.analisis?.estado;
       if (e === 'no_encontrado') r.noEncontrados++;
+      if (e === 'duplicado') r.duplicados++;
       if (subible(f)) { r.listos++; if (f.analisis?.existe) r.reemplazan++; }
       else if (e && e !== 'no_encontrado') r.problemas++;
     }
     return r;
   }, [filas, incluirNoEncontrados]);
+
+  // En lotes grandes (una carpeta entera de fichas) suele haber varios archivos
+  // del mismo SKU. Esto deja el primero de cada destino y descarta el resto.
+  const resolverRepetidos = () => {
+    if (subiendo) return;
+    const vistos = new Set<string>();
+    const quedan: Fila[] = [];
+    const fuera: Fila[] = [];
+    for (const f of filasRef.current) {
+      const destino = f.analisis?.destino;
+      if (!destino || f.analisis?.estado !== 'duplicado') { quedan.push(f); continue; }
+      if (vistos.has(destino)) fuera.push(f);
+      else { vistos.add(destino); quedan.push(f); }
+    }
+    if (!fuera.length) return;
+    liberarPreviews(fuera);
+    setFilas(quedan);
+    setAviso(`Se quitaron ${fuera.length} archivo(s) repetido(s): quedó el primero de cada SKU.`);
+    analizar(quedan);
+  };
 
   const subirTodo = async () => {
     const pendientes = filasRef.current.filter(subible);
@@ -297,12 +320,14 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
       && !window.confirm(`${resumen.reemplazan} archivo(s) van a reemplazar lo que ya está en Firebase. ¿Seguir?`)) return;
 
     setSubiendo(true);
+    setProgreso({ hecho: 0, total: pendientes.length });
     setError('');
     const cuit = await getCuitFromStorage();
     const marcar = (id: string, cambios: Partial<Fila>) =>
       setFilas(prev => prev.map(f => (f.id === id ? { ...f, ...cambios } : f)));
 
     // De a uno: así se ve el avance y un error no tira abajo el lote entero.
+    let hechos = 0;
     for (const f of pendientes) {
       marcar(f.id, { subida: 'subiendo', subidaMsg: '' });
       try {
@@ -317,8 +342,10 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
       } catch (e: any) {
         marcar(f.id, { subida: 'error', subidaMsg: e?.response?.data?.error || 'No se pudo subir.' });
       }
+      setProgreso({ hecho: ++hechos, total: pendientes.length });
     }
     setSubiendo(false);
+    setProgreso(null);
   };
 
   const cerrar = () => {
@@ -409,12 +436,34 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
                   <Text style={s.paso}>3. REVISÁ ANTES DE SUBIR ({filas.length})</Text>
                   {analizando && <ActivityIndicator size="small" color="#1C9BD8" />}
                   <View style={{ flex: 1 }} />
+                  {resumen.problemas > 0 && (
+                    <Pressable onPress={() => setSoloProblemas(v => !v)}>
+                      <Text style={s.linkText}>
+                        {soloProblemas ? `Ver los ${filas.length}` : `Ver solo los ${resumen.problemas} con problemas`}
+                      </Text>
+                    </Pressable>
+                  )}
                   <Pressable onPress={limpiar} disabled={subiendo}>
                     <Text style={s.linkText}>Vaciar lista</Text>
                   </Pressable>
                 </View>
 
-                {filas.map(f => {
+                {resumen.duplicados > 0 && (
+                  <View style={s.avisoBanner}>
+                    <Feather name="copy" size={14} color="#B45309" />
+                    <Text style={s.avisoText}>
+                      {resumen.duplicados} archivo(s) del lote comparten SKU: solo puede quedar uno por producto.
+                    </Text>
+                    <Pressable style={s.accionBtn} onPress={resolverRepetidos} disabled={subiendo}>
+                      <Text style={s.accionBtnText}>Dejar el primero de cada uno</Text>
+                    </Pressable>
+                  </View>
+                )}
+
+                {(soloProblemas
+                  ? filas.filter(f => f.analisis && !['ok', 'corregido'].includes(f.analisis.estado))
+                  : filas
+                ).map(f => {
                   const a = f.analisis;
                   const est = a ? ESTADOS[a.estado] : null;
                   const slot = f.slotManual ?? a?.slot ?? 0;
@@ -522,6 +571,9 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
                 </Text>
               </Pressable>
             )}
+            {subiendo && progreso && (
+              <Text style={s.resumen}>Subiendo {progreso.hecho + 1} de {progreso.total}…</Text>
+            )}
             {filas.length > 0 && (
               <Text style={s.resumen}>
                 {resumen.listos} para subir
@@ -592,6 +644,8 @@ const s = StyleSheet.create({
 
   avisoBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FEF3C7', borderRadius: 10, padding: 10, marginBottom: 10 },
   avisoText: { flex: 1, fontFamily: 'Rubik', fontSize: 12, color: '#92400E', lineHeight: 16 },
+  accionBtn: { paddingHorizontal: 12, height: 30, borderRadius: 999, backgroundColor: '#B45309', alignItems: 'center', justifyContent: 'center' },
+  accionBtnText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#FFFFFF' },
   errBanner: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FEE2E2', borderWidth: 1, borderColor: '#FCA5A5', borderRadius: 10, padding: 10, marginBottom: 12 },
   errText: { flex: 1, fontFamily: 'Rubik', fontSize: 12, color: '#B91C1C', lineHeight: 16 },
 

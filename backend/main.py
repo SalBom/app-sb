@@ -6621,7 +6621,12 @@ def admin_media_analizar():
         if len(grupo) > 1:
             for it in grupo:
                 if it["estado"] != "error":
-                    it.update(estado="duplicado", mensaje="Hay otro archivo del lote que va al mismo lugar.")
+                    # Decimos CON CUÁL choca: en lotes grandes, buscarlo a mano es imposible.
+                    otros = [o["nombre"] for o in grupo if o is not it][:2]
+                    resto = len(grupo) - 1 - len(otros)
+                    detalle = ", ".join(otros) + (f" y {resto} más" if resto > 0 else "")
+                    it.update(estado="duplicado",
+                              mensaje=f"Va al mismo lugar que: {detalle}. Dejá uno solo por SKU.")
 
     return jsonify({"items": items, "catalogo_ok": bool(skus),
                     "firebase_ok": firebase_error is None, "firebase_error": firebase_error})
