@@ -6475,8 +6475,63 @@ def _media_resolver_sku(candidato, indices):
     return None, None
 
 
-def _media_interpretar_nombre(stem, tipo, indices):
-    """Deduce (sku, slot, como) del nombre del archivo, priorizando lo que existe en el catálogo."""
+def _plano(texto):
+    return re.sub(r"[^0-9a-z]", "", (texto or "").lower())
+
+
+def _media_sku_en_texto(texto, indices):
+    """
+    Busca el SKU del catálogo que aparezca DENTRO del texto (nombre del archivo o
+    de la carpeta). Se queda con el más largo, así "WB-40200-3" gana sobre
+    "WB-40200". Ignora separadores: "FICHA -WB-30150-01" encuentra "WB-30150".
+    """
+    plano = _plano(texto)
+    if len(plano) < 4:
+        return None
+    _, _, por_plano = indices
+    mejor = None
+    for clave, skus in por_plano.items():
+        if len(clave) < 4 or len(skus) != 1:
+            continue
+        if clave in plano and (mejor is None or len(clave) > len(_plano(mejor))):
+            mejor = skus[0]
+    return mejor
+
+
+def _media_resto_tras_sku(stem, sku):
+    """Lo que viene después del SKU dentro del nombre (para sacar de ahí el número de foto)."""
+    objetivo = _plano(sku)
+    if not objetivo:
+        return ""
+    j = 0
+    for i, ch in enumerate(stem):
+        c = ch.lower()
+        if not c.isalnum():
+            continue
+        if c == objetivo[j]:
+            j += 1
+            if j == len(objetivo):
+                return stem[i + 1:]
+        else:
+            j = 1 if c == objetivo[0] else 0
+    return ""
+
+
+def _media_slot_del_resto(resto):
+    """Número de foto al final del nombre: "-07", "_3", " (2)". None si no hay."""
+    m = re.search(r"[_\-\s(]\s*(\d{1,2})\)?\s*$", resto or "")
+    return int(m.group(1)) if m else None
+
+
+def _media_interpretar_nombre(stem, carpeta, tipo, indices):
+    """
+    Deduce (sku, slot, como, slot_explicito) mirando, en este orden:
+      1. el nombre completo del archivo (o "NOMBRE_2" para las fotos extra);
+      2. el nombre de la CARPETA que lo contiene (suelen llamarse como el SKU);
+      3. el SKU escondido dentro del nombre ("ficha_tecnica_taller_WB-75500").
+    slot_explicito indica si el número salió del nombre; si no, después se le
+    asigna uno libre.
+    """
     candidatos = [(stem, 0)]
     if tipo == "fotos":
         for rx in _SUFIJOS_FOTO:
@@ -6487,12 +6542,22 @@ def _media_interpretar_nombre(stem, tipo, indices):
     for cand, slot in candidatos:
         sku, como = _media_resolver_sku(cand, indices)
         if sku:
-            return sku, slot, como
+            return sku, slot, como, slot > 0
         ambiguo = ambiguo or como == "ambiguo"
-    # No está en el catálogo: la mejor adivinanza es "SKU_N" literal o el nombre entero.
+
+    # 2 y 3: la carpeta y el SKU dentro del nombre. El número, si lo hay, sale
+    # de lo que viene después del SKU en el nombre del archivo.
+    for texto in (stem, carpeta):
+        sku = _media_sku_en_texto(texto, indices)
+        if not sku:
+            continue
+        slot = _media_slot_del_resto(_media_resto_tras_sku(stem, sku)) if tipo == "fotos" else None
+        return sku, (slot or 0), "corregido", slot is not None
+
+    # Nada: la mejor adivinanza es "SKU_N" literal o el nombre entero.
     m = _SUFIJOS_FOTO[0].match(stem) if tipo == "fotos" else None
     sku, slot = (m.group(1), int(m.group(2))) if m else (stem.strip(), 0)
-    return sku, slot, ("ambiguo" if ambiguo else "no_encontrado")
+    return sku, slot, ("ambiguo" if ambiguo else "no_encontrado"), bool(m)
 
 
 def _media_a_webp(data, max_lado, max_bytes=None):
@@ -6568,7 +6633,11 @@ def admin_media_analizar():
     for a in archivos:
         a = a if isinstance(a, dict) else {}
         nombre = str(a.get('nombre') or '')
-        stem, ext = os.path.splitext(os.path.basename(nombre.replace("\\", "/")))
+        # Puede venir la ruta completa ("Compresor/SH-CD24/foto.png"): la carpeta
+        # que lo contiene suele llamarse como el SKU y sirve de pista.
+        partes = [t for t in nombre.replace("\\", "/").split("/") if t]
+        carpeta = partes[-2] if len(partes) > 1 else ""
+        stem, ext = os.path.splitext(partes[-1] if partes else "")
         ext = ext.lower()
         item = {"nombre": nombre, "sku": "", "slot": 0, "destino": "", "existe": False,
                 "estado": "ok", "mensaje": ""}
@@ -6590,9 +6659,11 @@ def admin_media_analizar():
                 slot = int(a.get('slot') or 0) if tipo == "fotos" else 0
             except Exception:
                 slot = 0
+            explicito = True
         else:
-            sku, slot, como = _media_interpretar_nombre(stem, tipo, indices)
+            sku, slot, como, explicito = _media_interpretar_nombre(stem, carpeta, tipo, indices)
         item.update(sku=sku, slot=slot)
+        item["_explicito"] = explicito
 
         invalido = _media_sku_invalido(sku)
         if invalido:
@@ -6605,12 +6676,49 @@ def admin_media_analizar():
 
         destino = _media_destino(tipo, sku, slot)
         item.update(destino=destino, existe=destino in existentes)
+        # Aviso útil cuando se sube una carpeta mezclada: el nombre sugiere que
+        # el archivo no es lo que se eligió arriba.
+        pista = re.search(r"ficha|manual|despiece", stem, re.I)
+        if pista and tipo == "fotos":
+            item["mensaje"] = (item["mensaje"] + f" Ojo: el nombre dice \"{pista.group(0).lower()}\", "
+                               "quizá va en Ficha técnica o Manual.").strip()
         if como == "corregido":
             item.update(estado="corregido", mensaje=f"Se guarda como {sku}, que es el SKU exacto en Odoo.")
         elif como == "ambiguo":
             item.update(estado="ambiguo", mensaje="Coincide con más de un SKU. Escribilo exacto.")
         elif como == "no_encontrado" and skus:
             item.update(estado="no_encontrado", mensaje="Ese SKU no está en Odoo.")
+
+    # Fotos sin número en el nombre ("SH-CD24_accesorios"): les damos el primer
+    # lugar libre de ese SKU (principal, y si está tomado, Extra 1, 2, 3…), para
+    # que subir una carpeta entera no exija renombrar nada.
+    if tipo == "fotos":
+        por_sku = {}
+        for it in items:
+            if it["estado"] != "error" and it["sku"]:
+                por_sku.setdefault(it["sku"], []).append(it)
+        for sku_grupo, grupo in por_sku.items():
+            tomados = {it["slot"] for it in grupo if it.get("_explicito")}
+            for it in grupo:
+                if it.get("_explicito"):
+                    continue
+                libre = next((n for n in range(0, _MEDIA_MAX_EXTRAS + 1) if n not in tomados), None)
+                if libre is None:
+                    # Sin destino: si no, chocaría con la foto que sí ocupa ese lugar.
+                    it.update(estado="error", destino="", existe=False,
+                              mensaje=f"{sku_grupo} ya llega al máximo de {_MEDIA_MAX_EXTRAS + 1} fotos en este lote. "
+                                      f"Quitá alguna o subila en otra tanda.")
+                    continue
+                tomados.add(libre)
+                it["slot"] = libre
+                it["destino"] = _media_destino(tipo, sku_grupo, libre)
+                it["existe"] = it["destino"] in existentes
+                aviso = ("El nombre no dice qué número de foto es: va como "
+                         + ("foto principal." if libre == 0 else f"Extra {libre}."))
+                it["mensaje"] = (it["mensaje"] + " " + aviso).strip()
+
+    for it in items:
+        it.pop("_explicito", None)
 
     # Dos archivos del lote que irían al mismo lugar: se pisarían entre sí.
     por_destino = {}

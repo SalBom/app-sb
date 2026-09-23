@@ -20,6 +20,7 @@ type Fila = {
   id: string;
   file: any; // File del navegador
   nombre: string;
+  ruta: string;   // ruta con la carpeta ("Compresor/SH-CD24/foto.png"): el backend la usa como pista
   preview: string | null;
   skuManual: string | null; // null = se toma del nombre del archivo
   slotManual: number | null;
@@ -67,7 +68,11 @@ let _seq = 0;
 // Recorre carpetas soltadas con drag & drop (API webkitGetAsEntry de Chrome/Edge/Firefox).
 const leerEntrada = (entry: any): Promise<any[]> => new Promise((resolve) => {
   if (!entry) return resolve([]);
-  if (entry.isFile) return entry.file((f: any) => resolve([f]), () => resolve([]));
+  if (entry.isFile) return entry.file((f: any) => {
+    // Guardamos la ruta: la carpeta suele llamarse como el SKU.
+    try { f._ruta = String(entry.fullPath || '').replace(/^\//, ''); } catch {}
+    resolve([f]);
+  }, () => resolve([]));
   if (!entry.isDirectory) return resolve([]);
   const reader = entry.createReader();
   const todos: any[] = [];
@@ -136,7 +141,7 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
         cuit,
         tipo: tipoRef.current,
         archivos: lista.map(f => ({
-          nombre: f.nombre,
+          nombre: f.ruta || f.nombre,
           ...(f.skuManual ? { sku: f.skuManual, slot: f.slotManual ?? 0 } : {}),
         })),
       });
@@ -173,13 +178,17 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
       : '');
     if (!validos.length) return;
 
-    const yaEstan = new Set(filasRef.current.map(f => `${f.nombre}|${f.file?.size}`));
+    // Se compara por ruta: dos archivos con el mismo nombre en carpetas distintas
+    // (SH-CD24/foto.png y SH-CD50/foto.png) son archivos diferentes.
+    const rutaDe = (f: any) => f.webkitRelativePath || f._ruta || f.name;
+    const yaEstan = new Set(filasRef.current.map(f => `${f.ruta}|${f.file?.size}`));
     const nuevas: Fila[] = validos
-      .filter(f => !yaEstan.has(`${f.name}|${f.size}`))
+      .filter(f => !yaEstan.has(`${rutaDe(f)}|${f.size}`))
       .map(f => ({
         id: `m${++_seq}`,
         file: f,
         nombre: f.name,
+        ruta: f.webkitRelativePath || f._ruta || f.name,
         preview: t.key === 'manual' ? null : URL.createObjectURL(f),
         skuManual: null,
         slotManual: null,
