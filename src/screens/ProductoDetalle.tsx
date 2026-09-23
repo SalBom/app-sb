@@ -69,6 +69,7 @@ type ProductoLite = {
   attributes?: { k: string; v: string }[];
   stock_state?: string;
   stock_level?: 'sin_stock' | 'critico' | 'medio' | 'ok' | string;
+  image_urls?: string[];
   stock_qty?: number; 
   price_offer?: number | null;
   price_offer_min_qty?: number | null;
@@ -289,6 +290,14 @@ function ProductoDetalle() {
       if (!mainImg) return;
       if (!producto?.default_code || !mainImg.includes('firebasestorage')) {
         if (active) setValidGallery([mainImg]);
+        return;
+      }
+      // Camino normal: el backend ya nos dice qué fotos existen (lista las reales
+      // en Firebase). Es más rápido y, sobre todo, no depende de consultar
+      // Firebase desde el navegador, que falla por CORS aunque la foto exista.
+      const delBackend: string[] = Array.isArray(producto?.image_urls) ? producto.image_urls : [];
+      if (delBackend.length) {
+        if (active) setValidGallery(delBackend);
         return;
       }
       const sku = producto.default_code.trim();

@@ -1430,6 +1430,33 @@ def delete_admin_promocion(promo_id):
 # ---------------------------------------------------------------
 # main.py
 
+def _imagenes_de_producto(sku):
+    """
+    URLs de las fotos que REALMENTE están en Firebase para ese SKU, en orden:
+    la principal ({SKU}.webp) y después las extra ({SKU}_1..9.webp).
+    Lo resuelve el backend con la cuenta de servicio porque el navegador no puede:
+    Firebase no manda cabeceras CORS en los archivos, así que un fetch/HEAD desde
+    la web falla aunque el archivo exista.
+    """
+    sku = (sku or "").strip()
+    if not sku or _media_sku_invalido(sku):
+        return []
+    try:
+        nombres = _gcs_existentes(f"products/{sku}/", ttl=300)
+    except Exception as e:
+        log.warning(f"No pude listar las fotos de {sku}: {e}")
+        return []
+    urls = []
+    principal = f"products/{sku}/{sku}.webp"
+    if principal in nombres:
+        urls.append(fb_url(principal))
+    for i in range(1, _MEDIA_MAX_EXTRAS + 1):
+        extra = f"products/{sku}/{sku}_{i}.webp"
+        if extra in nombres:
+            urls.append(fb_url(extra))
+    return urls
+
+
 @app.route('/producto/<int:product_id>/info', methods=['GET'])
 def get_product_attributes(product_id):
     # Cache key v16: sube de versión porque la respuesta ahora incluye price_tiers
@@ -1484,6 +1511,9 @@ def get_product_attributes(product_id):
                 'description': desc,
                 'stock_state': st_data.get('state', 'green'),
                 'stock_level': st_data.get('nivel', 'ok'),
+                'image_urls': _imagenes_de_producto(
+                    (client.env['product.template'].read([product_id], ['default_code'])[0] or {}).get('default_code')
+                ),
                 'stock_qty': st_data.get('quantity', 0),
                 'price_tiers': escalas.get(product_id, [])
             }
