@@ -816,7 +816,9 @@ const Productos = () => {
             )}
           </View>
 
-          <DesktopMiniCart />
+          {/* En el tótem no va el panel del carrito: es una pantalla para mirar
+              el catálogo, y ese espacio se aprovecha mejor con los productos. */}
+          {!esTotem() && <DesktopMiniCart />}
         </View>
       </ScrollView>
 

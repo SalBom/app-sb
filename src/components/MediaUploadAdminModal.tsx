@@ -13,7 +13,7 @@ import { API_URL } from '../config';
 import { getCuitFromStorage } from '../utils/authStorage';
 import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
-type Tipo = 'fotos' | 'ficha' | 'manual';
+type Tipo = 'fotos' | 'ficha' | 'manual' | 'modelo3d';
 type Estado = 'ok' | 'corregido' | 'no_encontrado' | 'ambiguo' | 'duplicado' | 'error';
 type Analisis = { sku: string; slot: number; destino: string; existe: boolean; estado: Estado; mensaje: string };
 type Fila = {
@@ -45,7 +45,16 @@ const TIPOS: { key: Tipo; label: string; icon: any; accept: string; exts: string
     exts: ['.pdf'],
     ayuda: 'SKU.pdf (un PDF por producto).',
   },
+  {
+    key: 'modelo3d', label: 'Modelo 3D', icon: 'box', accept: '.glb,model/gltf-binary',
+    exts: ['.glb'],
+    ayuda: 'SKU.glb (un modelo por producto). Optimizalo antes: los archivos pesados tardan mucho en abrir en el tótem.',
+  },
 ];
+
+// Arriba de esto conviene pasar el modelo por el optimizador (mismo valor que
+// en el backend). Los .glb que salen de Meshy suelen pesar más de 100 MB.
+const MODELO_PESADO_BYTES = 8 * 1024 * 1024;
 
 const ESTADOS: Record<Estado, { label: string; color: string; bg: string }> = {
   ok: { label: 'OK', color: '#15803D', bg: '#DCFCE7' },
@@ -174,7 +183,8 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
     }
     setError('');
     setAviso(ignorados
-      ? `Se ignoraron ${ignorados} archivo(s) que no son ${t.key === 'manual' ? 'PDF' : 'imágenes'}.`
+      ? `Se ignoraron ${ignorados} archivo(s) que no son ${
+          t.key === 'manual' ? 'PDF' : t.key === 'modelo3d' ? 'modelos .glb' : 'imágenes'}.`
       : '');
     if (!validos.length) return;
 
@@ -189,7 +199,7 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
         file: f,
         nombre: f.name,
         ruta: f.webkitRelativePath || f._ruta || f.name,
-        preview: t.key === 'manual' ? null : URL.createObjectURL(f),
+        preview: (t.key === 'manual' || t.key === 'modelo3d') ? null : URL.createObjectURL(f),
         skuManual: null,
         slotManual: null,
         analisis: null,
@@ -457,6 +467,20 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
                   </Pressable>
                 </View>
 
+                {tipo === 'modelo3d' && filas.some(f => f.file?.size > MODELO_PESADO_BYTES) && (
+                  <View style={s.avisoBanner}>
+                    <Feather name="zap" size={14} color="#B45309" />
+                    <View style={{ flex: 1 }}>
+                      <Text style={s.avisoText}>
+                        Hay modelos de más de 8 MB: van a tardar en abrir. Conviene optimizarlos
+                        primero, con este comando en la carpeta del proyecto:
+                      </Text>
+                      <Text style={s.comandoText}>npm run optimizar-3d -- "CARPETA CON LOS .GLB"</Text>
+                      <Text style={s.avisoText}>Después subí los archivos de la subcarpeta "optimizados".</Text>
+                    </View>
+                  </View>
+                )}
+
                 {resumen.duplicados > 0 && (
                   <View style={s.avisoBanner}>
                     <Feather name="copy" size={14} color="#B45309" />
@@ -481,7 +505,8 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
                       <View style={s.thumb}>
                         {f.preview
                           ? <Image source={{ uri: f.preview }} style={s.thumbImg} resizeMode="cover" />
-                          : <Feather name="file-text" size={22} color="#D32F2F" />}
+                          : <Feather name={tipo === 'modelo3d' ? 'box' : 'file-text'} size={22}
+                                     color={tipo === 'modelo3d' ? '#7C3AED' : '#D32F2F'} />}
                       </View>
 
                       <View style={s.filaInfo}>
@@ -526,6 +551,11 @@ const MediaUploadAdminModal = ({ visible, onClose }: { visible: boolean; onClose
                             {tipo === 'fotos' ? `${etiquetaSlot(slot)} · ` : ''}{a.destino}
                           </Text>
                         ) : null}
+                        {tipo === 'modelo3d' && f.file?.size > MODELO_PESADO_BYTES && (
+                          <Text style={s.pesadoMsg}>
+                            Pesa {(f.file.size / 1048576).toFixed(1)} MB: conviene optimizarlo antes de subirlo.
+                          </Text>
+                        )}
                         {!!(f.subidaMsg || a?.mensaje) && (
                           <Text style={[s.filaMsg, f.subida === 'error' && { color: '#B91C1C' }]}>
                             {f.subidaMsg || a?.mensaje}
@@ -677,6 +707,8 @@ const s = StyleSheet.create({
   slotTextActivo: { color: '#FFFFFF' },
   destino: { fontFamily: 'Rubik', fontSize: 11, color: '#9CA3AF', marginTop: 4 },
   filaMsg: { fontFamily: 'Rubik', fontSize: 11, color: '#6B7280', marginTop: 2 },
+  pesadoMsg: { fontFamily: 'Rubik', fontSize: 11, color: '#B45309', marginTop: 2 },
+  comandoText: { fontFamily: 'Rubik', fontSize: 12, color: '#7C2D12', backgroundColor: '#FDE68A', borderRadius: 6, paddingHorizontal: 8, paddingVertical: 4, marginVertical: 5 },
 
   filaEstado: { width: 118, alignItems: 'flex-end', gap: 4 },
   chip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 999 },

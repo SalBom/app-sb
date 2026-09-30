@@ -54,6 +54,8 @@ import TarjetaProductoKanban from '../components/TarjetaProductoKanban';
 import TarjetaProductoDesktop from '../components/TarjetaProductoDesktop';
 import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 import { esTotem } from '../config/totem';
+import Visor3DModal from '../components/Visor3DModal';
+import VisorFotoModal from '../components/VisorFotoModal';
 
 type CategOdoo = string | [number, string];
 
@@ -70,6 +72,7 @@ type ProductoLite = {
   attributes?: { k: string; v: string }[];
   stock_state?: string;
   stock_level?: 'sin_stock' | 'critico' | 'medio' | 'ok' | string;
+  modelo_3d_url?: string | null;
   image_urls?: string[];
   stock_qty?: number; 
   price_offer?: number | null;
@@ -146,6 +149,8 @@ function ProductoDetalle() {
   const [currentImgIndex, setCurrentImgIndex] = useState(0);
 
   const [modalType, setModalType] = useState<'imagenes' | 'ficha' | 'precios' | null>(null);
+  const [visor3D, setVisor3D] = useState(false);
+  const [visorFoto, setVisorFoto] = useState(false);
   const [selectedItems, setSelectedItems] = useState<Record<number, boolean>>({});
   const [isDownloading, setIsDownloading] = useState(false);
   const [modalHeight, setModalHeight] = useState(300);
@@ -697,9 +702,27 @@ function ProductoDetalle() {
                         ))}
                       </View>
 
-                      <View style={dstyles.mainImgBox} ref={mainImgRef}>
+                      {/* Tocar la foto la abre a pantalla completa para verla de cerca. */}
+                      <Pressable
+                        style={dstyles.mainImgBox}
+                        ref={mainImgRef}
+                        onPress={() => mainImgUri && setVisorFoto(true)}
+                      >
                         {mainImgUri ? <Image source={{ uri: mainImgUri }} style={dstyles.mainImg} contentFit="contain" /> : null}
-                      </View>
+                        {!!mainImgUri && (
+                          <View style={dstyles.lupaBadge}>
+                            <Feather name="zoom-in" size={16} color="#FFFFFF" />
+                            <Text style={dstyles.lupaBadgeText}>Tocá para ampliar</Text>
+                          </View>
+                        )}
+                      </Pressable>
+
+                      <VisorFotoModal
+                        visible={visorFoto}
+                        fotos={validGallery.length ? validGallery : (mainImgUri ? [mainImgUri] : [])}
+                        indiceInicial={currentImgIndex}
+                        onClose={() => setVisorFoto(false)}
+                      />
                     </View>
 
                     <View style={dstyles.imgActionsRow}>
@@ -753,7 +776,9 @@ function ProductoDetalle() {
 
                 {tablaEscalas}
 
-                {sinStock && !isGuest && (
+                {/* El aviso de sin stock es para vendedores: en el tótem (pantalla
+                    pública de exposición) no aporta y desprestigia el producto. */}
+                {sinStock && !isGuest && !esTotem() && (
                   <View style={dstyles.sinStockBox}>
                     <Feather name="alert-triangle" size={16} color="#B91C1C" />
                     <Text style={dstyles.sinStockBoxText}>
@@ -762,6 +787,25 @@ function ProductoDetalle() {
                     </Text>
                   </View>
                 )}
+
+                {/* Modelo 3D: solo si el producto lo tiene cargado en Firebase. */}
+                {!!producto?.modelo_3d_url && (
+                  <TouchableOpacity
+                    style={dstyles.btn3D}
+                    onPress={() => setVisor3D(true)}
+                    activeOpacity={0.85}
+                  >
+                    <Feather name="box" size={18} color="#1C9BD8" />
+                    <Text style={dstyles.btn3DText}>VER EN 3D</Text>
+                  </TouchableOpacity>
+                )}
+
+                <Visor3DModal
+                  visible={visor3D}
+                  url={producto?.modelo_3d_url || null}
+                  nombre={producto?.name}
+                  onClose={() => setVisor3D(false)}
+                />
 
                 {isGuest ? (
                   // Invitado: sin carrito ni favoritos; contacto por WhatsApp.
@@ -1318,6 +1362,21 @@ const dstyles = StyleSheet.create({
     ...(Platform.OS === 'web' ? { outlineStyle: 'none' } as any : {}),
   },
 
+  // Botón del visor 3D: contorno azul para que se distinga del de comprar,
+  // que es el que tiene que seguir llevándose la atención.
+  lupaBadge: {
+    position: 'absolute', right: 12, bottom: 12,
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    backgroundColor: 'rgba(43,43,43,0.72)', borderRadius: 999,
+    paddingHorizontal: 12, paddingVertical: 7,
+  },
+  lupaBadgeText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#FFFFFF' },
+  btn3D: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
+    height: 50, borderRadius: 10, borderWidth: 2, borderColor: '#1C9BD8',
+    backgroundColor: '#EAF6FC', marginBottom: 12,
+  },
+  btn3DText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 17, color: '#1C9BD8', letterSpacing: 0.5 },
   btnAgregarD: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', height: 50, borderRadius: 10, backgroundColor: '#1C9BD8', paddingHorizontal: 20, marginBottom: 16 },
   btnWhatsappD: { backgroundColor: '#25D366', marginTop: 12 },
   btnAgregarTextD: { fontFamily: 'BarlowCondensed-Bold', fontSize: 19, color: '#FFFFFF' },

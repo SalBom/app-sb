@@ -1457,11 +1457,24 @@ def _imagenes_de_producto(sku):
     return urls
 
 
+def _modelo_3d_de_producto(sku):
+    """URL del modelo 3D del SKU si está cargado en Firebase; si no, None."""
+    sku = (sku or "").strip()
+    if not sku or _media_sku_invalido(sku):
+        return None
+    ruta = f"modelos_3d/{sku}.glb"
+    try:
+        return fb_url(ruta) if ruta in _gcs_existentes("modelos_3d/", ttl=300) else None
+    except Exception as e:
+        log.warning(f"No pude listar los modelos 3D: {e}")
+        return None
+
+
 @app.route('/producto/<int:product_id>/info', methods=['GET'])
 def get_product_attributes(product_id):
     # Cache key v16: sube de versión porque la respuesta ahora incluye price_tiers
     # de la base externa (product_specs) sobre los atributos de Odoo.
-    key = f"prod_info_v17:{product_id}"
+    key = f"prod_info_v18:{product_id}"
 
     def query():
         # Usamos el wrapper seguro para evitar "Request-sent" loops
@@ -1491,6 +1504,9 @@ def get_product_attributes(product_id):
             pdata = client.env['product.template'].read([product_id], ['description_sale'])[0]
             desc = pdata.get('description_sale') or ""
 
+            sku_producto = (client.env['product.template'].read(
+                [product_id], ['default_code'])[0] or {}).get('default_code')
+
             # 3. Stock State y Qty
             # Nota: _compute_stock_states debe ser robusta también
             st_map = _compute_stock_states(client, [{'id': product_id}])
@@ -1511,9 +1527,8 @@ def get_product_attributes(product_id):
                 'description': desc,
                 'stock_state': st_data.get('state', 'green'),
                 'stock_level': st_data.get('nivel', 'ok'),
-                'image_urls': _imagenes_de_producto(
-                    (client.env['product.template'].read([product_id], ['default_code'])[0] or {}).get('default_code')
-                ),
+                'image_urls': _imagenes_de_producto(sku_producto),
+                'modelo_3d_url': _modelo_3d_de_producto(sku_producto),
                 'stock_qty': st_data.get('quantity', 0),
                 'price_tiers': escalas.get(product_id, [])
             }
@@ -5867,7 +5882,7 @@ def _sanear_atributos(attributes):
 def _invalidate_product_info_cache(product_id):
     if redis_client:
         try:
-            redis_client.delete(f"prod_info_v17:{product_id}")
+            redis_client.delete(f"prod_info_v18:{product_id}")
         except Exception:
             pass
 
@@ -6317,10 +6332,15 @@ def admin_delete_masterbox(sku):
 # Sube el backend con una cuenta de servicio (variable FIREBASE_SERVICE_ACCOUNT_JSON
 # en Railway), así las reglas del bucket siguen sin permitir escribir desde afuera.
 
-_MEDIA_TIPOS = ("fotos", "ficha", "manual")
+_MEDIA_TIPOS = ("fotos", "ficha", "manual", "modelo3d")
 _MEDIA_MAX_BYTES = 40 * 1024 * 1024
 _MEDIA_MAX_EXTRAS = 9  # fotos extra por producto: _1 .. _9 (ProductoDetalle busca hasta ahí)
 _MEDIA_IMG_EXTS = {".webp", ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff"}
+# Modelos 3D: sólo .glb (un archivo único con geometría y texturas adentro).
+_MEDIA_MODELO_EXTS = {".glb"}
+# Arriba de esto el modelo tarda demasiado en abrir: el panel avisa que conviene
+# optimizarlo (ver tools/optimizar-modelos.mjs).
+_MEDIA_MODELO_RECOMENDADO_BYTES = 8 * 1024 * 1024
 # La IA manda la ficha en base64 y la API acepta hasta 5 MB codificados (~3,75 MB crudos).
 _MEDIA_FICHA_MAX_BYTES = int(3.5 * 1024 * 1024)
 _SKU_INVALIDO_RE = re.compile(r"[/\\#\[\]*?\x00-\x1f]")
@@ -6410,7 +6430,8 @@ def _gcs_subir(destino, contenido, content_type):
 
 
 def _media_prefijo(tipo):
-    return {"fotos": "products/", "ficha": "fichas_tecnicas/", "manual": "manuales/"}[tipo]
+    return {"fotos": "products/", "ficha": "fichas_tecnicas/",
+            "manual": "manuales/", "modelo3d": "modelos_3d/"}[tipo]
 
 
 def _media_destino(tipo, sku, slot=0):
@@ -6418,6 +6439,8 @@ def _media_destino(tipo, sku, slot=0):
         return f"products/{sku}/{sku}.webp" if not slot else f"products/{sku}/{sku}_{slot}.webp"
     if tipo == "ficha":
         return f"fichas_tecnicas/{sku}.webp"
+    if tipo == "modelo3d":
+        return f"modelos_3d/{sku}.glb"
     return f"manuales/{sku}.pdf"
 
 
@@ -6646,7 +6669,10 @@ def admin_media_analizar():
         if tipo == "manual" and ext != ".pdf":
             item.update(estado="error", mensaje="El manual tiene que ser un PDF.")
             continue
-        if tipo != "manual" and ext not in _MEDIA_IMG_EXTS:
+        if tipo == "modelo3d" and ext not in _MEDIA_MODELO_EXTS:
+            item.update(estado="error", mensaje="El modelo 3D tiene que ser un archivo .glb.")
+            continue
+        if tipo not in ("manual", "modelo3d") and ext not in _MEDIA_IMG_EXTS:
             item.update(estado="error", mensaje="Formato no soportado. Usá JPG, PNG o WEBP.")
             continue
 
@@ -6773,6 +6799,13 @@ def admin_media_subir():
             if not contenido.startswith(b"%PDF"):
                 return jsonify({"error": "El archivo no es un PDF válido."}), 400
             payload, content_type = contenido, "application/pdf"
+        elif tipo == "modelo3d":
+            # Los .glb empiezan con "glTF". No se re-comprime acá: optimizarlos
+            # requiere herramientas 3D que no corren en este servidor (ver
+            # tools/optimizar-modelos.mjs, que se ejecuta antes de subir).
+            if not contenido.startswith(b"glTF"):
+                return jsonify({"error": "El archivo no es un modelo .glb válido."}), 400
+            payload, content_type = contenido, "model/gltf-binary"
         elif tipo == "ficha":
             payload, content_type = _media_a_webp(contenido, 3000, _MEDIA_FICHA_MAX_BYTES), "image/webp"
         else:
