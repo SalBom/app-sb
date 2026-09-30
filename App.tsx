@@ -19,6 +19,7 @@ import useTotemIdle from './src/hooks/useTotemIdle';
 import TotemContactoModal from './src/components/TotemContactoModal';
 import TotemAtractor from './src/components/TotemAtractor';
 import TotemPromoQR from './src/components/TotemPromoQR';
+import TotemBotonActivar from './src/components/TotemBotonActivar';
 import useTotemPromo from './src/hooks/useTotemPromo';
 
 // Modo tótem (expo): se resuelve antes de renderizar, porque de él dependen el
@@ -93,6 +94,8 @@ export default function App() {
           <TotemContactoModal />
           <TotemPromoQR />
           <TotemAtractor />
+          {/* TEMPORAL (expo): atajo para entrar al modo tótem sin escribir la URL. */}
+          <TotemBotonActivar />
         </NavigationContainer>
       </ErrorBoundary>
     </SafeAreaProvider>
