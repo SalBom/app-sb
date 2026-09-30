@@ -9,6 +9,7 @@ import StockSemaphore from './StockSemaphore';
 import useIsGuest from '../hooks/useIsGuest';
 import { contactarPorWhatsApp } from '../utils/whatsapp';
 import { masterboxUnidades } from '../config/masterbox';
+import { esTotem } from '../config/totem';
 
 function needsAltMedia(u: string | null | undefined) {
   if (!u) return false;
@@ -82,35 +83,35 @@ const TarjetaProductoDesktop: React.FC<Props> = ({ producto, isFavorite, onPress
   const finalPrice = hasOffer ? (producto.price_offer as number) : producto.list_price;
 
   return (
-    <Pressable style={styles.card} onPress={onPressDetalle}>
+    <Pressable style={[styles.card, esTotem() && totemCard.card]} onPress={onPressDetalle}>
       {(isShimura || isIssei) && (
         <View style={styles.badgeWrap}>
           {isShimura ? <ShimuraIsologo width={44} height={43} /> : <IsseiIsologo width={44} height={43} />}
         </View>
       )}
 
-      <View style={styles.actionsCol}>
+      <View style={[styles.actionsCol, esTotem() && totemCard.actionsCol]}>
         {isGuest ? (
           // Invitado: en vez de favorito/carrito, contacto directo por WhatsApp.
-          <TouchableOpacity style={styles.iconCircle} onPress={() => contactarPorWhatsApp(producto)} hitSlop={6}>
+          <TouchableOpacity style={[styles.iconCircle, esTotem() && totemCard.iconCircle]} onPress={() => contactarPorWhatsApp(producto)} hitSlop={6}>
             <Feather name="message-circle" size={16} color="#25D366" />
           </TouchableOpacity>
         ) : (
           <>
-            <TouchableOpacity style={styles.iconCircle} onPress={onToggleFavorito} hitSlop={6}>
+            <TouchableOpacity style={[styles.iconCircle, esTotem() && totemCard.iconCircle]} onPress={onToggleFavorito} hitSlop={6}>
               <Feather name="heart" size={16} color="#1C9BD8" style={isFavorite ? { opacity: 1 } : { opacity: 0.5 }} />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.iconCircle} onPress={(e) => onPressAgregar(1, e)} hitSlop={6}>
+            <TouchableOpacity style={[styles.iconCircle, esTotem() && totemCard.iconCircle]} onPress={(e) => onPressAgregar(1, e)} hitSlop={6}>
               <Feather name="shopping-cart" size={15} color="#1C9BD8" />
             </TouchableOpacity>
           </>
         )}
-        <TouchableOpacity style={styles.iconCircle} onPress={onPressDetalle} hitSlop={6}>
+        <TouchableOpacity style={[styles.iconCircle, esTotem() && totemCard.iconCircle]} onPress={onPressDetalle} hitSlop={6}>
           <Feather name="eye" size={16} color="#1C9BD8" />
         </TouchableOpacity>
       </View>
 
-      <View style={styles.imgWrap}>
+      <View style={[styles.imgWrap, esTotem() && totemCard.imgWrap]}>
         {imageSource ? (
           <Image source={imageSource} style={styles.img} contentFit="contain" transition={150} cachePolicy="memory-disk" />
         ) : (
@@ -119,32 +120,54 @@ const TarjetaProductoDesktop: React.FC<Props> = ({ producto, isFavorite, onPress
       </View>
 
       <View style={styles.skuRow}>
-        <Text style={styles.sku} numberOfLines={1}>{producto.default_code || ''}</Text>
+        <Text style={[styles.sku, esTotem() && totemCard.sku]} numberOfLines={1}>{producto.default_code || ''}</Text>
         {!isGuest && <StockSemaphore status={producto.stock_state} size={10} style={{ marginLeft: 6 }} />}
       </View>
-      <Text style={styles.name} numberOfLines={2}>{(producto.name || '').toUpperCase()}</Text>
+      <Text style={[styles.name, esTotem() && totemCard.name]} numberOfLines={2}>{(producto.name || '').toUpperCase()}</Text>
       {masterboxUnidades(producto.default_code) && (
-        <Text style={styles.masterboxText}>MASTERBOX · CAJA x{masterboxUnidades(producto.default_code)} u.</Text>
+        <Text style={[styles.masterboxText, esTotem() && totemCard.masterboxText]}>MASTERBOX · CAJA x{masterboxUnidades(producto.default_code)} u.</Text>
       )}
       {hasOffer ? (
         <>
           <View style={styles.priceRow}>
-            <Text style={styles.priceStriked}>${fmt(producto.list_price)}</Text>
-            <Text style={styles.priceOffer}>${fmt(finalPrice)}</Text>
+            <Text style={[styles.priceStriked, esTotem() && totemCard.priceStriked]}>${fmt(producto.list_price)}</Text>
+            <Text style={[styles.priceOffer, esTotem() && totemCard.priceOffer]}>${fmt(finalPrice)}</Text>
             <View style={styles.offerBadge}><Text style={styles.offerBadgeText}>OFERTA</Text></View>
           </View>
           {/* El precio mostrado es el de la escala más barata: hay que aclarar
               desde qué cantidad se consigue, si no promete algo inalcanzable. */}
           {!!producto.price_offer_min_qty && (
-            <Text style={styles.minQtyText}>comprando {producto.price_offer_min_qty} u. o más</Text>
+            <Text style={[styles.minQtyText, esTotem() && totemCard.minQtyText]}>comprando {producto.price_offer_min_qty} u. o más</Text>
           )}
         </>
+      ) : finalPrice > 0 ? (
+        <Text style={[styles.price, esTotem() && totemCard.price]}>${fmt(finalPrice)}</Text>
       ) : (
-        <Text style={styles.price}>${fmt(finalPrice)}</Text>
+        /* Sin precio cargado mostraba "$0,00": en una pantalla pública (tótem,
+           expo) queda mejor invitar a consultarlo. */
+        <Text style={[styles.priceConsultar, esTotem() && totemCard.priceConsultar]}>Consultar precio</Text>
       )}
     </Pressable>
   );
 };
+
+// Tótem de la expo: la tarjeta es más ancha que en escritorio, así que la foto
+// y los textos crecen para acompañar. Los botones redondos pasan a 44 px, que es
+// el mínimo cómodo para tocar con el dedo.
+const totemCard = StyleSheet.create({
+  card: { padding: 18, paddingTop: 16, borderRadius: 14 },
+  imgWrap: { height: 250 },
+  iconCircle: { width: 44, height: 44, borderRadius: 22 },
+  actionsCol: { top: 14, right: 14, gap: 10 },
+  sku: { fontSize: 13 },
+  name: { fontSize: 18, lineHeight: 21, minHeight: 42 },
+  price: { fontSize: 26 },
+  priceOffer: { fontSize: 26 },
+  priceStriked: { fontSize: 16 },
+  priceConsultar: { fontSize: 20 },
+  masterboxText: { fontSize: 13 },
+  minQtyText: { fontSize: 12.5 },
+});
 
 const styles = StyleSheet.create({
   card: {
@@ -176,6 +199,7 @@ const styles = StyleSheet.create({
   offerBadge: { backgroundColor: '#FEE2E2', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 6, borderWidth: 1, borderColor: '#FECACA' },
   offerBadgeText: { color: '#D32F2F', fontFamily: 'BarlowCondensed-Bold', fontSize: 10, letterSpacing: 0.5 },
   price: { fontFamily: 'BarlowCondensed-Bold', fontSize: 20, color: '#313131', marginTop: 6 },
+  priceConsultar: { fontFamily: 'BarlowCondensed-Bold', fontSize: 17, color: '#1C9BD8', marginTop: 6 },
   minQtyText: { fontFamily: 'Rubik', fontSize: 10.5, color: '#6B7280', marginTop: 2 },
 });
 

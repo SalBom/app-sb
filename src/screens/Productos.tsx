@@ -20,6 +20,7 @@ import {
 import axios from 'axios';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
 import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
+import { esTotem } from '../config/totem';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Image } from 'expo-image';
@@ -732,8 +733,8 @@ const Productos = () => {
         </View>
 
         <View style={dsty.body}>
-          <View style={dsty.sidebar}>
-            <Text style={dsty.sidebarHeading}>CATEGORÍAS</Text>
+          <View style={[dsty.sidebar, esTotem() && totemSty.sidebar]}>
+            <Text style={[dsty.sidebarHeading, esTotem() && totemSty.sidebarHeading]}>CATEGORÍAS</Text>
             <View style={{ marginBottom: 22 }}>
               <CategoriasArbol
                 variant="sidebar"
@@ -743,7 +744,7 @@ const Productos = () => {
               />
             </View>
 
-            <Text style={dsty.sidebarHeading}>MARCAS</Text>
+            <Text style={[dsty.sidebarHeading, esTotem() && totemSty.sidebarHeading]}>MARCAS</Text>
             <View style={{ gap: 10 }}>
               {marcas.map((m) => {
                 const active = String(m.id) === marcaSeleccionada;
@@ -756,29 +757,32 @@ const Productos = () => {
             </View>
           </View>
 
-          <View style={dsty.main}>
-            <View style={dsty.toolbar}>
-              <Text style={dsty.toolbarLabel}>{activeFilterLabel}</Text>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 20 }}>
+          <View style={[dsty.main, esTotem() && totemSty.main]}>
+            <View style={[dsty.toolbar, esTotem() && totemSty.toolbar]}>
+              <Text
+                style={[dsty.toolbarLabel, esTotem() && totemSty.toolbarLabel]}
+                numberOfLines={2}
+              >{activeFilterLabel}</Text>
+              <View style={[{ flexDirection: 'row', alignItems: 'center', gap: 20 }, esTotem() && totemSty.toolbarAcciones]}>
                 <TextInput
                   value={searchTerm}
                   onChangeText={setSearchTerm}
                   placeholder="Buscar nombre o código"
                   placeholderTextColor="#B3B3B3"
-                  style={dsty.searchInput}
+                  style={[dsty.searchInput, esTotem() && totemSty.searchInput]}
                   onSubmitEditing={handleSubmitSearch}
                   returnKeyType="search"
                 />
                 <Pressable style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }} onPress={() => setSortModalVisible(true)}>
-                  <Text style={dsty.toolbarSortLabel}>Ordenar por</Text>
-                  <Text style={dsty.toolbarSortValue}>{getSortLabel() === 'ORDENAR' ? 'Más relevantes' : getSortLabel()}</Text>
+                  <Text style={[dsty.toolbarSortLabel, esTotem() && totemSty.toolbarSortLabel]}>Ordenar por</Text>
+                  <Text style={[dsty.toolbarSortValue, esTotem() && totemSty.toolbarSortValue]}>{getSortLabel() === 'ORDENAR' ? 'Más relevantes' : getSortLabel()}</Text>
                   <IconChevronDown stroke="#636363" />
                 </Pressable>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
                   <Pressable onPress={() => desktopPage > 1 && goToDesktopPage(desktopPage - 1)} disabled={desktopPage <= 1} hitSlop={6}>
                     <Feather name="chevron-left" size={18} color={desktopPage > 1 ? '#313131' : '#D9D9D9'} />
                   </Pressable>
-                  <Text style={dsty.toolbarPage}>{String(desktopPage).padStart(2, '0')}</Text>
+                  <Text style={[dsty.toolbarPage, esTotem() && totemSty.toolbarPage]}>{String(desktopPage).padStart(2, '0')}</Text>
                   <Pressable onPress={() => desktopHasMore && goToDesktopPage(desktopPage + 1)} disabled={!desktopHasMore} hitSlop={6}>
                     <Feather name="chevron-right" size={18} color={desktopHasMore ? '#313131' : '#D9D9D9'} />
                   </Pressable>
@@ -787,17 +791,17 @@ const Productos = () => {
             </View>
 
             {loading ? (
-              <View style={dsty.grid}>
-                {[1,2,3,4,5,6,7,8].map(i => <View key={i} style={[dsty.gridCell, { height: 260, backgroundColor: '#F5F5F5', borderRadius: 12 }]} />)}
+              <View style={[dsty.grid, esTotem() && totemSty.grid]}>
+                {[1,2,3,4,5,6,7,8].map(i => <View key={i} style={[dsty.gridCell, esTotem() && totemSty.gridCell, { height: 260, backgroundColor: '#F5F5F5', borderRadius: 12 }]} />)}
               </View>
             ) : productosProcesados.length === 0 ? (
               <EmptyState title="No se encontraron productos" message="Intenta ajustar los filtros o buscar con otro término." icon="search" />
             ) : (
-              <View style={dsty.grid}>
+              <View style={[dsty.grid, esTotem() && totemSty.grid]}>
                 {productosProcesados.map((item, index) => {
                   const { isFav, handlePressDetalle, handlePressAgregar, handleToggleFav } = buildItemHandlers(item);
                   return (
-                    <View key={item.id} ref={index === 0 ? firstProductTourRef : undefined} style={dsty.gridCell}>
+                    <View key={item.id} ref={index === 0 ? firstProductTourRef : undefined} style={[dsty.gridCell, esTotem() && totemSty.gridCell]}>
                       <TarjetaProductoDesktop
                         producto={item}
                         isFavorite={isFav}
@@ -1157,6 +1161,29 @@ const dsty = StyleSheet.create({
 
   grid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 18 },
   gridCell: { width: '23.5%', minWidth: 240 },
+});
+
+// --- Ajustes SOLO para el tótem de la expo (pantalla táctil vertical de 32") ---
+// La grilla normal está pensada para 4 columnas; en el tótem entran 3 y el
+// sobrante se repartía como aire entre producto y producto (83 px de hueco).
+// Acá las tarjetas se estiran para ocupar la fila y el hueco queda parejo y chico.
+const totemSty = StyleSheet.create({
+  grid: { justifyContent: 'flex-start', columnGap: '2.2%', rowGap: 30 } as any,
+  gridCell: { width: '31.8%', minWidth: 0 },
+
+  // Barra lateral y buscador más grandes: se leen de parado y se tocan con el dedo.
+  sidebar: { width: 264, padding: 22, paddingTop: 34 },
+  sidebarHeading: { fontSize: 26, marginBottom: 16 },
+  main: { paddingHorizontal: 34 },
+  // El título del filtro puede ser largo ("COMPRESORES TRANSMISIÓN DIRECTA"):
+  // se le deja encoger y bajar de renglón en vez de aplastar al buscador.
+  toolbar: { flexWrap: 'wrap', rowGap: 16, columnGap: 20, marginBottom: 26 },
+  toolbarLabel: { fontSize: 20, flexShrink: 1, maxWidth: '100%' },
+  toolbarAcciones: { flexWrap: 'wrap', rowGap: 14, columnGap: 24 },
+  searchInput: { width: 320, height: 52, fontSize: 17, borderRadius: 10, paddingHorizontal: 16 },
+  toolbarSortLabel: { fontSize: 16 },
+  toolbarSortValue: { fontSize: 16 },
+  toolbarPage: { fontSize: 20 },
 });
 
 export default Productos;

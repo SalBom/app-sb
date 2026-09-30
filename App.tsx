@@ -14,6 +14,14 @@ import { API_URL } from './src/config';
 import { cargarMasterbox } from './src/config/masterbox';
 import ErrorBoundary from './src/components/ErrorBoundary';
 import useOtaUpdates from './src/hooks/useOtaUpdates';
+import { initTotem } from './src/config/totem';
+import useTotemIdle from './src/hooks/useTotemIdle';
+import TotemContactoModal from './src/components/TotemContactoModal';
+import TotemAtractor from './src/components/TotemAtractor';
+
+// Modo tótem (expo): se resuelve antes de renderizar, porque de él dependen el
+// layout de escritorio y el modo invitado.
+initTotem();
 
 // Mantiene visible la pantalla de carga (splash screen) hasta que digamos lo contrario
 SplashScreen.preventAutoHideAsync();
@@ -34,6 +42,7 @@ export default function App() {
 
   // Busca actualizaciones OTA (solo en el APK; en web y en desarrollo no hace nada).
   useOtaUpdates();
+  useTotemIdle();
 
   const setItems = useCartStore((state: any) => state.setItems);
 
@@ -76,6 +85,10 @@ export default function App() {
       <ErrorBoundary>
         <NavigationContainer<RootStackParamList> ref={navigationRef} linking={linking}>
           <AppNavigator />
+          {/* Cartel con QR y pantalla de atracción del tótem: se dibujan una
+              sola vez, arriba de todo. Fuera del tótem no renderizan nada. */}
+          <TotemContactoModal />
+          <TotemAtractor />
         </NavigationContainer>
       </ErrorBoundary>
     </SafeAreaProvider>

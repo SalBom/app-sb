@@ -53,6 +53,7 @@ import DownloadSvg         from '../../assets/download.svg';
 import TarjetaProductoKanban from '../components/TarjetaProductoKanban';
 import TarjetaProductoDesktop from '../components/TarjetaProductoDesktop';
 import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
+import { esTotem } from '../config/totem';
 
 type CategOdoo = string | [number, string];
 
@@ -730,7 +731,9 @@ function ProductoDetalle() {
 
                 {mostrarOferta && <Text style={dstyles.oldPriceD}>${formatMoney(producto?.list_price)}</Text>}
                 <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                  <Text style={[dstyles.priceD, mostrarOferta && { color: '#D32F2F' }]}>${formatMoney(precioMostrado)}</Text>
+                  <Text style={[dstyles.priceD, mostrarOferta && { color: '#D32F2F' }]}>
+                    {Number(precioMostrado) > 0 ? `$${formatMoney(precioMostrado)}` : 'Consultar precio'}
+                  </Text>
                   {mostrarOferta && <View style={styles.offerBadge}><Text style={styles.offerBadgeText}>OFERTA</Text></View>}
                 </View>
                 {!isGuest && (
@@ -818,20 +821,26 @@ function ProductoDetalle() {
                   </>
                 )}
 
-                <View style={dstyles.dividerD} />
-                <View style={dstyles.downloadHeaderRowD}>
-                  <Text style={dstyles.downloadTitleD}>Descargar</Text>
-                  <Feather name="download" size={20} color="#313131" />
-                </View>
-                <TouchableOpacity onPress={() => { setSelectedItems({}); setModalType('ficha'); }}>
-                  <Text style={dstyles.downloadLinkD}>Ficha Técnica</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={handleDownloadManual}>
-                  <Text style={dstyles.downloadLinkD}>Manual</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => { setSelectedItems({}); setModalType('imagenes'); }}>
-                  <Text style={dstyles.downloadLinkD}>Imágenes</Text>
-                </TouchableOpacity>
+                {/* En el tótem no van las descargas: abrirían el visor de PDF o
+                    el explorador de archivos de Windows encima del kiosko. */}
+                {!esTotem() && (
+                  <>
+                    <View style={dstyles.dividerD} />
+                    <View style={dstyles.downloadHeaderRowD}>
+                      <Text style={dstyles.downloadTitleD}>Descargar</Text>
+                      <Feather name="download" size={20} color="#313131" />
+                    </View>
+                    <TouchableOpacity onPress={() => { setSelectedItems({}); setModalType('ficha'); }}>
+                      <Text style={dstyles.downloadLinkD}>Ficha Técnica</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={handleDownloadManual}>
+                      <Text style={dstyles.downloadLinkD}>Manual</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => { setSelectedItems({}); setModalType('imagenes'); }}>
+                      <Text style={dstyles.downloadLinkD}>Imágenes</Text>
+                    </TouchableOpacity>
+                  </>
+                )}
               </View>
             </View>
 

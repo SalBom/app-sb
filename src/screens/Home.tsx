@@ -23,6 +23,8 @@ import { Image } from 'expo-image';
 import axios from 'axios';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { API_URL } from '../config';
+import { esTotem } from '../config/totem';
+import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 import { removeBackground } from '../utils/removeBg';
 
 // --- ASSETS DESKTOP WEB (calcados del diseño Figma "Pagina Salbom") ---
@@ -129,7 +131,10 @@ export default function Home() {
   const navigation = useNavigation<any>();
   const isFocused = useIsFocused();
   const { width: windowWidth } = useWindowDimensions();
-  const isDesktopWeb = Platform.OS === 'web' && windowWidth >= 1024;
+  // Usa el hook compartido (mismo corte que el resto de la app) en vez de medir
+  // el ancho por su cuenta: así el Home también respeta el modo tótem, donde la
+  // pantalla es angosta pero la versión que corresponde es la de ESCRITORIO.
+  const isDesktopWeb = useIsDesktopWeb();
 
   // Carrusel de categorías (solo desktop): las flechas scrollean de a 3 íconos por vez.
   const categoriasScrollRef = useRef<ScrollView>(null);
@@ -321,6 +326,10 @@ const go = (keyword: string) => {
   }, [isFocused]);
 
   const fetchPopups = async () => {
+      // En el tótem no van los pop-ups: el del tipo de cambio es información
+      // para clientes con cuenta, y cualquier cartel tapando la pantalla obliga
+      // al visitante a cerrarlo antes de poder mirar nada.
+      if (esTotem()) return;
       try {
           const resTC = await axios.get(`${API_URL}/config/popup_tc`);
           const resNew = await axios.get(`${API_URL}/config/popup_new_arrivals`);
@@ -395,6 +404,8 @@ const go = (keyword: string) => {
   };
 
   const openMinoristaLink = () => {
+      // En el tótem no se abren links externos: dejarían el kiosko en otra página.
+      if (esTotem()) return;
       Linking.openURL('[https://share.google/9avSJoSckfq4iFjoZ](https://share.google/9avSJoSckfq4iFjoZ)').catch(() => {});
   };
 
@@ -640,11 +651,11 @@ const go = (keyword: string) => {
         </View>
 
         {/* BENEFICIOS */}
-        <View nativeID="sb-rv-beneficios" style={sw.beneficiosRow}>
-          <View style={sw.beneficioCard}><View style={sw.beneficioIconCircle}><CartCardSvg width={40} height={40} /></View><View><Text style={sw.beneficioTitle}>ARMÁ TU PROPIO PEDIDO</Text><Text style={sw.beneficioDesc}>Cotizá, comprá y elegí los productos que estabas buscando</Text></View></View>
-          <View style={sw.beneficioCard}><View style={sw.beneficioIconCircle}><UserCardSvg width={40} height={40} /></View><View><Text style={sw.beneficioTitle}>ATENCIÓN EN VIVO</Text><Text style={sw.beneficioDesc}>Hablá con un representante de ventas en vivo a través de la intranet</Text></View></View>
-          <View style={sw.beneficioCard}><View style={sw.beneficioIconCircle}><CCardSvg width={40} height={40} /></View><View><Text style={sw.beneficioTitle}>MÉTODOS DE PAGO</Text><Text style={sw.beneficioDesc}>Conocé nuestras condiciones de pago.</Text></View></View>
-          <View style={sw.beneficioCard}><View style={sw.beneficioIconCircle}><ComCardSvg width={40} height={40} /></View><View><Text style={sw.beneficioTitle}>COMUNIDAD SAL-BOM</Text><Text style={sw.beneficioDesc}>Ingrese a la comunidad para estar siempre actualizado.</Text></View></View>
+        <View nativeID="sb-rv-beneficios" style={[sw.beneficiosRow, esTotem() && swTotem.beneficiosRow]}>
+          <View style={[sw.beneficioCard, esTotem() && swTotem.beneficioCard]}><View style={sw.beneficioIconCircle}><CartCardSvg width={40} height={40} /></View><View style={sw.beneficioTextoCol}><Text style={sw.beneficioTitle}>ARMÁ TU PROPIO PEDIDO</Text><Text style={sw.beneficioDesc}>Cotizá, comprá y elegí los productos que estabas buscando</Text></View></View>
+          <View style={[sw.beneficioCard, esTotem() && swTotem.beneficioCard]}><View style={sw.beneficioIconCircle}><UserCardSvg width={40} height={40} /></View><View style={sw.beneficioTextoCol}><Text style={sw.beneficioTitle}>ATENCIÓN EN VIVO</Text><Text style={sw.beneficioDesc}>Hablá con un representante de ventas en vivo a través de la intranet</Text></View></View>
+          <View style={[sw.beneficioCard, esTotem() && swTotem.beneficioCard]}><View style={sw.beneficioIconCircle}><CCardSvg width={40} height={40} /></View><View style={sw.beneficioTextoCol}><Text style={sw.beneficioTitle}>MÉTODOS DE PAGO</Text><Text style={sw.beneficioDesc}>Conocé nuestras condiciones de pago.</Text></View></View>
+          <View style={[sw.beneficioCard, esTotem() && swTotem.beneficioCard]}><View style={sw.beneficioIconCircle}><ComCardSvg width={40} height={40} /></View><View style={sw.beneficioTextoCol}><Text style={sw.beneficioTitle}>COMUNIDAD SAL-BOM</Text><Text style={sw.beneficioDesc}>Ingrese a la comunidad para estar siempre actualizado.</Text></View></View>
         </View>
 
         {/* SAL-BOM MINORISTA */}
@@ -1150,6 +1161,8 @@ const sw = StyleSheet.create({
   beneficioIconCircle: { width: 68, height: 68, borderRadius: 34, backgroundColor: '#F2F2F2', alignItems: 'center', justifyContent: 'center', marginRight: 14 },
   beneficioTitle: { fontFamily: 'BarlowCondensed-Bold', fontSize: 20, color: WEB_BLUE },
   beneficioDesc: { fontFamily: 'Rubik', fontSize: 12, lineHeight: 16, color: WEB_DARKGRAY, marginTop: 4, maxWidth: 190 },
+  // Sin esto la columna de texto crece a lo que mida el título y se sale de la tarjeta.
+  beneficioTextoCol: { flexShrink: 1, minWidth: 0 },
 
   // MINORISTA — fila full-bleed (cada columna llega al borde real de la pantalla);
   // el texto se limita con maxWidth en minoristaDesc, no en el contenedor.
@@ -1225,3 +1238,10 @@ const sw = StyleSheet.create({
   footerLink: { fontFamily: 'Rubik', fontSize: 13, color: '#D9D9D9' },
 });
 
+// --- Ajustes SOLO para el tótem de la expo ---
+// Los 4 beneficios en una sola fila no entran en 1280 px de ancho: el título se
+// montaba sobre el ícono del de al lado. Acá van de a dos por fila, con aire.
+const swTotem = StyleSheet.create({
+  beneficiosRow: { flexWrap: 'wrap', rowGap: 28, columnGap: 24, paddingHorizontal: 54 },
+  beneficioCard: { width: '46%', maxWidth: 560, flexGrow: 0, flexBasis: 'auto', marginHorizontal: 0 },
+});

@@ -12,6 +12,7 @@ import { getUserRoleFromStorage } from '../utils/authStorage';
 import { useHelpCenterStore } from '../store/helpCenterStore';
 import { useTourTarget } from '../hooks/useTourTarget';
 import useIsGuest from '../hooks/useIsGuest';
+import { esTotem } from '../config/totem';
 
 import HomeIcon from '../../assets/home.svg';
 import CarritoIcon from '../../assets/carrito.svg';
@@ -20,6 +21,8 @@ import UserIcon from '../../assets/user.svg';
 
 const COLLAPSED_W = 64;
 const EXPANDED_W = 232;
+// Tótem: abierta pero más angosta, para no robarle ancho a los productos.
+const EXPANDED_TOTEM_W = 190;
 
 // Wrapper para poder usar un ícono de Feather con la misma firma
 // (width/height/fill) que los SVG del resto de los ítems del sidebar.
@@ -48,7 +51,9 @@ const useCartCount = () => {
 };
 
 export default function DesktopSidebar() {
-  const [expanded, setExpanded] = useState(false);
+  // Tótem: arranca abierta y con texto. Un visitante que nunca vio la app no
+  // interpreta iconos sueltos; con "Home" y "Catálogo" escritos sabe dónde tocar.
+  const [expanded, setExpanded] = useState(esTotem());
   const [activeRoute, setActiveRoute] = useState<string | undefined>(undefined);
   const [rootRoute, setRootRoute] = useState<string | undefined>(undefined);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -78,7 +83,7 @@ export default function DesktopSidebar() {
 
   useEffect(() => {
     Animated.timing(widthAnim, {
-      toValue: expanded ? EXPANDED_W : COLLAPSED_W,
+      toValue: expanded ? (esTotem() ? EXPANDED_TOTEM_W : EXPANDED_W) : COLLAPSED_W,
       duration: 220,
       easing: Easing.out(Easing.cubic),
       useNativeDriver: false,
@@ -99,7 +104,8 @@ export default function DesktopSidebar() {
     } else {
       navigationRef.navigate('MainTabs' as never, { screen: routeName } as never);
     }
-    setExpanded(false);
+    // En el tótem la barra queda siempre abierta (es la única navegación visible).
+    setExpanded(esTotem());
   };
 
   // El invitado (web institucional) solo navega Home y Catálogo: sin carrito,
@@ -129,7 +135,7 @@ export default function DesktopSidebar() {
                 <Pressable
                   key={name}
                   ref={name === 'Carrito' ? carritoTourRef : undefined}
-                  style={[styles.item, isActive && styles.itemActive, !expanded && styles.itemCollapsed]}
+                  style={[styles.item, esTotem() && styles.itemTotem, isActive && styles.itemActive, !expanded && styles.itemCollapsed]}
                   onPress={() => go(name)}
                 >
                   <View style={styles.iconWrap}>
@@ -139,7 +145,7 @@ export default function DesktopSidebar() {
                     )}
                   </View>
                   {expanded && (
-                    <Text style={[styles.label, isActive && styles.labelActive]} numberOfLines={1}>{label}</Text>
+                    <Text style={[styles.label, esTotem() && styles.labelTotem, isActive && styles.labelActive]} numberOfLines={1}>{label}</Text>
                   )}
                 </Pressable>
               );
@@ -185,6 +191,8 @@ const styles = StyleSheet.create({
   helpItem: { borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.1)', paddingTop: 16, marginTop: 8, borderRadius: 0, marginHorizontal: 0, paddingHorizontal: 20 },
   iconWrap: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center', position: 'relative' },
   label: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#D9D9D9', letterSpacing: 0.3 },
+  labelTotem: { fontSize: 20 },
+  itemTotem: { height: 64 },
   labelActive: { color: '#1C9BD8' },
   badge: { position: 'absolute', top: -6, right: -8, minWidth: 16, height: 16, borderRadius: 8, backgroundColor: '#FF4D4D', paddingHorizontal: 3, alignItems: 'center', justifyContent: 'center' },
   badgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },

@@ -9,6 +9,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
 import { Feather } from '@expo/vector-icons';
+import { esTotem } from '../config/totem';
 
 export type CategoriaNodo = {
   id: number;
@@ -31,7 +32,21 @@ const normalizar = (s: string) =>
 export default function CategoriasArbol({ categorias, seleccionada, onSelect, variant }: Props) {
   const [busqueda, setBusqueda] = useState('');
   const [abiertos, setAbiertos] = useState<Set<number>>(new Set());
-  const t = variant === 'sidebar' ? sb : md;
+  const base = variant === 'sidebar' ? sb : md;
+  // Tótem: mismas filas, pero más altas y con letra más grande (se tocan con el
+  // dedo y se leen de parado). Se mezcla acá para no duplicar la hoja de estilos.
+  const t = esTotem()
+    ? { ...base,
+        fila: [base.fila, totem.fila] as any,
+        texto: [base.texto, totem.texto] as any,
+        cantidad: [base.cantidad, totem.cantidad] as any,
+        ruta: [base.ruta, totem.ruta] as any,
+        buscador: [base.buscador, totem.buscador] as any,
+        input: [base.input, totem.input] as any,
+        limpiarText: [base.limpiarText, totem.texto] as any,
+        vacio: [base.vacio, totem.texto] as any }
+    : base;
+  const iconoSize = esTotem() ? 18 : 14;
   const col = variant === 'sidebar' ? COLORES_SIDEBAR : COLORES_MODAL;
 
   const arbol = useMemo(() => {
@@ -113,9 +128,9 @@ export default function CategoriasArbol({ categorias, seleccionada, onSelect, va
     if (!hijos.length) {
       return (
         <Pressable key={c.id} onPress={() => onSelect(activo ? '' : String(c.id))}
-          style={[t.fila, { paddingLeft: 4 + nivel * 14 }, activo && t.filaActiva]}>
+          style={[t.fila, { paddingLeft: 4 + nivel * (esTotem() ? 18 : 14) }, activo && t.filaActiva]}>
           {/* Hueco del ancho de la flecha: alinea las hojas con los nombres de los padres. */}
-          <View style={{ width: 14 }} />
+          <View style={{ width: iconoSize }} />
           <Text style={[t.texto, activo && t.textoActivo]} numberOfLines={2}>{c.name}</Text>
           <Cantidad n={c.cantidad} />
         </Pressable>
@@ -124,15 +139,15 @@ export default function CategoriasArbol({ categorias, seleccionada, onSelect, va
     const abierto = abiertos.has(c.id);
     return (
       <View key={c.id}>
-        <Pressable onPress={() => toggle(c.id)} style={[t.fila, { paddingLeft: 4 + nivel * 14 }]}>
-          <Feather name={abierto ? 'chevron-down' : 'chevron-right'} size={14} color={col.icono} />
+        <Pressable onPress={() => toggle(c.id)} style={[t.fila, { paddingLeft: 4 + nivel * (esTotem() ? 18 : 14) }]}>
+          <Feather name={abierto ? 'chevron-down' : 'chevron-right'} size={iconoSize} color={col.icono} />
           <Text style={[t.texto, t.textoPadre]} numberOfLines={2}>{c.name}</Text>
           <Cantidad n={c.cantidad} />
         </Pressable>
         {abierto && (
           <View>
             <Pressable onPress={() => onSelect(activo ? '' : String(c.id))}
-              style={[t.fila, { paddingLeft: 4 + (nivel + 1) * 14 }, activo && t.filaActiva]}>
+              style={[t.fila, { paddingLeft: 4 + (nivel + 1) * (esTotem() ? 18 : 14) }, activo && t.filaActiva]}>
               <Text style={[t.texto, t.textoVerTodo, activo && t.textoActivo]} numberOfLines={1}>
                 Ver todo en {c.name}
               </Text>
@@ -147,7 +162,7 @@ export default function CategoriasArbol({ categorias, seleccionada, onSelect, va
   return (
     <View>
       <View style={t.buscador}>
-        <Feather name="search" size={14} color={col.icono} />
+        <Feather name="search" size={iconoSize} color={col.icono} />
         <TextInput
           style={t.input}
           value={busqueda}
@@ -158,7 +173,7 @@ export default function CategoriasArbol({ categorias, seleccionada, onSelect, va
         />
         {!!busqueda && (
           <Pressable onPress={() => setBusqueda('')} hitSlop={8}>
-            <Feather name="x" size={14} color={col.icono} />
+            <Feather name="x" size={iconoSize} color={col.icono} />
           </Pressable>
         )}
       </View>
@@ -196,6 +211,16 @@ export default function CategoriasArbol({ categorias, seleccionada, onSelect, va
     </View>
   );
 }
+
+// Tótem: tamaños más generosos (fila de ~44 px de alto, texto de 16).
+const totem = StyleSheet.create({
+  fila: { paddingVertical: 11 },
+  texto: { fontSize: 16 },
+  cantidad: { fontSize: 13 },
+  ruta: { fontSize: 13 },
+  buscador: { height: 50, borderRadius: 10, paddingHorizontal: 14 },
+  input: { height: 50, fontSize: 16 },
+});
 
 const COLORES_SIDEBAR = { icono: 'rgba(255,255,255,0.85)', placeholder: 'rgba(255,255,255,0.6)' };
 const COLORES_MODAL = { icono: '#6B7280', placeholder: '#9CA3AF' };

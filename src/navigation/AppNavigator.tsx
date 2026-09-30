@@ -8,6 +8,7 @@ import { RootStackParamList } from '../types/navigation';
 import { getUserRoleFromStorage, getRememberMe, clearAuth, getCuitFromStorage, getUserProfile } from '../utils/authStorage';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
+import { esTotem } from '../config/totem';
 import DesktopSidebar from './DesktopSidebar';
 import { navigationRef } from '../../App';
 import { useCartStore } from '../store/cartStore';
@@ -107,7 +108,7 @@ const SalBomHeader = ({ isDesktopWeb }: { isDesktopWeb: boolean }) => {
     <View style={[styles.headerContainer, { paddingTop: insets.top }]}>
       {/* Tipo de cambio (mismo valor que el pop-up). Solo en escritorio web:
           en mobile web y en la APK no se muestra. */}
-      {isDesktopWeb && (
+      {isDesktopWeb && !esTotem() && (
         <View style={[styles.headerLeftInfo, { left: 40 }]}>
           <Text style={styles.tcLabel}>TIPO DE CAMBIO</Text>
           <Text style={styles.tcValue}>{tipoCambio ? `$${tipoCambio}` : '—'}</Text>
@@ -119,12 +120,15 @@ const SalBomHeader = ({ isDesktopWeb }: { isDesktopWeb: boolean }) => {
         isGuest ? (
           // Invitado (escritorio): acceso para iniciar sesión. En mobile este
           // botón NO va: el invitado inicia sesión desde la tab "Perfil".
+          // En el tótem tampoco: es una pantalla pública, nadie inicia sesión ahí.
+          esTotem() ? null : (
           <View style={[styles.headerRightIcons, { right: 40 }]}>
             <Pressable style={styles.loginPill} onPress={goLogin}>
               <Feather name="log-in" size={16} color="#1C9BD8" />
               <Text style={styles.loginPillText}>Ingresar</Text>
             </Pressable>
           </View>
+          )
         ) : (
           // Usuario logueado (escritorio): carrito + avatar. El botón de ayuda
           // vive al pie del sidebar (ver DesktopSidebar.tsx).

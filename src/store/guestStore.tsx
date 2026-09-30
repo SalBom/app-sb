@@ -10,6 +10,7 @@
 import { create } from 'zustand';
 import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { esTotem } from '../config/totem';
 
 const GUEST_KEY = 'guest_mode';
 
@@ -38,6 +39,8 @@ export const useGuestStore = create<GuestState>((set) => ({
   hydrate: async () => {
     // El modo invitado es exclusivo de la web; en la APK se ignora por completo.
     if (Platform.OS !== 'web') return;
+    // El tótem de la expo es público: siempre invitado, nunca la pantalla de login.
+    if (esTotem()) { set({ isGuest: true }); return; }
     try {
       const v = await AsyncStorage.getItem(GUEST_KEY);
       if (v === 'true') set({ isGuest: true });
