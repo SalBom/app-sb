@@ -4,14 +4,12 @@
 // segundos (o antes, si el visitante toca).
 //
 // Cuidados para no molestar:
-//  - no aparece si está la pantalla de atracción (nadie está usando el tótem)
-//    ni encima del QR de consulta de un producto: en ese caso espera un rato
-//    y vuelve a intentar;
+//  - no aparece encima del QR de consulta de un producto: en ese caso espera
+//    un rato y vuelve a intentar;
 //  - cualquier toque lo cierra y reinicia la cuenta desde cero.
 import { useEffect } from 'react';
 import { esTotem, TOTEM_PROMO_CADA_MS } from '../config/totem';
 import { useTotemPromoStore } from '../store/totemPromoStore';
-import { useTotemAtractorStore } from '../store/totemAtractorStore';
 import { useTotemContactoStore } from '../store/totemContactoStore';
 
 export default function useTotemPromo() {
@@ -26,8 +24,8 @@ export default function useTotemPromo() {
     };
 
     const aparecer = () => {
-      const ocupado =
-        useTotemAtractorStore.getState().visible || useTotemContactoStore.getState().visible;
+      // No pisamos el QR de consulta de un producto si está abierto.
+      const ocupado = useTotemContactoStore.getState().visible;
       if (ocupado) {
         programar(30 * 1000); // reintenta en un rato, sin pisar lo que hay en pantalla
         return;

@@ -39,8 +39,16 @@ export const useGuestStore = create<GuestState>((set) => ({
   hydrate: async () => {
     // El modo invitado es exclusivo de la web; en la APK se ignora por completo.
     if (Platform.OS !== 'web') return;
-    // El tótem de la expo es público: siempre invitado, nunca la pantalla de login.
-    if (esTotem()) { set({ isGuest: true }); return; }
+    // El tótem de la expo es público: por defecto entra como invitado, sin
+    // pasar por el login. PERO si alguien del stand inició sesión (para mostrar
+    // precios de oferta), esa sesión manda: si no, al recargar la página
+    // volvería a invitado y se ocultarían los precios.
+    if (esTotem()) {
+      const { getCuitFromStorage, getUserRoleFromStorage } = await import('../utils/authStorage');
+      const [cuit, rol] = await Promise.all([getCuitFromStorage(), getUserRoleFromStorage()]);
+      set({ isGuest: !(cuit || rol) });
+      return;
+    }
     try {
       const v = await AsyncStorage.getItem(GUEST_KEY);
       if (v === 'true') set({ isGuest: true });

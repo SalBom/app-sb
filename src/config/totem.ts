@@ -31,6 +31,11 @@ export const TOTEM_INACTIVIDAD_MS = 90 * 1000;
 export const TOTEM_PROMO_CADA_MS = 4 * 60 * 1000;   // cada 4 minutos
 export const TOTEM_PROMO_DURACION_MS = 40 * 1000;   // 40 segundos en pantalla
 
+// El tótem es una pantalla pública: si alguien inicia sesión para mostrar
+// precios de oferta y se va, la cuenta no puede quedar abierta para el próximo
+// visitante. Pasado este tiempo sin uso, se cierra sola y vuelve a modo invitado.
+export const TOTEM_CIERRE_SESION_MS = 5 * 60 * 1000;   // 5 minutos
+
 let activo = false;
 
 /** Lee el flag (?totem=1 o lo guardado) y aplica los estilos de kiosko. Se llama una sola vez al arrancar. */

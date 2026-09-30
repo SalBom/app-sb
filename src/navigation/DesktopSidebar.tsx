@@ -12,8 +12,10 @@ import { getUserRoleFromStorage } from '../utils/authStorage';
 import { useHelpCenterStore } from '../store/helpCenterStore';
 import { useTourTarget } from '../hooks/useTourTarget';
 import useIsGuest from '../hooks/useIsGuest';
+import { useGuestStore } from '../store/guestStore';
 import { esTotem } from '../config/totem';
 import { useTotemPromoStore } from '../store/totemPromoStore';
+import { clearAuth } from '../utils/authStorage';
 
 import HomeIcon from '../../assets/home.svg';
 import CarritoIcon from '../../assets/carrito.svg';
@@ -63,6 +65,8 @@ export default function DesktopSidebar() {
   const openHelp = useHelpCenterStore((s) => s.open);
   const carritoTourRef = useTourTarget('ir-carrito');
   const isGuest = useIsGuest();
+  const exitGuest = useGuestStore((s) => s.exitGuest);
+  const enterGuest = useGuestStore((s) => s.enterGuest);
 
   useEffect(() => {
     const checkRole = () => {
@@ -90,6 +94,25 @@ export default function DesktopSidebar() {
       useNativeDriver: false,
     }).start();
   }, [expanded]);
+
+  // --- Sesión desde el tótem ---
+  const entrarConCuenta = () => {
+    exitGuest();
+    if (navigationRef.isReady()) navigationRef.navigate('Login' as never);
+    setExpanded(esTotem());
+  };
+
+  const salirDeLaCuenta = () => {
+    // Limpieza completa: sin esto, el próximo visitante seguiría dentro de la
+    // cuenta (y con el carrito) del que la usó antes.
+    clearAuth();
+    useCartStore.getState().clearCart();
+    enterGuest();
+    if (navigationRef.isReady()) {
+      (navigationRef.navigate as any)('MainTabs', { screen: 'Home' });
+    }
+    setExpanded(esTotem());
+  };
 
   const go = (routeName: string) => {
     if (!navigationRef.isReady()) return;
@@ -166,6 +189,28 @@ export default function DesktopSidebar() {
                 {expanded && (
                   <Text style={[styles.label, styles.labelTotem, { color: '#1C9BD8' }]} numberOfLines={1}>
                     Mostrar QR
+                  </Text>
+                )}
+              </Pressable>
+            )}
+
+            {/* Tótem: iniciar sesión para mostrarle a un cliente los precios de
+                oferta, y salir después. Ojo: es una pantalla pública, por eso
+                la sesión también se cierra sola por inactividad (useTotemIdle). */}
+            {esTotem() && (
+              <Pressable
+                style={[styles.item, styles.itemTotem, !expanded && styles.itemCollapsed]}
+                onPress={isGuest ? entrarConCuenta : salirDeLaCuenta}
+              >
+                <View style={styles.iconWrap}>
+                  <Feather name={isGuest ? 'log-in' : 'log-out'} size={22} color={isGuest ? '#FFFFFF' : '#F87171'} />
+                </View>
+                {expanded && (
+                  <Text
+                    style={[styles.label, styles.labelTotem, !isGuest && { color: '#F87171' }]}
+                    numberOfLines={1}
+                  >
+                    {isGuest ? 'Ingresar' : 'Salir de la cuenta'}
                   </Text>
                 )}
               </Pressable>

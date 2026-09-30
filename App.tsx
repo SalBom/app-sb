@@ -17,7 +17,6 @@ import useOtaUpdates from './src/hooks/useOtaUpdates';
 import { initTotem } from './src/config/totem';
 import useTotemIdle from './src/hooks/useTotemIdle';
 import TotemContactoModal from './src/components/TotemContactoModal';
-import TotemAtractor from './src/components/TotemAtractor';
 import TotemPromoQR from './src/components/TotemPromoQR';
 import TotemBotonActivar from './src/components/TotemBotonActivar';
 import useTotemPromo from './src/hooks/useTotemPromo';
@@ -89,11 +88,10 @@ export default function App() {
       <ErrorBoundary>
         <NavigationContainer<RootStackParamList> ref={navigationRef} linking={linking}>
           <AppNavigator />
-          {/* Cartel con QR y pantalla de atracción del tótem: se dibujan una
-              sola vez, arriba de todo. Fuera del tótem no renderizan nada. */}
+          {/* Cartel con los QR del tótem: se dibuja una sola vez, arriba de
+              todo. Fuera del tótem no renderiza nada. */}
           <TotemContactoModal />
           <TotemPromoQR />
-          <TotemAtractor />
           {/* TEMPORAL (expo): atajo para entrar al modo tótem sin escribir la URL. */}
           <TotemBotonActivar />
         </NavigationContainer>

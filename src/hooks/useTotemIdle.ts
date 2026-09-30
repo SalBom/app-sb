@@ -4,31 +4,47 @@
 // rato sin que nadie la toque, para que el próximo visitante la encuentre
 // "limpia". Solo corre en modo tótem.
 import { useEffect } from 'react';
-import { esTotem, TOTEM_INACTIVIDAD_MS } from '../config/totem';
+import { esTotem, TOTEM_INACTIVIDAD_MS, TOTEM_CIERRE_SESION_MS } from '../config/totem';
 import { navigationRef } from '../../App';
-import { useTotemAtractorStore } from '../store/totemAtractorStore';
+import { useTotemPromoStore } from '../store/totemPromoStore';
+import { useGuestStore } from '../store/guestStore';
+import { useCartStore } from '../store/cartStore';
+import { clearAuth } from '../utils/authStorage';
 
 export default function useTotemIdle() {
   useEffect(() => {
     if (!esTotem() || typeof window === 'undefined') return;
 
     let timer: any;
+    let timerSesion: any;
 
     const enReposo = () => {
-      // Vuelve al inicio Y muestra la pantalla de atracción: el próximo visitante
-      // encuentra una invitación a tocar, no la búsqueda del anterior.
+      // Vuelve al inicio y muestra los QR: el próximo visitante encuentra la
+      // pantalla limpia y, de paso, los códigos para llevarse el contacto y la
+      // lista de precios.
       try {
         if (navigationRef.isReady()) {
           (navigationRef.navigate as any)('MainTabs', { screen: 'Home' });
         }
         window.scrollTo({ top: 0 });
       } catch {}
-      useTotemAtractorStore.getState().mostrar();
+      useTotemPromoStore.getState().mostrar();
+    };
+
+    // Red de seguridad: si quedó una sesión abierta y nadie usa el tótem, se
+    // cierra sola. Así el próximo visitante no entra con la cuenta de otro.
+    const cerrarSesionSiQuedoAbierta = () => {
+      if (useGuestStore.getState().isGuest) return;
+      clearAuth();
+      useCartStore.getState().clearCart();
+      useGuestStore.getState().enterGuest();
     };
 
     const reiniciar = () => {
       clearTimeout(timer);
+      clearTimeout(timerSesion);
       timer = setTimeout(enReposo, TOTEM_INACTIVIDAD_MS);
+      timerSesion = setTimeout(cerrarSesionSiQuedoAbierta, TOTEM_CIERRE_SESION_MS);
     };
 
     const eventos = ['pointerdown', 'touchstart', 'keydown', 'wheel', 'scroll'];
@@ -37,6 +53,7 @@ export default function useTotemIdle() {
 
     return () => {
       clearTimeout(timer);
+      clearTimeout(timerSesion);
       eventos.forEach((e) => window.removeEventListener(e, reiniciar));
     };
   }, []);
