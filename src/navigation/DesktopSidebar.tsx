@@ -13,6 +13,7 @@ import { useHelpCenterStore } from '../store/helpCenterStore';
 import { useTourTarget } from '../hooks/useTourTarget';
 import useIsGuest from '../hooks/useIsGuest';
 import { esTotem } from '../config/totem';
+import { useTotemPromoStore } from '../store/totemPromoStore';
 
 import HomeIcon from '../../assets/home.svg';
 import CarritoIcon from '../../assets/carrito.svg';
@@ -150,6 +151,25 @@ export default function DesktopSidebar() {
                 </Pressable>
               );
             })}
+
+            {/* Tótem: botón para mostrar los QR (distribuidor + lista de precios)
+                en el momento, sin esperar a que aparezcan solos. Útil cuando
+                alguien está parado en el stand y los quiere escanear ya. */}
+            {esTotem() && (
+              <Pressable
+                style={[styles.item, styles.itemTotem, !expanded && styles.itemCollapsed]}
+                onPress={() => useTotemPromoStore.getState().mostrar()}
+              >
+                <View style={styles.iconWrap}>
+                  <Feather name="grid" size={22} color="#1C9BD8" />
+                </View>
+                {expanded && (
+                  <Text style={[styles.label, styles.labelTotem, { color: '#1C9BD8' }]} numberOfLines={1}>
+                    Mostrar QR
+                  </Text>
+                )}
+              </Pressable>
+            )}
           </View>
         </View>
 

@@ -26,6 +26,11 @@ const ANCHO_DISENO = 1280;
 // Tiempo sin tocar la pantalla antes de volver solo al inicio.
 export const TOTEM_INACTIVIDAD_MS = 90 * 1000;
 
+// Cartel con los dos QR (distribuidor + lista de precios): cada cuánto aparece
+// y cuánto queda en pantalla. Cambiar acá si en la expo conviene otro ritmo.
+export const TOTEM_PROMO_CADA_MS = 4 * 60 * 1000;   // cada 4 minutos
+export const TOTEM_PROMO_DURACION_MS = 40 * 1000;   // 40 segundos en pantalla
+
 let activo = false;
 
 /** Lee el flag (?totem=1 o lo guardado) y aplica los estilos de kiosko. Se llama una sola vez al arrancar. */
