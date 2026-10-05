@@ -6822,6 +6822,422 @@ def admin_media_subir():
     return jsonify({"ok": True, "destino": destino, "url": fb_url(destino), "bytes": len(payload)})
 
 
+# ═══════════════════════════════════════════════════════════════
+# ADMIN: CARGAR OFERTAS DESDE EL PDF DE LA MARCA (IA)
+# ═══════════════════════════════════════════════════════════════
+# El folleto de ofertas que se manda a los clientes trae, hoja por hoja, el
+# código del producto, el precio contado y el PRECIO A PLAZO. Pasar eso a mano a
+# la Tarifa 70 son decenas de reglas cargadas de a una. Acá la IA lee cada hoja,
+# el backend cruza los códigos contra Odoo y el panel muestra todo junto para
+# revisarlo antes de darlo de alta.
+#
+# El precio que se carga es SIEMPRE el de "A PLAZO" (es el que corresponde a la
+# tarifa). El contado viaja igual, pero solo para que el admin lo vea al revisar.
+import io
+from concurrent.futures import ThreadPoolExecutor
+
+_OFERTAS_MAX_BYTES = 30 * 1024 * 1024
+# Tope de hojas por pedido: el panel manda el PDF por tandas para que ninguna
+# petición pase los 120 s de gunicorn (cada hoja son ~15-30 s de IA, en paralelo).
+_OFERTAS_PAGINAS_POR_LOTE = 4
+_OFERTAS_PRICELIST_ID = 70
+
+
+def _ofertas_instruccion(hoy):
+    return (
+        "Sos un asistente que lee folletos de ofertas de máquinas y herramientas "
+        "(marcas Shimura e Issei) y extrae los precios para cargarlos al sistema.\n\n"
+        "Te paso UNA hoja del folleto. Devolvé EXCLUSIVAMENTE un JSON válido (sin texto "
+        "antes ni después, sin comillas triples), con esta forma exacta:\n"
+        '{"vigencia_desde": "AAAA-MM-DD", "vigencia_hasta": "AAAA-MM-DD", '
+        '"ofertas": [{"sku": "SH-FD3", "nombre": "Escalera plegable", '
+        '"precio_contado": 50.87, "precio_plazo": 53.44, "iva": 21}]}\n\n'
+        "Reglas:\n"
+        "- Una entrada por producto de la hoja. El 'sku' es el código del producto: el texto "
+        "corto en mayúsculas que titula cada bloque (ej: SH-FD3, AAC-WE2, WD-25100B, "
+        "SHSI165MS, WB-40200-3). Copialo TAL CUAL, con los guiones que tenga.\n"
+        "- 'precio_plazo': el que figura como 'A PLAZO' o 'PRECIO A PLAZO'.\n"
+        "- 'precio_contado': el que figura como 'PRECIO CONTADO' o 'PAGO CONTADO'.\n"
+        "- Los precios grandes llevan los centavos en un número chico arriba: 'U$D 50' con un "
+        "'87' chiquito al lado es 50.87. 'U$D 359,81' es 359.81.\n"
+        "- Los precios TACHADOS (cruzados con una raya o una X) son el precio viejo: NO van.\n"
+        "- Usá punto decimal y sin separador de miles: 1234.56. Si un precio no está en la "
+        "hoja, poné null.\n"
+        "- 'iva': 21 o 10.5 según lo que diga la hoja (IVA %21 / IVA %10,5); null si no dice.\n"
+        "- 'vigencia_desde' / 'vigencia_hasta': si la hoja dice hasta cuándo vale la oferta "
+        "(ej. 'VIGENCIA DESDE 01/10 HASTA EL 31/10'), pasalo a AAAA-MM-DD. Hoy es " + hoy +
+        ": si no figura el año, usá el que corresponda. Si no dice nada, null en las dos.\n"
+        "- No inventes nada. Si la hoja es una tapa, un índice o no tiene productos con precio, "
+        'devolvé {"vigencia_desde": null, "vigencia_hasta": null, "ofertas": []}.'
+    )
+
+
+def _ofertas_hojas_pdf(contenido, desde, hasta):
+    """(total_de_hojas, [(nro, pdf_de_esa_hoja)]) para el rango pedido (1-based)."""
+    from pypdf import PdfReader, PdfWriter  # import perezoso: no rompe el arranque
+    lector = PdfReader(io.BytesIO(contenido))
+    total = len(lector.pages)
+    hojas = []
+    for nro in range(max(1, desde), min(total, hasta) + 1):
+        escritor = PdfWriter()
+        escritor.add_page(lector.pages[nro - 1])
+        buf = io.BytesIO()
+        escritor.write(buf)
+        hojas.append((nro, buf.getvalue()))
+    return total, hojas
+
+
+def _ofertas_ia_pagina(pdf_pagina, hoy):
+    """Manda UNA hoja del folleto a Claude y devuelve el JSON que contesta."""
+    import anthropic  # import perezoso: no rompe el arranque si aún no está instalada
+    cliente = anthropic.Anthropic()  # lee ANTHROPIC_API_KEY del entorno
+    b64 = base64.standard_b64encode(pdf_pagina).decode("utf-8")
+    resp = cliente.messages.create(
+        model=IA_MODEL,
+        max_tokens=3000,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "document",
+                 "source": {"type": "base64", "media_type": "application/pdf", "data": b64}},
+                {"type": "text", "text": _ofertas_instruccion(hoy)},
+            ],
+        }],
+    )
+    texto = ""
+    for b in resp.content:
+        if getattr(b, "type", None) == "text":
+            texto += b.text
+    return _parse_json_laxo(texto)
+
+
+def _ofertas_numero(v):
+    """Pasa lo que devuelva la IA ('53,44', 'U$D 1.234,56', 53.44) a float, o None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return round(float(v), 2) if v > 0 else None
+    s = re.sub(r"[^0-9,.]", "", str(v or ""))
+    if not s:
+        return None
+    if "," in s and "." in s:
+        # El separador que está más a la derecha es el de los decimales.
+        s = s.replace(".", "").replace(",", ".") if s.rfind(",") > s.rfind(".") else s.replace(",", "")
+    elif "," in s:
+        s = s.replace(",", ".")
+    try:
+        n = float(s)
+    except Exception:
+        return None
+    return round(n, 2) if n > 0 else None
+
+
+def _ofertas_fecha(v):
+    """Deja solo fechas AAAA-MM-DD válidas."""
+    s = str(v or "").strip()[:10]
+    try:
+        datetime.strptime(s, "%Y-%m-%d")
+        return s
+    except Exception:
+        return None
+
+
+def _ofertas_catalogo():
+    """{SKU: {'id','name','list_price'}} de las plantillas de Odoo (cacheado 10 min)."""
+    ck = "ofertas_catalogo_tmpl_v1"
+    cached = cache_get(ck)
+    if cached:
+        return cached
+    try:
+        with odoo_access():
+            rows = execute_odoo_operation(lambda c: c.env["product.template"].search_read(
+                [("default_code", "!=", False)],
+                ["default_code", "name", "list_price"], limit=30000)) or []
+    except Exception as e:
+        log.error(f"Error leyendo el catálogo para ofertas: {e}")
+        return {}
+    datos = {}
+    for r in rows:
+        sku = (r.get("default_code") or "").strip()
+        if sku and sku not in datos:
+            datos[sku] = {
+                "id": r["id"],
+                "name": r.get("name") or "",
+                "list_price": round(float(r.get("list_price") or 0), 2),
+            }
+    if datos:
+        cache_setex(ck, 600, datos)
+    return datos
+
+
+def _ofertas_reglas_vigentes(tmpl_ids):
+    """
+    Reglas de la Tarifa 70 que siguen vivas para esos productos, {tmpl_id: regla}.
+    Sirve para avisar en el panel "este producto YA tiene una oferta cargada".
+    """
+    ids = [int(i) for i in (tmpl_ids or []) if i]
+    if not ids:
+        return {}
+    hoy = datetime.now().strftime("%Y-%m-%d")
+    try:
+        with odoo_access():
+            items = execute_odoo_operation(lambda c: c.env["product.pricelist.item"].search_read(
+                [("pricelist_id", "=", _OFERTAS_PRICELIST_ID),
+                 ("applied_on", "=", "1_product"),
+                 ("product_tmpl_id", "in", ids),
+                 "|", ("date_end", "=", False), ("date_end", ">=", hoy)],
+                ["product_tmpl_id", "fixed_price", "min_quantity", "date_start", "date_end"],
+                order="date_start desc", limit=2000)) or []
+    except Exception as e:
+        log.warning(f"No pude leer las ofertas ya cargadas: {e}")
+        return {}
+    reglas = {}
+    for it in items:
+        tmpl = it.get("product_tmpl_id")
+        tid = tmpl[0] if isinstance(tmpl, (list, tuple)) else tmpl
+        if not tid or tid in reglas:
+            continue  # nos quedamos con la más nueva (vienen ordenadas)
+        reglas[tid] = {
+            "id": it["id"],
+            "precio": round(float(it.get("fixed_price") or 0), 2),
+            "min": it.get("min_quantity") or 0,
+            "desde": it.get("date_start") or None,
+            "hasta": it.get("date_end") or None,
+        }
+    return reglas
+
+
+def _ofertas_resolver(skus_pdf, catalogo=None):
+    """
+    Cruza los códigos que leyó la IA contra Odoo. Devuelve una lista en el mismo
+    orden, con el producto encontrado y el estado de cada uno.
+    """
+    catalogo = catalogo if catalogo is not None else _ofertas_catalogo()
+    if not catalogo:
+        return [{"sku": s, "producto_id": None, "producto": "", "precio_lista": None,
+                 "estado": "error", "mensaje": "No se pudo leer el catálogo de Odoo."}
+                for s in skus_pdf]
+
+    indices = _media_indices(list(catalogo.keys()))
+    salida = []
+    for bruto in skus_pdf:
+        candidato = (bruto or "").strip()
+        sku, como = _media_resolver_sku(candidato, indices)
+        if not sku and como != "ambiguo":
+            # Por si el código vino con ruido alrededor ("ROSCADORA SH-TM2").
+            sku = _media_sku_en_texto(candidato, indices)
+            if sku:
+                como = "corregido"
+        if not sku:
+            salida.append({
+                "sku": candidato, "producto_id": None, "producto": "", "precio_lista": None,
+                "estado": "ambiguo" if como == "ambiguo" else "no_encontrado",
+                "mensaje": ("Hay más de un producto con ese código."
+                            if como == "ambiguo" else "Ese código no está en Odoo."),
+            })
+            continue
+        prod = catalogo[sku]
+        salida.append({
+            "sku": sku,
+            "producto_id": prod["id"],
+            "producto": f"[{sku}] {prod['name']}",
+            "precio_lista": prod["list_price"],
+            "estado": "ok" if como == "exacto" else "corregido",
+            "mensaje": "" if como == "exacto" else f"El folleto decía {candidato}.",
+        })
+    return salida
+
+
+@app.route('/admin/ofertas-pdf/analizar', methods=['POST'])
+def admin_ofertas_pdf_analizar():
+    """Lee con IA las hojas pedidas del folleto y devuelve las ofertas que encontró."""
+    if not _cuit_is_admin(request.form.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        return jsonify({"error": "El servidor no tiene configurada la API key de IA (ANTHROPIC_API_KEY)."}), 500
+
+    f = request.files.get('archivo')
+    if not f:
+        return jsonify({"error": "No llegó ningún archivo."}), 400
+    contenido = f.read(_OFERTAS_MAX_BYTES + 1)
+    if len(contenido) > _OFERTAS_MAX_BYTES:
+        return jsonify({"error": "El PDF pesa más de 30 MB."}), 413
+    if not contenido.startswith(b"%PDF"):
+        return jsonify({"error": "El archivo no es un PDF válido."}), 400
+
+    try:
+        desde = max(1, int(request.form.get('desde') or 1))
+    except Exception:
+        desde = 1
+    try:
+        hasta = int(request.form.get('hasta') or (desde + _OFERTAS_PAGINAS_POR_LOTE - 1))
+    except Exception:
+        hasta = desde + _OFERTAS_PAGINAS_POR_LOTE - 1
+    hasta = min(hasta, desde + _OFERTAS_PAGINAS_POR_LOTE - 1)
+
+    try:
+        total, hojas = _ofertas_hojas_pdf(contenido, desde, hasta)
+    except ImportError:
+        return jsonify({"error": "Al servidor le falta la librería pypdf para abrir el PDF."}), 500
+    except Exception as e:
+        log.error(f"❌ ofertas-pdf abrir: {e}")
+        return jsonify({"error": f"No se pudo abrir el PDF: {e}"}), 400
+
+    hoy = datetime.now().strftime("%Y-%m-%d")
+
+    def leer(par):
+        nro, pdf = par
+        try:
+            return nro, _ofertas_ia_pagina(pdf, hoy), None
+        except Exception as e:
+            log.error(f"❌ ofertas-pdf hoja {nro}: {e}")
+            return nro, None, str(e)
+
+    # Las hojas van en paralelo: una atrás de otra no entra en el tiempo del request.
+    if hojas:
+        with ThreadPoolExecutor(max_workers=len(hojas)) as pool:
+            leidas = list(pool.map(leer, hojas))
+    else:
+        leidas = []
+
+    crudas, errores, vigencia = [], [], {"desde": None, "hasta": None}
+    for nro, data, err in leidas:
+        if err:
+            errores.append({"pagina": nro, "error": err})
+            continue
+        data = data or {}
+        if not vigencia["desde"]:
+            vigencia["desde"] = _ofertas_fecha(data.get("vigencia_desde"))
+        if not vigencia["hasta"]:
+            vigencia["hasta"] = _ofertas_fecha(data.get("vigencia_hasta"))
+        for of in (data.get("ofertas") or []):
+            if not isinstance(of, dict):
+                continue
+            crudas.append({
+                "pagina": nro,
+                "sku_pdf": str(of.get("sku") or "").strip(),
+                "nombre_pdf": str(of.get("nombre") or "").strip(),
+                "precio_contado": _ofertas_numero(of.get("precio_contado")),
+                "precio_plazo": _ofertas_numero(of.get("precio_plazo")),
+                "iva": _ofertas_numero(of.get("iva")),
+            })
+
+    catalogo = _ofertas_catalogo()
+    resueltos = _ofertas_resolver([c["sku_pdf"] for c in crudas], catalogo)
+    reglas = _ofertas_reglas_vigentes({r["producto_id"] for r in resueltos if r["producto_id"]})
+
+    items = []
+    for cruda, res in zip(crudas, resueltos):
+        item = {**cruda, **res}
+        item["existente"] = reglas.get(res["producto_id"])
+        if item["estado"] in ("ok", "corregido") and item["precio_plazo"] is None:
+            item["estado"] = "sin_precio"
+            item["mensaje"] = "No se leyó el precio a plazo: cargalo a mano."
+        items.append(item)
+
+    return jsonify({
+        "total_paginas": total,
+        "desde": desde,
+        "hasta": min(hasta, total),
+        "items": items,
+        "vigencia": vigencia,
+        "errores": errores,
+        "catalogo_ok": bool(catalogo),
+    })
+
+
+@app.route('/admin/ofertas-pdf/resolver', methods=['POST'])
+def admin_ofertas_pdf_resolver():
+    """Vuelve a buscar en Odoo los códigos que el admin corrigió a mano."""
+    data = request.get_json(silent=True) or {}
+    if not _cuit_is_admin(data.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    skus = [str(s or "").strip() for s in (data.get('skus') or [])][:200]
+    catalogo = _ofertas_catalogo()
+    resueltos = _ofertas_resolver(skus, catalogo)
+    reglas = _ofertas_reglas_vigentes({r["producto_id"] for r in resueltos if r["producto_id"]})
+    for r in resueltos:
+        r["existente"] = reglas.get(r["producto_id"])
+    return jsonify({"items": resueltos, "catalogo_ok": bool(catalogo)})
+
+
+@app.route('/admin/ofertas-pdf/crear', methods=['POST'])
+def admin_ofertas_pdf_crear():
+    """
+    Da de alta en la Tarifa 70 las ofertas que el admin aprobó en el panel.
+    Si la oferta trae 'reemplazar_id', primero borra la regla vieja de ese producto.
+    """
+    data = request.get_json(silent=True) or {}
+    if not _cuit_is_admin(data.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+
+    items = data.get('items') or []
+    if not isinstance(items, list) or not items:
+        return jsonify({"error": "No llegó ninguna oferta."}), 400
+    if len(items) > 100:
+        return jsonify({"error": "Mandá las ofertas de a 100 como mucho."}), 400
+
+    def _fecha(valor, fin=False):
+        s = str(valor or "").strip()
+        if not s:
+            return False
+        if len(s) > 10:
+            return s
+        return f"{s} 23:59:59" if fin else f"{s} 00:00:00"
+
+    client = get_odoo_client()
+    resultados = []
+    creadas = 0
+    try:
+        for it in items:
+            pid = it.get('product_id')
+            precio = it.get('price')
+            try:
+                pid = int(pid)
+                precio = float(precio)
+            except Exception:
+                resultados.append({"product_id": it.get('product_id'), "ok": False,
+                                   "error": "Falta el producto o el precio."})
+                continue
+            if precio <= 0:
+                resultados.append({"product_id": pid, "ok": False,
+                                   "error": "El precio tiene que ser mayor a 0."})
+                continue
+            try:
+                viejo = it.get('reemplazar_id')
+                if viejo:
+                    client.env['product.pricelist.item'].unlink([int(viejo)])
+                nuevo = client.env['product.pricelist.item'].create({
+                    'pricelist_id': _OFERTAS_PRICELIST_ID,
+                    'applied_on': '1_product',
+                    'product_tmpl_id': pid,
+                    'compute_price': 'fixed',
+                    'fixed_price': precio,
+                    'min_quantity': int(it.get('min_qty') or 0),
+                    'date_start': _fecha(it.get('date_start')),
+                    'date_end': _fecha(it.get('date_end'), fin=True),
+                })
+                creadas += 1
+                resultados.append({"product_id": pid, "ok": True, "id": int(nuevo)})
+            except Exception as e:
+                handle_connection_error(e)
+                log.error(f"❌ ofertas-pdf crear {pid}: {e}")
+                resultados.append({"product_id": pid, "ok": False, "error": str(e)})
+    finally:
+        release_odoo_client(client)
+
+    if creadas:
+        # Que el catálogo muestre los precios nuevos sin esperar a que venza el caché.
+        try:
+            if redis_client:
+                redis_client.delete("active_pricelist_70_rules_v4")
+        except Exception:
+            pass
+
+    log.info(f"🏷️ Ofertas desde PDF: {creadas} de {len(items)} dadas de alta.")
+    return jsonify({"ok": True, "creadas": creadas, "resultados": resultados})
+
+
 # ─────────────────────────── Run ──────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

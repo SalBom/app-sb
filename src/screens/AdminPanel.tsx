@@ -11,6 +11,7 @@ import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 import BackfillIAModal from '../components/BackfillIAModal';
 import MasterboxAdminModal from '../components/MasterboxAdminModal';
 import MediaUploadAdminModal from '../components/MediaUploadAdminModal';
+import OfertasPdfAdminModal from '../components/OfertasPdfAdminModal';
 
 const AvatarPlaceholder = require('../../assets/avatarPlaceholder.png');
 
@@ -48,6 +49,7 @@ export default function AdminPanel() {
   const [backfillVisible, setBackfillVisible] = useState(false);
   const [masterboxVisible, setMasterboxVisible] = useState(false);
   const [mediaVisible, setMediaVisible] = useState(false);
+  const [ofertasPdfVisible, setOfertasPdfVisible] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -79,6 +81,7 @@ export default function AdminPanel() {
             <View style={dStyles.grid}>
               <AdminCardD icon="person-outline" label="Gestión de usuarios" onPress={() => navigation.navigate('GestionUsuarios')} />
               <AdminCardD icon="megaphone-outline" label="Promociones" onPress={() => navigation.navigate('AdminPromociones')} />
+              <AdminCardD icon="document-text-outline" label="Ofertas desde PDF" sub="Cargar la tarifa del folleto" onPress={() => setOfertasPdfVisible(true)} />
               <AdminCardD icon="stats-chart-outline" label="Vista de estadísticas" sub="Monitoreo de vendedores" onPress={() => navigation.navigate('DashboardAdministrador')} />
             </View>
 
@@ -96,6 +99,7 @@ export default function AdminPanel() {
         <BackfillIAModal visible={backfillVisible} onClose={() => setBackfillVisible(false)} />
         <MasterboxAdminModal visible={masterboxVisible} onClose={() => setMasterboxVisible(false)} />
         <MediaUploadAdminModal visible={mediaVisible} onClose={() => setMediaVisible(false)} />
+        <OfertasPdfAdminModal visible={ofertasPdfVisible} onClose={() => setOfertasPdfVisible(false)} />
       </View>
     );
   }
@@ -216,6 +220,17 @@ export default function AdminPanel() {
                </View>
                <Ionicons name="chevron-forward" size={22} color="#333" style={{ marginLeft: 'auto' }} />
             </TouchableOpacity>
+
+            <View style={styles.separator} />
+
+            <TouchableOpacity style={styles.mainMenuItem} onPress={() => setOfertasPdfVisible(true)}>
+               <Ionicons name="document-text-outline" size={22} color="#1C9BD8" style={{ marginRight: 10 }} />
+               <View>
+                 <Text style={styles.mainMenuText}>OFERTAS DESDE PDF</Text>
+                 <Text style={[styles.proxText, { color: '#666', marginTop: 0 }]}>Cargar la tarifa del folleto</Text>
+               </View>
+               <Ionicons name="chevron-forward" size={22} color="#333" style={{ marginLeft: 'auto' }} />
+            </TouchableOpacity>
           </>
         )}
 
@@ -224,6 +239,7 @@ export default function AdminPanel() {
       <BackfillIAModal visible={backfillVisible} onClose={() => setBackfillVisible(false)} />
       <MasterboxAdminModal visible={masterboxVisible} onClose={() => setMasterboxVisible(false)} />
       {Platform.OS === 'web' && <MediaUploadAdminModal visible={mediaVisible} onClose={() => setMediaVisible(false)} />}
+      {Platform.OS === 'web' && <OfertasPdfAdminModal visible={ofertasPdfVisible} onClose={() => setOfertasPdfVisible(false)} />}
     </ScrollView>
   );
 }
