@@ -15,6 +15,15 @@
 //  - tras un rato sin uso, vuelve solo a la pantalla de inicio.
 import { Platform } from 'react-native';
 
+// ─────────────────────────── INTERRUPTOR ───────────────────────────
+// En false el modo tótem no existe: la web se comporta como siempre, el botón
+// "Modo tótem" no aparece, ?totem=1 no hace nada y una pantalla que había
+// quedado en modo tótem vuelve sola a la web normal.
+//
+// Todo el código del tótem queda donde está. Para la próxima expo alcanza con
+// poner true acá y volver a compilar (npm run build:web).
+export const TOTEM_HABILITADO = false;
+
 const CLAVE = 'totem_mode';
 
 // Ancho con el que está diseñada la versión de escritorio. En el tótem se
@@ -41,6 +50,15 @@ let activo = false;
 /** Lee el flag (?totem=1 o lo guardado) y aplica los estilos de kiosko. Se llama una sola vez al arrancar. */
 export function initTotem(): boolean {
   if (Platform.OS !== 'web' || typeof window === 'undefined') return false;
+
+  // Apagado: además de no encenderlo, se borra lo que haya quedado guardado en
+  // el navegador. Si no, el kiosko de la expo seguiría en modo tótem para
+  // siempre, porque el flag vive en SU localStorage y no en el código.
+  if (!TOTEM_HABILITADO) {
+    try { window.localStorage.removeItem(CLAVE); } catch {}
+    activo = false;
+    return false;
+  }
 
   const param = new URLSearchParams(window.location.search).get('totem');
   try {

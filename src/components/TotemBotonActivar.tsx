@@ -6,17 +6,20 @@
 // Solo aparece en la web de escritorio y SOLO cuando el modo tótem está
 // apagado (una vez adentro, desaparece). En la APK no se renderiza nunca.
 //
-// TEMPORAL: después de la expo se borra este archivo y su línea en App.tsx.
+// Es el único pedazo del tótem que se dibuja cuando el modo está APAGADO, así
+// que mira el interruptor por su cuenta: con TOTEM_HABILITADO en false no
+// aparece. Si el modo tótem no vuelve a usarse, se borra este archivo y su
+// línea en App.tsx.
 import React from 'react';
 import { Text, StyleSheet, Pressable, Platform } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { esTotem } from '../config/totem';
+import { esTotem, TOTEM_HABILITADO } from '../config/totem';
 import useIsDesktopWeb from '../hooks/useIsDesktopWeb';
 
 export default function TotemBotonActivar() {
   const isDesktopWeb = useIsDesktopWeb();
 
-  if (Platform.OS !== 'web' || esTotem() || !isDesktopWeb) return null;
+  if (!TOTEM_HABILITADO || Platform.OS !== 'web' || esTotem() || !isDesktopWeb) return null;
 
   const activar = () => {
     try { window.localStorage.setItem('totem_mode', '1'); } catch {}
