@@ -12,6 +12,7 @@ import BackfillIAModal from '../components/BackfillIAModal';
 import MasterboxAdminModal from '../components/MasterboxAdminModal';
 import MediaUploadAdminModal from '../components/MediaUploadAdminModal';
 import OfertasPdfAdminModal from '../components/OfertasPdfAdminModal';
+import CargaFotosLinksModal from '../components/CargaFotosLinksModal';
 
 const AvatarPlaceholder = require('../../assets/avatarPlaceholder.png');
 
@@ -50,6 +51,7 @@ export default function AdminPanel() {
   const [masterboxVisible, setMasterboxVisible] = useState(false);
   const [mediaVisible, setMediaVisible] = useState(false);
   const [ofertasPdfVisible, setOfertasPdfVisible] = useState(false);
+  const [cargaFotosVisible, setCargaFotosVisible] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -93,6 +95,7 @@ export default function AdminPanel() {
               <AdminCardD icon="sparkles-outline" label="Fichas con IA (lote)" sub="Completar atributos automáticamente" onPress={() => setBackfillVisible(true)} />
               <AdminCardD icon="cube-outline" label="Masterbox" sub="Productos que se venden por caja" onPress={() => setMasterboxVisible(true)} />
               <AdminCardD icon="cloud-upload-outline" label="Subir fotos, fichas y manuales" sub="Carga por lote a Firebase" onPress={() => setMediaVisible(true)} />
+              <AdminCardD icon="camera-outline" label="Links para cargar fotos" sub="Para quien saca las fotos, desde el celular" onPress={() => setCargaFotosVisible(true)} />
             </View>
           </View>
         </ScrollView>
@@ -100,6 +103,7 @@ export default function AdminPanel() {
         <MasterboxAdminModal visible={masterboxVisible} onClose={() => setMasterboxVisible(false)} />
         <MediaUploadAdminModal visible={mediaVisible} onClose={() => setMediaVisible(false)} />
         <OfertasPdfAdminModal visible={ofertasPdfVisible} onClose={() => setOfertasPdfVisible(false)} />
+        <CargaFotosLinksModal visible={cargaFotosVisible} onClose={() => setCargaFotosVisible(false)} />
       </View>
     );
   }
@@ -231,6 +235,17 @@ export default function AdminPanel() {
                </View>
                <Ionicons name="chevron-forward" size={22} color="#333" style={{ marginLeft: 'auto' }} />
             </TouchableOpacity>
+
+            <View style={styles.separator} />
+
+            <TouchableOpacity style={styles.mainMenuItem} onPress={() => setCargaFotosVisible(true)}>
+               <Ionicons name="camera-outline" size={22} color="#1C9BD8" style={{ marginRight: 10 }} />
+               <View>
+                 <Text style={styles.mainMenuText}>LINKS PARA CARGAR FOTOS</Text>
+                 <Text style={[styles.proxText, { color: '#666', marginTop: 0 }]}>Para quien saca las fotos</Text>
+               </View>
+               <Ionicons name="chevron-forward" size={22} color="#333" style={{ marginLeft: 'auto' }} />
+            </TouchableOpacity>
           </>
         )}
 
@@ -240,6 +255,7 @@ export default function AdminPanel() {
       <MasterboxAdminModal visible={masterboxVisible} onClose={() => setMasterboxVisible(false)} />
       {Platform.OS === 'web' && <MediaUploadAdminModal visible={mediaVisible} onClose={() => setMediaVisible(false)} />}
       {Platform.OS === 'web' && <OfertasPdfAdminModal visible={ofertasPdfVisible} onClose={() => setOfertasPdfVisible(false)} />}
+      {Platform.OS === 'web' && <CargaFotosLinksModal visible={cargaFotosVisible} onClose={() => setCargaFotosVisible(false)} />}
     </ScrollView>
   );
 }

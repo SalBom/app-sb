@@ -28,6 +28,9 @@ const linking: LinkingOptions<RootStackParamList> = {
   config: {
     screens: {
       Login: 'login',
+      // Pública: la abre con el link quien saca las fotos de los repuestos.
+      // No pasa por el gating de sesión porque la URL matchea esta pantalla.
+      CargaFotos: 'carga-fotos',
       FacturaPDF: 'factura-pdf',
       ProductoDetalle: 'producto/:id',
       DashboardVendedor: 'dashboard-vendedor',

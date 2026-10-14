@@ -7238,6 +7238,303 @@ def admin_ofertas_pdf_crear():
     return jsonify({"ok": True, "creadas": creadas, "resultados": resultados})
 
 
+# ═══════════════════════════════════════════════════════════════
+# CARGA DE FOTOS POR LINK (para quien saca las fotos)
+# ═══════════════════════════════════════════════════════════════
+# El que saca las fotos de los repuestos no tiene usuario en la app ni tiene por
+# qué aprender el panel. Se le manda UN link con una llave adentro; lo abre en el
+# celular, busca el repuesto, saca la foto y listo: llega a Firebase ya como
+# .webp y con el nombre correcto, sin WhatsApp y sin que nadie renombre nada.
+#
+# El fondo se le saca en el navegador de esa persona (@imgly/background-removal,
+# el mismo que ya usa el Home), así que no hay API ni costo por foto.
+#
+# La llave se genera desde el panel de admin, dura lo que se le diga y se puede
+# dar de baja. Es un secreto compartido, no una sesión: quien tenga el link puede
+# subir fotos, por eso vence y lleva un tope de subidas.
+_CARGA_TOPE_SUBIDAS = 2000
+_CARGA_MAX_BYTES = 25 * 1024 * 1024
+
+
+def init_carga_fotos_table():
+    if not DATABASE_URL: return
+    conn = get_pg_connection()
+    if not conn: return
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS carga_fotos_links (
+                token    TEXT PRIMARY KEY,
+                etiqueta TEXT        NOT NULL DEFAULT '',      -- para quién es el link
+                creado   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                vence    TIMESTAMPTZ,                          -- NULL = no vence
+                activo   BOOLEAN     NOT NULL DEFAULT TRUE,
+                subidas  INTEGER     NOT NULL DEFAULT 0,
+                ultima   TIMESTAMPTZ
+            );
+        """)
+        conn.commit()
+        cur.close()
+        log.info("✅ Tabla 'carga_fotos_links' lista.")
+    except Exception as e:
+        if conn: conn.rollback()
+        log.error(f"⚠️ Init carga_fotos_links Error: {e}")
+    finally:
+        if conn: conn.close()
+
+init_carga_fotos_table()
+
+
+def _carga_link(token):
+    """Fila del link si la llave sirve (activa, sin vencer y con cupo); si no, None."""
+    token = (token or "").strip()
+    if not token or len(token) > 100 or not DATABASE_URL:
+        return None
+    conn = get_pg_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT token, etiqueta, vence, activo, subidas FROM carga_fotos_links "
+            "WHERE token = %s AND activo = TRUE "
+            "AND (vence IS NULL OR vence > now()) AND subidas < %s",
+            (token, _CARGA_TOPE_SUBIDAS))
+        row = cur.fetchone()
+        cur.close()
+        return dict(row) if row else None
+    except Exception as e:
+        log.error(f"Error leyendo link de carga: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def _carga_sumar_subida(token):
+    conn = get_pg_connection()
+    if not conn:
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE carga_fotos_links SET subidas = subidas + 1, ultima = now() "
+                    "WHERE token = %s", (token,))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn: conn.rollback()
+        log.warning(f"No pude contar la subida del link: {e}")
+    finally:
+        conn.close()
+
+
+def _carga_fotos_de(sku):
+    """(cuántas fotos tiene ya, próximo lugar libre) para ese SKU en Firebase."""
+    try:
+        nombres = _gcs_existentes(f"products/{sku}/", ttl=15)
+    except Exception as e:
+        log.warning(f"No pude listar las fotos de {sku}: {e}")
+        return 0, 0
+    if f"products/{sku}/{sku}.webp" not in nombres:
+        return 0, 0  # todavía no tiene la principal
+    total = 1
+    libre = None
+    for i in range(1, _MEDIA_MAX_EXTRAS + 1):
+        if f"products/{sku}/{sku}_{i}.webp" in nombres:
+            total += 1
+        elif libre is None:
+            libre = i
+    return total, (libre if libre is not None else -1)
+
+
+@app.route('/carga-fotos/estado', methods=['GET'])
+def carga_fotos_estado():
+    """¿Sirve este link? Lo consulta la pantalla al abrirse."""
+    link = _carga_link(request.args.get('k'))
+    if not link:
+        return jsonify({"ok": False,
+                        "error": "Este link no sirve más. Pedile uno nuevo a Sal-Bom."}), 403
+    return jsonify({"ok": True, "etiqueta": link.get("etiqueta") or "",
+                    "subidas": link.get("subidas") or 0})
+
+
+@app.route('/carga-fotos/productos', methods=['GET'])
+def carga_fotos_productos():
+    """Busca repuestos por nombre o por código, para elegirlos de una lista."""
+    if not _carga_link(request.args.get('k')):
+        return jsonify({"error": "Este link no sirve más."}), 403
+    q = (request.args.get('q') or "").strip()
+    if len(q) < 2:
+        return jsonify({"items": []})
+
+    def _op(client):
+        return client.env['product.template'].search_read(
+            ['|', ('name', 'ilike', q), ('default_code', 'ilike', q)],
+            ['id', 'name', 'default_code'], order='default_code asc', limit=25)
+    try:
+        with odoo_access():
+            filas = execute_odoo_operation(_op) or []
+    except Exception as e:
+        log.error(f"❌ carga-fotos buscar: {e}")
+        return jsonify({"error": "No se pudo buscar en el catálogo."}), 502
+
+    items = [{"id": f["id"], "sku": (f.get("default_code") or "").strip(),
+              "nombre": f.get("name") or ""}
+             for f in filas if (f.get("default_code") or "").strip()]
+    return jsonify({"items": items})
+
+
+@app.route('/carga-fotos/producto', methods=['GET'])
+def carga_fotos_producto():
+    """Cuántas fotos tiene ya ese SKU (para avisar antes de sacar otra)."""
+    if not _carga_link(request.args.get('k')):
+        return jsonify({"error": "Este link no sirve más."}), 403
+    sku = (request.args.get('sku') or "").strip()
+    if _media_sku_invalido(sku):
+        return jsonify({"error": _media_sku_invalido(sku)}), 400
+    total, libre = _carga_fotos_de(sku)
+    # Avisamos si el código todavía no existe en Odoo: la foto se sube igual
+    # (aparece sola cuando den de alta el repuesto), pero conviene chequearlo.
+    en_odoo = True
+    try:
+        catalogo = _media_catalogo_skus()
+        if catalogo:
+            resuelto, _ = _media_resolver_sku(sku, _media_indices(catalogo))
+            en_odoo = bool(resuelto)
+    except Exception:
+        pass
+    return jsonify({"sku": sku, "fotos": total, "proximo": libre, "en_odoo": en_odoo})
+
+
+@app.route('/carga-fotos/subir', methods=['POST'])
+def carga_fotos_subir():
+    """Sube UNA foto. La pantalla manda de a una para ir mostrando el avance."""
+    token = request.form.get('k')
+    link = _carga_link(token)
+    if not link:
+        return jsonify({"error": "Este link no sirve más. Pedile uno nuevo a Sal-Bom."}), 403
+
+    sku = (request.form.get('sku') or "").strip()
+    invalido = _media_sku_invalido(sku)
+    if invalido:
+        return jsonify({"error": invalido}), 400
+
+    f = request.files.get('archivo')
+    if not f:
+        return jsonify({"error": "No llegó ninguna foto."}), 400
+    contenido = f.read(_CARGA_MAX_BYTES + 1)
+    if len(contenido) > _CARGA_MAX_BYTES:
+        return jsonify({"error": "La foto pesa más de 25 MB."}), 413
+    if not contenido:
+        return jsonify({"error": "La foto llegó vacía."}), 400
+
+    # Lugar donde va: la principal si todavía no tiene, si no la siguiente libre.
+    total, libre = _carga_fotos_de(sku)
+    slot = 0 if total == 0 else libre
+    if slot is None or slot < 0:
+        return jsonify({"error": f"{sku} ya tiene todas las fotos ({_MEDIA_MAX_EXTRAS + 1}). "
+                                 "Avisale a Sal-Bom si hay que reemplazar alguna."}), 409
+
+    try:
+        payload = _media_a_webp(contenido, 2000)
+        destino = _media_destino("fotos", sku, slot)
+        _gcs_subir(destino, payload, "image/webp")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        log.error(f"⚠️ carga-fotos subir {sku}: {e}")
+        return jsonify({"error": "No se pudo guardar la foto. Probá de nuevo."}), 502
+
+    _carga_sumar_subida(token)
+    log.info(f"📸 Foto por link ({link.get('etiqueta') or 'sin etiqueta'}): {destino}")
+    return jsonify({"ok": True, "sku": sku, "slot": slot, "principal": slot == 0,
+                    "fotos": total + 1, "url": fb_url(destino)})
+
+
+# --- ADMIN: links de carga ---
+
+@app.route('/admin/carga-fotos/links', methods=['GET'])
+def admin_carga_fotos_listar():
+    if not _cuit_is_admin(request.args.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    conn = get_pg_connection()
+    if not conn:
+        return jsonify({"error": "Sin base de datos."}), 500
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        # El vencimiento lo resuelve Postgres: así no dependemos de la hora del
+        # servidor ni de comparar fechas con y sin zona horaria.
+        cur.execute("SELECT token, etiqueta, creado, vence, activo, subidas, ultima, "
+                    "(vence IS NOT NULL AND vence <= now()) AS vencido "
+                    "FROM carga_fotos_links ORDER BY creado DESC LIMIT 50")
+        filas = [dict(r) for r in cur.fetchall()]
+        cur.close()
+    except Exception as e:
+        log.error(f"❌ listar links de carga: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+    for f in filas:
+        for campo in ("creado", "vence", "ultima"):
+            f[campo] = f[campo].isoformat() if f.get(campo) else None
+    return jsonify({"items": filas})
+
+
+@app.route('/admin/carga-fotos/links', methods=['POST'])
+def admin_carga_fotos_crear():
+    data = request.get_json(silent=True) or {}
+    if not _cuit_is_admin(data.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    import secrets
+    etiqueta = str(data.get('etiqueta') or "").strip()[:80]
+    try:
+        dias = int(data.get('dias') or 30)
+    except Exception:
+        dias = 30
+    dias = max(1, min(dias, 365))
+    token = secrets.token_urlsafe(18)
+
+    conn = get_pg_connection()
+    if not conn:
+        return jsonify({"error": "Sin base de datos."}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO carga_fotos_links (token, etiqueta, vence) "
+                    "VALUES (%s, %s, now() + make_interval(days => %s))",
+                    (token, etiqueta, dias))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn: conn.rollback()
+        log.error(f"❌ crear link de carga: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+    log.info(f"🔗 Link de carga de fotos creado para '{etiqueta or 'sin etiqueta'}' ({dias} días).")
+    return jsonify({"ok": True, "token": token, "dias": dias})
+
+
+@app.route('/admin/carga-fotos/links/<token>', methods=['DELETE'])
+def admin_carga_fotos_baja(token):
+    if not _cuit_is_admin(request.args.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    conn = get_pg_connection()
+    if not conn:
+        return jsonify({"error": "Sin base de datos."}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE carga_fotos_links SET activo = FALSE WHERE token = %s", (token,))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn: conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
+
+
 # ─────────────────────────── Run ──────────────────────────────
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

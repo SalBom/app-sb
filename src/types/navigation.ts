@@ -20,4 +20,5 @@ export type RootStackParamList = {
     AdminBanners: undefined;
     AdminPlazos: undefined;
     Favoritos: undefined;
+    CargaFotos: undefined;
 };  

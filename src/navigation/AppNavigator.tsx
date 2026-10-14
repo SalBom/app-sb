@@ -45,6 +45,7 @@ import AdminNuevaPromo from '../screens/AdminNuevaPromo';
 import DashboardAdministrador from '../screens/DashboardAdministrador';
 import AdminBanners from '../screens/AdminBanners';
 import AdminPlazos from '../screens/AdminPlazos';
+import CargaFotos from '../screens/CargaFotos';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -220,7 +221,10 @@ const AppNavigator = () => {
     return <View style={{ flex: 1, backgroundColor: '#fff' }} />;
   }
 
-  const showSidebar = isDesktopWeb && !!currentRouteName && currentRouteName !== 'Login';
+  // La carga de fotos es una pantalla pública (la abre gente de afuera con un
+  // link): va sin sidebar, igual que el login.
+  const showSidebar = isDesktopWeb && !!currentRouteName
+    && currentRouteName !== 'Login' && currentRouteName !== 'CargaFotos';
 
   return (
     <View style={{ flex: 1, flexDirection: 'row' }}>
@@ -235,6 +239,7 @@ const AppNavigator = () => {
           }}
         >
           <Stack.Screen name="Login" component={Login} options={{ headerShown: false }} />
+          <Stack.Screen name="CargaFotos" component={CargaFotos} options={{ headerShown: false }} />
           <Stack.Screen name="FacturaPDF" component={FacturaPDF} />
           <Stack.Screen name="ProductoDetalle" component={ProductoDetalle} />
           <Stack.Screen name="DashboardVendedor" component={DashboardVendedor} />
