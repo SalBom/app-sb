@@ -7392,7 +7392,8 @@ def carga_fotos_productos():
     # Primero los que coinciden por código: si alguien escribe un SKU, lo quiere a él.
     elegidos = sorted(porSku, key=lambda x: x[0])[:25]
     elegidos += sorted(porNombre, key=lambda x: x[0])[:25 - len(elegidos)]
-    return jsonify({"items": [{"id": d["id"], "sku": sku, "nombre": d.get("name") or ""}
+    return jsonify({"items": [{"id": d["id"], "sku": sku, "nombre": d.get("name") or "",
+                               "precio": d.get("list_price")}
                               for sku, d in elegidos]})
 
 
@@ -7415,7 +7416,9 @@ def carga_fotos_producto():
             en_odoo = bool(resuelto)
     except Exception:
         pass
-    return jsonify({"sku": sku, "fotos": total, "proximo": libre, "en_odoo": en_odoo})
+    datos = (_catalogo_por_sku() or {}).get(sku) or {}
+    return jsonify({"sku": sku, "fotos": total, "proximo": libre, "en_odoo": en_odoo,
+                    "precio": datos.get("list_price"), "nombre": datos.get("name") or ""})
 
 
 @app.route('/carga-fotos/subir', methods=['POST'])
@@ -7547,6 +7550,133 @@ def admin_carga_fotos_baja(token):
         conn.close()
     return jsonify({"ok": True})
 
+
+
+# --- CONTEO DE STOCK (solo anotado, NO toca Odoo) ---
+# Mientras saca las fotos, la persona cuenta lo que hay. Eso se anota acá y el
+# admin lo mira después contra lo que dice el sistema. A propósito NO se escribe
+# en Odoo: el que carga fotos no mueve stock, solo deja constancia de lo contado.
+
+def init_conteos_stock_table():
+    if not DATABASE_URL: return
+    conn = get_pg_connection()
+    if not conn: return
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (815424,))
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS conteos_stock (
+                id       BIGSERIAL PRIMARY KEY,
+                sku      TEXT        NOT NULL,
+                cantidad NUMERIC(12,2) NOT NULL,
+                token    TEXT,                       -- con qué link se cargó
+                etiqueta TEXT        NOT NULL DEFAULT '',   -- quién lo contó
+                creado   TIMESTAMPTZ NOT NULL DEFAULT now()
+            );
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS conteos_stock_sku_idx ON conteos_stock (sku);")
+        conn.commit()
+        cur.close()
+        log.info("✅ Tabla 'conteos_stock' lista.")
+    except Exception as e:
+        if conn: conn.rollback()
+        log.error(f"⚠️ Init conteos_stock Error: {e}")
+    finally:
+        if conn: conn.close()
+
+init_conteos_stock_table()
+
+
+@app.route('/carga-fotos/conteo', methods=['POST'])
+def carga_fotos_conteo():
+    """Anota cuántas unidades contó. No modifica el stock de Odoo."""
+    data = request.get_json(silent=True) or {}
+    link = _carga_link(data.get('k'))
+    if not link:
+        return jsonify({"error": "Este link no sirve más."}), 403
+
+    sku = (data.get('sku') or "").strip()
+    if _media_sku_invalido(sku):
+        return jsonify({"error": _media_sku_invalido(sku)}), 400
+    try:
+        cantidad = float(str(data.get('cantidad')).replace(',', '.'))
+    except Exception:
+        return jsonify({"error": "Poné un número."}), 400
+    if cantidad < 0 or cantidad > 1_000_000:
+        return jsonify({"error": "Esa cantidad no puede ser."}), 400
+
+    conn = get_pg_connection()
+    if not conn:
+        return jsonify({"error": "No se pudo guardar. Probá de nuevo."}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO conteos_stock (sku, cantidad, token, etiqueta) "
+                    "VALUES (%s, %s, %s, %s)",
+                    (sku, cantidad, link.get('token'), link.get('etiqueta') or ''))
+        conn.commit()
+        cur.close()
+    except Exception as e:
+        if conn: conn.rollback()
+        log.error(f"❌ guardar conteo {sku}: {e}")
+        return jsonify({"error": "No se pudo guardar. Probá de nuevo."}), 500
+    finally:
+        conn.close()
+
+    log.info(f"🔢 Conteo anotado: {sku} = {cantidad} ({link.get('etiqueta') or 'sin etiqueta'})")
+    return jsonify({"ok": True, "sku": sku, "cantidad": cantidad})
+
+
+@app.route('/admin/carga-fotos/conteos', methods=['GET'])
+def admin_carga_fotos_conteos():
+    """Lo contado, lo más nuevo primero, al lado de lo que dice el sistema."""
+    if not _cuit_is_admin(request.args.get('cuit')):
+        return jsonify({"error": "No autorizado"}), 403
+    conn = get_pg_connection()
+    if not conn:
+        return jsonify({"error": "Sin base de datos."}), 500
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT id, sku, cantidad, etiqueta, creado FROM conteos_stock "
+                    "ORDER BY creado DESC LIMIT 300")
+        filas = [dict(r) for r in cur.fetchall()]
+        cur.close()
+    except Exception as e:
+        log.error(f"❌ listar conteos: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+    catalogo = _catalogo_por_sku() or {}
+    ids = {catalogo[f["sku"]]["id"] for f in filas if f["sku"] in catalogo}
+
+    # Stock del sistema, para poder comparar. Si Odoo no contesta, la lista sale
+    # igual: lo contado es el dato importante y ya está guardado.
+    stock = {}
+    if ids:
+        try:
+            with odoo_access():
+                mapa = execute_odoo_operation(
+                    lambda c: _compute_stock_states(c, [{"id": i} for i in ids])) or {}
+            stock = {i: (d or {}).get("quantity") for i, d in mapa.items()}
+        except Exception as e:
+            log.warning(f"No pude traer el stock del sistema para los conteos: {e}")
+
+    items = []
+    for f in filas:
+        datos = catalogo.get(f["sku"]) or {}
+        pid = datos.get("id")
+        items.append({
+            "id": f["id"],
+            "sku": f["sku"],
+            "nombre": datos.get("name") or "",
+            "precio": datos.get("list_price"),
+            "contado": float(f["cantidad"]),
+            "sistema": stock.get(pid),
+            "quien": f["etiqueta"] or "",
+            "cuando": f["creado"].isoformat() if f.get("creado") else None,
+            "en_odoo": bool(datos),
+        })
+    return jsonify({"items": items})
 
 # ─────────────────────────── Run ──────────────────────────────
 if __name__ == "__main__":

@@ -24,11 +24,32 @@ type Link = {
   ultima: string | null;
 };
 
+type Conteo = {
+  id: number;
+  sku: string;
+  nombre: string;
+  precio: number | null;
+  contado: number;
+  sistema: number | null;
+  quien: string;
+  cuando: string | null;
+  en_odoo: boolean;
+};
+
 const fecha = (iso: string | null) => {
   if (!iso) return '—';
   const d = new Date(iso);
   return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
 };
+
+const cuando = (iso: string | null) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return `${fecha(iso)} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+};
+
+const num = (n: number | null | undefined) =>
+  n == null ? '—' : Number(n).toLocaleString('es-AR', { maximumFractionDigits: 2 });
 
 const urlDe = (token: string) =>
   typeof window === 'undefined' ? '' : `${window.location.origin}/carga-fotos?k=${token}`;
@@ -42,6 +63,9 @@ const CargaFotosLinksModal = ({ visible, onClose }: { visible: boolean; onClose:
   const [dias, setDias] = useState('30');
   const [error, setError] = useState('');
   const [copiado, setCopiado] = useState('');
+  const [solapa, setSolapa] = useState<'links' | 'conteos'>('links');
+  const [conteos, setConteos] = useState<Conteo[]>([]);
+  const [cargandoConteos, setCargandoConteos] = useState(false);
 
   const cargar = useCallback(async () => {
     setCargando(true); setError('');
@@ -56,7 +80,21 @@ const CargaFotosLinksModal = ({ visible, onClose }: { visible: boolean; onClose:
     }
   }, []);
 
+  const cargarConteos = useCallback(async () => {
+    setCargandoConteos(true); setError('');
+    try {
+      const cuit = await getCuitFromStorage();
+      const r = await axios.get(`${API_URL}/admin/carga-fotos/conteos`, { params: { cuit } });
+      setConteos(r.data?.items || []);
+    } catch (e: any) {
+      setError(e?.response?.data?.error || 'No se pudieron cargar los conteos.');
+    } finally {
+      setCargandoConteos(false);
+    }
+  }, []);
+
   useEffect(() => { if (visible) cargar(); }, [visible, cargar]);
+  useEffect(() => { if (visible && solapa === 'conteos') cargarConteos(); }, [visible, solapa, cargarConteos]);
 
   const crear = async () => {
     if (creando) return;
@@ -109,13 +147,79 @@ const CargaFotosLinksModal = ({ visible, onClose }: { visible: boolean; onClose:
         <View style={[s.card, isDesktopWeb ? s.cardDesktop : s.cardMobile]}>
           <View style={s.header}>
             <Feather name="camera" size={18} color="#1C9BD8" />
-            <Text style={s.title} numberOfLines={1}>Links para cargar fotos</Text>
+            <Text style={s.title} numberOfLines={1}>Carga de fotos y stock</Text>
             <Pressable onPress={onClose} hitSlop={8}>
               <Feather name="x" size={20} color="#6B7280" />
             </Pressable>
           </View>
 
+          <View style={s.solapas}>
+            {([['links', 'Links'], ['conteos', 'Stock contado']] as const).map(([clave, texto]) => (
+              <Pressable key={clave} onPress={() => setSolapa(clave)}
+                style={[s.solapa, solapa === clave && s.solapaActiva]}>
+                <Text style={[s.solapaText, solapa === clave && s.solapaTextActiva]}>{texto}</Text>
+              </Pressable>
+            ))}
+          </View>
+
           <ScrollView style={s.body} contentContainerStyle={{ paddingBottom: 10 }} keyboardShouldPersistTaps="handled">
+            {solapa === 'conteos' ? (
+              <>
+                <View style={s.ayuda}>
+                  <Feather name="info" size={13} color="#1C9BD8" />
+                  <Text style={s.ayudaText}>
+                    Lo que fue contando quien saca las fotos, de lo más nuevo a lo más viejo.
+                    Es solo una anotación: el stock de Odoo no se toca desde ahí. Al lado está
+                    lo que dice el sistema para que puedas comparar.
+                  </Text>
+                </View>
+
+                <View style={s.listaHeader}>
+                  <Text style={s.paso}>CONTEOS ({conteos.length})</Text>
+                  {cargandoConteos && <ActivityIndicator size="small" color="#1C9BD8" />}
+                  <View style={{ flex: 1 }} />
+                  <Pressable onPress={cargarConteos}>
+                    <Text style={s.recargar}>Actualizar</Text>
+                  </Pressable>
+                </View>
+
+                {!conteos.length && !cargandoConteos && (
+                  <Text style={s.vacio}>Todavía nadie anotó un conteo.</Text>
+                )}
+
+                {conteos.map((c) => {
+                  const dif = c.sistema == null ? null : c.contado - c.sistema;
+                  return (
+                    <View key={c.id} style={s.fila}>
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={s.filaNombre}>{c.sku}</Text>
+                        <Text style={s.filaDetalle} numberOfLines={1}>
+                          {c.nombre || (c.en_odoo ? '' : 'No está en Odoo')}
+                        </Text>
+                        <Text style={s.filaDetalle}>
+                          {c.quien ? `${c.quien} · ` : ''}{cuando(c.cuando)}
+                        </Text>
+                      </View>
+                      <View style={s.celdaNum}>
+                        <Text style={s.celdaLabel}>Contó</Text>
+                        <Text style={s.celdaValor}>{num(c.contado)}</Text>
+                      </View>
+                      <View style={s.celdaNum}>
+                        <Text style={s.celdaLabel}>Sistema</Text>
+                        <Text style={s.celdaValorGris}>{num(c.sistema)}</Text>
+                      </View>
+                      <View style={s.celdaNum}>
+                        <Text style={s.celdaLabel}>Dif.</Text>
+                        <Text style={[s.celdaValor, dif == null ? s.celdaValorGris : dif === 0 ? s.difCero : dif > 0 ? s.difMas : s.difMenos]}>
+                          {dif == null ? '—' : dif > 0 ? `+${num(dif)}` : num(dif)}
+                        </Text>
+                      </View>
+                    </View>
+                  );
+                })}
+              </>
+            ) : (
+              <>
             <View style={s.ayuda}>
               <Feather name="info" size={13} color="#1C9BD8" />
               <Text style={s.ayudaText}>
@@ -194,6 +298,8 @@ const CargaFotosLinksModal = ({ visible, onClose }: { visible: boolean; onClose:
                 </View>
               );
             })}
+              </>
+            )}
           </ScrollView>
 
           <View style={s.footer}>
@@ -244,6 +350,20 @@ const s = StyleSheet.create({
   copiarBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, height: 34, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: '#1C9BD8' },
   copiarText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#1C9BD8' },
   bajaBtn: { padding: 6 },
+
+  solapas: { flexDirection: 'row', gap: 6, paddingHorizontal: 18, paddingTop: 12, borderBottomWidth: 1, borderBottomColor: '#F0F0F0' },
+  solapa: { paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 2, borderBottomColor: 'transparent' },
+  solapaActiva: { borderBottomColor: '#1C9BD8' },
+  solapaText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#8A8A8A' },
+  solapaTextActiva: { color: '#1C9BD8' },
+  recargar: { fontFamily: 'Rubik', fontSize: 12, color: '#1C9BD8', textDecorationLine: 'underline', marginBottom: 8 },
+  celdaNum: { width: 68, alignItems: 'flex-end' },
+  celdaLabel: { fontFamily: 'Rubik', fontSize: 10, color: '#9CA3AF' },
+  celdaValor: { fontFamily: 'BarlowCondensed-Bold', fontSize: 17, color: '#2B2B2B' },
+  celdaValorGris: { fontFamily: 'BarlowCondensed-Bold', fontSize: 17, color: '#9CA3AF' },
+  difCero: { color: '#15803D' },
+  difMas: { color: '#1D4ED8' },
+  difMenos: { color: '#B91C1C' },
 
   footer: { paddingHorizontal: 18, paddingVertical: 12, borderTopWidth: 1, borderTopColor: '#F0F0F0', alignItems: 'flex-end' },
   close: { height: 42, paddingHorizontal: 22, borderRadius: 999, borderWidth: 1, borderColor: '#D3D6DB', alignItems: 'center', justifyContent: 'center' },
