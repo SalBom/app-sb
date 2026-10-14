@@ -59,6 +59,8 @@ export default function CargaFotos() {
   const [buscando, setBuscando] = useState(false);
   const [elegido, setElegido] = useState<Producto | null>(null);
   const [infoSku, setInfoSku] = useState<{ fotos: number; en_odoo: boolean } | null>(null);
+  const [aMano, setAMano] = useState('');          // código escrito a mano
+  const [modoAMano, setModoAMano] = useState(false);
 
   const [sinFondo, setSinFondo] = useState(true);
   const [preparando, setPreparando] = useState('');
@@ -102,6 +104,7 @@ export default function CargaFotos() {
 
   const elegir = async (p: Producto) => {
     setElegido(p); setResultados([]); setBusqueda(''); setInfoSku(null); setError('');
+    setModoAMano(false); setAMano('');
     try {
       const r = await axios.get(`${API_URL}/carga-fotos/producto`, { params: { k: llave, sku: p.sku } });
       setInfoSku({ fotos: r.data?.fotos || 0, en_odoo: r.data?.en_odoo !== false });
@@ -230,6 +233,41 @@ export default function CargaFotos() {
           {busqueda.trim().length >= 2 && !buscando && !resultados.length && (
             <Text style={s.vacio}>No encontré nada con eso. Probá con el código.</Text>
           )}
+
+          {/* Salida de emergencia: un repuesto recién dado de alta puede tardar
+              unos minutos en aparecer en el buscador. Con el código a mano se
+              puede sacar la foto igual; se guarda y aparece cuando el sistema
+              se ponga al día. */}
+          {!modoAMano ? (
+            <Pressable onPress={() => setModoAMano(true)} style={s.aManoLink}>
+              <Feather name="edit-3" size={14} color="#1C9BD8" />
+              <Text style={s.aManoLinkText}>No lo encuentro · escribir el código a mano</Text>
+            </Pressable>
+          ) : (
+            <View style={s.aManoCaja}>
+              <Text style={s.campoLabel}>Código del repuesto</Text>
+              <TextInput
+                style={s.aManoInput}
+                value={aMano}
+                onChangeText={(t) => setAMano(t.toUpperCase().trim())}
+                placeholder="Ej: RP-CARB-52"
+                placeholderTextColor="#9CA3AF"
+                autoCapitalize="characters"
+                autoCorrect={false}
+              />
+              <View style={s.aManoBotones}>
+                <Pressable onPress={() => { setModoAMano(false); setAMano(''); }}>
+                  <Text style={s.aManoCancelar}>Cancelar</Text>
+                </Pressable>
+                <Pressable
+                  style={[s.aManoUsar, !aMano && s.aManoUsarOff]}
+                  disabled={!aMano}
+                  onPress={() => elegir({ id: 0, sku: aMano, nombre: 'Código escrito a mano' })}>
+                  <Text style={s.aManoUsarText}>Usar este código</Text>
+                </Pressable>
+              </View>
+            </View>
+          )}
         </>
       ) : (
         <>
@@ -341,6 +379,17 @@ const s = StyleSheet.create({
   resultadoSku: { fontFamily: 'BarlowCondensed-Bold', fontSize: 16, color: '#1C9BD8' },
   resultadoNombre: { fontFamily: 'Rubik', fontSize: 14, color: '#2B2B2B', marginTop: 2 },
   vacio: { fontFamily: 'Rubik', fontSize: 13, color: '#9CA3AF', marginTop: 14, textAlign: 'center' },
+
+  aManoLink: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, paddingVertical: 18 },
+  aManoLinkText: { fontFamily: 'Rubik', fontSize: 13, color: '#1C9BD8', textDecorationLine: 'underline' },
+  aManoCaja: { backgroundColor: '#F9FAFB', borderRadius: 12, padding: 14, marginTop: 16, gap: 6 },
+  campoLabel: { fontFamily: 'Rubik', fontSize: 11, color: '#6B7280' },
+  aManoInput: { height: 48, borderWidth: 1, borderColor: '#D3D6DB', borderRadius: 10, paddingHorizontal: 12, fontFamily: 'BarlowCondensed-Bold', fontSize: 18, color: '#2B2B2B', backgroundColor: '#FFFFFF' },
+  aManoBotones: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 16, marginTop: 6 },
+  aManoCancelar: { fontFamily: 'Rubik', fontSize: 13, color: '#6B7280' },
+  aManoUsar: { height: 42, paddingHorizontal: 18, borderRadius: 999, backgroundColor: '#1C9BD8', alignItems: 'center', justifyContent: 'center' },
+  aManoUsarOff: { backgroundColor: '#A7D8F0' },
+  aManoUsarText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#FFFFFF' },
 
   elegido: { flexDirection: 'row', alignItems: 'flex-start', gap: 12, backgroundColor: '#EAF6FC', borderRadius: 12, padding: 14, marginTop: 6 },
   elegidoSku: { fontFamily: 'BarlowCondensed-Bold', fontSize: 18, color: '#1C9BD8' },

@@ -6942,9 +6942,13 @@ def _ofertas_fecha(v):
         return None
 
 
-def _ofertas_catalogo():
-    """{SKU: {'id','name','list_price'}} de las plantillas de Odoo (cacheado 10 min)."""
-    ck = "ofertas_catalogo_tmpl_v1"
+def _catalogo_por_sku():
+    """
+    {SKU: {'id','name','list_price'}} de las plantillas de Odoo, cacheado 10 min.
+    Lo usan la carga de ofertas y el buscador de la página de fotos: así ninguno
+    de los dos pega contra Odoo en cada tecla que escribe el usuario.
+    """
+    ck = "catalogo_tmpl_v1"
     cached = cache_get(ck)
     if cached:
         return cached
@@ -7012,7 +7016,7 @@ def _ofertas_resolver(skus_pdf, catalogo=None):
     Cruza los códigos que leyó la IA contra Odoo. Devuelve una lista en el mismo
     orden, con el producto encontrado y el estado de cada uno.
     """
-    catalogo = catalogo if catalogo is not None else _ofertas_catalogo()
+    catalogo = catalogo if catalogo is not None else _catalogo_por_sku()
     if not catalogo:
         return [{"sku": s, "producto_id": None, "producto": "", "precio_lista": None,
                  "estado": "error", "mensaje": "No se pudo leer el catálogo de Odoo."}
@@ -7122,7 +7126,7 @@ def admin_ofertas_pdf_analizar():
                 "iva": _ofertas_numero(of.get("iva")),
             })
 
-    catalogo = _ofertas_catalogo()
+    catalogo = _catalogo_por_sku()
     resueltos = _ofertas_resolver([c["sku_pdf"] for c in crudas], catalogo)
     reglas = _ofertas_reglas_vigentes({r["producto_id"] for r in resueltos if r["producto_id"]})
 
@@ -7153,7 +7157,7 @@ def admin_ofertas_pdf_resolver():
     if not _cuit_is_admin(data.get('cuit')):
         return jsonify({"error": "No autorizado"}), 403
     skus = [str(s or "").strip() for s in (data.get('skus') or [])][:200]
-    catalogo = _ofertas_catalogo()
+    catalogo = _catalogo_por_sku()
     resueltos = _ofertas_resolver(skus, catalogo)
     reglas = _ofertas_reglas_vigentes({r["producto_id"] for r in resueltos if r["producto_id"]})
     for r in resueltos:
@@ -7262,6 +7266,10 @@ def init_carga_fotos_table():
     if not conn: return
     try:
         cur = conn.cursor()
+        # Los 3 workers de gunicorn arrancan a la vez y CREATE TABLE IF NOT EXISTS
+        # no es a prueba de carreras: dos a la vez chocan en pg_type. Con este
+        # candado entran de a uno y el segundo ya encuentra la tabla hecha.
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (815423,))
         cur.execute("""
             CREATE TABLE IF NOT EXISTS carga_fotos_links (
                 token    TEXT PRIMARY KEY,
@@ -7366,21 +7374,26 @@ def carga_fotos_productos():
     if len(q) < 2:
         return jsonify({"items": []})
 
-    def _op(client):
-        return client.env['product.template'].search_read(
-            ['|', ('name', 'ilike', q), ('default_code', 'ilike', q)],
-            ['id', 'name', 'default_code'], order='default_code asc', limit=25)
-    try:
-        with odoo_access():
-            filas = execute_odoo_operation(_op) or []
-    except Exception as e:
-        log.error(f"❌ carga-fotos buscar: {e}")
-        return jsonify({"error": "No se pudo buscar en el catálogo."}), 502
+    # Se filtra el catálogo CACHEADO, no se consulta Odoo. El buscador dispara una
+    # llamada por cada tecla: si cada una fuera a Odoo, tomaría el candado global
+    # y haría esperar al resto de la app (pedidos, catálogo, login).
+    catalogo = _catalogo_por_sku()
+    if not catalogo:
+        return jsonify({"error": "No se pudo leer el catálogo. Probá de nuevo en un minuto."}), 502
 
-    items = [{"id": f["id"], "sku": (f.get("default_code") or "").strip(),
-              "nombre": f.get("name") or ""}
-             for f in filas if (f.get("default_code") or "").strip()]
-    return jsonify({"items": items})
+    objetivo = q.lower()
+    porSku, porNombre = [], []
+    for sku, datos in catalogo.items():
+        if objetivo in sku.lower():
+            porSku.append((sku, datos))
+        elif objetivo in (datos.get("name") or "").lower():
+            porNombre.append((sku, datos))
+
+    # Primero los que coinciden por código: si alguien escribe un SKU, lo quiere a él.
+    elegidos = sorted(porSku, key=lambda x: x[0])[:25]
+    elegidos += sorted(porNombre, key=lambda x: x[0])[:25 - len(elegidos)]
+    return jsonify({"items": [{"id": d["id"], "sku": sku, "nombre": d.get("name") or ""}
+                              for sku, d in elegidos]})
 
 
 @app.route('/carga-fotos/producto', methods=['GET'])
