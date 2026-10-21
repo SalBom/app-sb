@@ -655,12 +655,15 @@ const Productos = () => {
             <FilterPill label="CATEGORÍA" IconStart={IconFunnel} IconEnd={IconChevronDown} onPress={() => setPickerModal('categoria')} active={!!categoriaSeleccionada} />
             <FilterPill label="MARCAS" IconStart={IconPuzzle} IconEnd={IconChevronDown} onPress={() => setPickerModal('marca')} active={!!marcaSeleccionada} />
             {!isGuest && soloOfertas && <FilterPill label="OFERTAS 🔥" active={true} onPress={() => setSoloOfertas(false)} />}
-            <FilterPill label="LIMPIAR" onPress={limpiarFiltros} active={false} />
+            {(!!categoriaSeleccionada || !!marcaSeleccionada || !!debouncedSearch || soloOfertas
+              || onlyStock || sortOption !== 'default') && (
+              <FilterPill label="LIMPIAR" onPress={limpiarFiltros} active={false} />
+            )}
           </ScrollView>
         </View>
         <Text style={styles.countText}>{loading || isResetting ? 'Cargando...' : `${productosProcesados.length} producto(s) encontrado(s)`}</Text>
       </View>
-  ), [banners, bannerIndex, sortOption, onlyStock, categoriaSeleccionada, marcaSeleccionada, soloOfertas, loading, isResetting, productosProcesados.length, isGuest]);
+  ), [banners, bannerIndex, sortOption, onlyStock, categoriaSeleccionada, marcaSeleccionada, debouncedSearch, soloOfertas, loading, isResetting, productosProcesados.length, isGuest]);
 
   const bottomPad = 64 + insets.bottom + 32 + 12;
   const showSkeleton = (loading && pagina === 0 && !refreshing) || isResetting;
@@ -703,6 +706,7 @@ const Productos = () => {
 
 
   const activeFilterLabel = useMemo(() => {
+    if (soloOfertas) return 'OFERTAS';
     if (categoriaSeleccionada) {
       const cat = categorias.find(c => String(c.id) === categoriaSeleccionada);
       if (cat) return cat.name.split(' / ').pop()!.toUpperCase();
@@ -713,7 +717,59 @@ const Productos = () => {
     }
     if (debouncedSearch) return `"${debouncedSearch}"`;
     return 'DESTACADOS';
-  }, [categoriaSeleccionada, marcaSeleccionada, debouncedSearch, categorias, marcas]);
+  }, [soloOfertas, categoriaSeleccionada, marcaSeleccionada, debouncedSearch, categorias, marcas]);
+
+  // Todos los filtros puestos, cada uno con la forma de sacarlo. Es lo que se
+  // dibuja arriba de la grilla: sin esto, un filtro que se prende desde otra
+  // pantalla (el botón "Ofertas" del menú) no se podía quitar desde el catálogo.
+  const filtrosActivos = useMemo(() => {
+    const lista: { clave: string; label: string; quitar: () => void }[] = [];
+    if (debouncedSearch) lista.push({
+      clave: 'busqueda', label: `"${debouncedSearch}"`,
+      quitar: () => { setSearchTerm(''); setDebouncedSearch(''); },
+    });
+    if (categoriaSeleccionada) {
+      const cat = categorias.find(c => String(c.id) === categoriaSeleccionada);
+      lista.push({
+        clave: 'categoria',
+        label: cat ? cat.name.split(' / ').pop()! : 'Categoría',
+        quitar: () => setCategoriaSeleccionada(''),
+      });
+    }
+    if (marcaSeleccionada) {
+      const m = marcas.find(mm => String(mm.id) === marcaSeleccionada);
+      lista.push({ clave: 'marca', label: m ? m.name : 'Marca', quitar: () => setMarcaSeleccionada('') });
+    }
+    if (soloOfertas) lista.push({ clave: 'ofertas', label: 'Ofertas', quitar: () => setSoloOfertas(false) });
+    if (onlyStock) lista.push({ clave: 'stock', label: 'Solo con stock', quitar: () => setOnlyStock(false) });
+    if (sortOption !== 'default') lista.push({
+      clave: 'orden', label: getSortLabel(), quitar: () => setSortOption('default'),
+    });
+    return lista;
+  }, [debouncedSearch, categoriaSeleccionada, marcaSeleccionada, soloOfertas, onlyStock, sortOption, categorias, marcas]);
+
+  // El filtro de ofertas se aplica sobre los productos YA traídos, así que puede
+  // dejar la página vacía aunque haya ofertas más adelante. Si pasa, se explica
+  // en vez de mostrar el cartel genérico de "no se encontraron productos".
+  const vacioPorOfertas = soloOfertas && productos.length > 0;
+
+  const renderSinResultados = () => (
+    <View style={{ alignItems: 'center' }}>
+      <EmptyState
+        title={vacioPorOfertas ? 'No hay ofertas en esta página' : 'No se encontraron productos'}
+        message={vacioPorOfertas
+          ? 'El filtro de ofertas mira los productos de esta página. Pasá a la siguiente o quitá el filtro.'
+          : 'Intenta ajustar los filtros o buscar con otro término.'}
+        icon="search"
+      />
+      {filtrosActivos.length > 0 && (
+        <Pressable style={styles.limpiarVacio} onPress={limpiarFiltros}>
+          <Feather name="x-circle" size={16} color="#FFFFFF" />
+          <Text style={styles.limpiarVacioText}>Quitar los filtros</Text>
+        </Pressable>
+      )}
+    </View>
+  );
 
   // ===========================================================================
   // VERSIÓN DESKTOP WEB — calco del diseño Figma "Productos - 4": hero oscuro +
@@ -790,12 +846,28 @@ const Productos = () => {
               </View>
             </View>
 
+            {filtrosActivos.length > 0 && (
+              <View style={dsty.filtrosBar}>
+                <Text style={dsty.filtrosTitulo}>Filtros</Text>
+                {filtrosActivos.map(f => (
+                  <Pressable key={f.clave} style={dsty.filtroChip} onPress={f.quitar}>
+                    <Text style={dsty.filtroChipText} numberOfLines={1}>{f.label}</Text>
+                    <Feather name="x" size={13} color="#1C9BD8" />
+                  </Pressable>
+                ))}
+                <Pressable style={dsty.limpiarTodo} onPress={limpiarFiltros}>
+                  <Feather name="x-circle" size={14} color="#B91C1C" />
+                  <Text style={dsty.limpiarTodoText}>Limpiar filtros</Text>
+                </Pressable>
+              </View>
+            )}
+
             {loading ? (
               <View style={[dsty.grid, esTotem() && totemSty.grid]}>
                 {[1,2,3,4,5,6,7,8].map(i => <View key={i} style={[dsty.gridCell, esTotem() && totemSty.gridCell, { height: 260, backgroundColor: '#F5F5F5', borderRadius: 12 }]} />)}
               </View>
             ) : productosProcesados.length === 0 ? (
-              <EmptyState title="No se encontraron productos" message="Intenta ajustar los filtros o buscar con otro término." icon="search" />
+              renderSinResultados()
             ) : (
               <View style={[dsty.grid, esTotem() && totemSty.grid]}>
                 {productosProcesados.map((item, index) => {
@@ -926,13 +998,7 @@ const Productos = () => {
                     columnWrapperStyle={viewMode === 'kanban' ? { justifyContent: 'space-between', paddingHorizontal: HEADER_PAD } : undefined}
                     ListHeaderComponent={headerContent}
                     ListEmptyComponent={
-                        !loading && !isResetting ? (
-                            <EmptyState 
-                                title="No se encontraron productos" 
-                                message="Intenta ajustar los filtros o buscar con otro término."
-                                icon="search"
-                            />
-                        ) : null
+                        !loading && !isResetting ? renderSinResultados() : null
                     }
                     contentContainerStyle={[
                         { paddingTop: 10, paddingBottom: bottomPad },
@@ -1072,6 +1138,9 @@ const Productos = () => {
 };
 
 const styles = StyleSheet.create({
+  limpiarVacio: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 18, height: 46, paddingHorizontal: 22, borderRadius: 999, backgroundColor: '#1C9BD8' },
+  limpiarVacioText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 15, color: '#FFFFFF' },
+
   fixedHeader: { backgroundColor: '#ffffff', paddingHorizontal: HEADER_PAD, paddingTop: 12, paddingBottom: 4 },
   scrollHeaderWrap: { paddingHorizontal: HEADER_PAD, paddingBottom: 10 },
   titleRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 6, alignSelf: 'stretch', justifyContent: 'space-between' },
@@ -1136,6 +1205,14 @@ const WEB_MAXW = 1440;
 // "Productos - 4": hero oscuro + sidebar azul + grilla. Mobile no usa nada
 // de este StyleSheet. ---
 const dsty = StyleSheet.create({
+  // Barra con los filtros puestos, arriba de la grilla.
+  filtrosBar: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 18 },
+  filtrosTitulo: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#8A8A8A', letterSpacing: 0.8, marginRight: 2 },
+  filtroChip: { flexDirection: 'row', alignItems: 'center', gap: 7, maxWidth: 260, paddingHorizontal: 12, height: 32, borderRadius: 999, backgroundColor: '#EAF6FC', borderWidth: 1, borderColor: '#BFE3F5' },
+  filtroChipText: { flexShrink: 1, fontFamily: 'Rubik', fontSize: 12, color: '#1C9BD8' },
+  limpiarTodo: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, height: 32, borderRadius: 999, borderWidth: 1, borderColor: '#FCA5A5', backgroundColor: '#FFFFFF' },
+  limpiarTodoText: { fontFamily: 'BarlowCondensed-Bold', fontSize: 13, color: '#B91C1C' },
+
   screen: { flex: 1, backgroundColor: '#fff' },
   flyItem: { position: 'absolute', zIndex: 9999 },
   hero: { width: '100%', height: 220, backgroundColor: '#1E1E1E', overflow: 'hidden', position: 'relative' },
