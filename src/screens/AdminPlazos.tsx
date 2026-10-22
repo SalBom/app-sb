@@ -35,7 +35,8 @@ export default function AdminPlazos() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const resPlazos = await axios.get(`${API_URL}/plazos-pago`);
+      // incluir_ocultos: acá se ven también los apagados, para poder volver a prenderlos.
+      const resPlazos = await axios.get(`${API_URL}/plazos-pago`, { params: { incluir_ocultos: 1 } });
       const resConfig = await axios.get(`${API_URL}/admin/plazos-descuentos`);
       const savedConfig = resConfig.data || {};
 
@@ -55,7 +56,8 @@ export default function AdminPlazos() {
                 descuento: saved.descuento !== undefined ? String(saved.descuento) : '0',
                 descuento2: saved.descuento2 !== undefined ? String(saved.descuento2) : '0',
                 min_compra: saved.min_compra !== undefined ? String(saved.min_compra) : '0',
-                oferta: saved.oferta === true
+                oferta: saved.oferta === true,
+                visible: saved.visible !== false,
             };
         });
         setFormValues(initialValues);
@@ -78,6 +80,13 @@ export default function AdminPlazos() {
   const toggleOferta = (id: number) => {
       const current = formValues[id]?.oferta || false;
       handleInputChange(id, 'oferta', !current);
+  };
+
+  // Apagar un plazo lo saca de la lista que ve el vendedor al armar el pedido.
+  // No borra nada: se vuelve a prender cuando quieran.
+  const toggleVisible = (id: number) => {
+      const actual = formValues[id]?.visible !== false;
+      handleInputChange(id, 'visible', !actual);
   };
 
   const handleSave = async () => {
@@ -156,6 +165,7 @@ export default function AdminPlazos() {
                   <Text style={[ds.th, { flex: 1, textAlign: 'center' }]}>DESC. %</Text>
                   <Text style={[ds.th, { flex: 1.5, textAlign: 'center' }]}>MÍNIMO</Text>
                   <Text style={[ds.th, { flex: 1, textAlign: 'center' }]}>OFERTA</Text>
+                  <Text style={[ds.th, { flex: 1.2, textAlign: 'center' }]}>EN LA APP</Text>
                 </View>
                 {otrosPlazos.map((item) => (
                   <View key={item.id} style={ds.row}>
@@ -183,9 +193,19 @@ export default function AdminPlazos() {
                     <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} onPress={() => toggleOferta(item.id)}>
                       <Ionicons name={formValues[item.id]?.oferta ? 'checkbox' : 'square-outline'} size={22} color={formValues[item.id]?.oferta ? '#1C9BD8' : '#CCC'} />
                     </TouchableOpacity>
+                    <TouchableOpacity style={{ flex: 1.2, alignItems: 'center' }} onPress={() => toggleVisible(item.id)}>
+                      <Ionicons
+                        name={formValues[item.id]?.visible !== false ? 'eye' : 'eye-off'}
+                        size={22}
+                        color={formValues[item.id]?.visible !== false ? '#15803D' : '#C0392B'} />
+                    </TouchableOpacity>
                   </View>
                 ))}
               </View>
+              <Text style={ds.helperText}>
+                "EN LA APP" apagado saca ese plazo de la lista que ve el vendedor al armar
+                el pedido. No se borra nada: se vuelve a prender cuando quieras.
+              </Text>
             </View>
           </View>
         </ScrollView>
@@ -255,6 +275,7 @@ export default function AdminPlazos() {
                 <Text style={[styles.th, { flex: 1, textAlign: 'center' }]}>DESC.%</Text>
                 <Text style={[styles.th, { flex: 1.5, textAlign: 'center' }]}>MINIMO</Text>
                 <Text style={[styles.th, { flex: 1, textAlign: 'center' }]}>OFERTA</Text>
+                <Text style={[styles.th, { flex: 1, textAlign: 'center' }]}>EN APP</Text>
             </View>
             {otrosPlazos.map((item) => (
                 <View key={item.id} style={styles.tableRow}>
@@ -290,8 +311,21 @@ export default function AdminPlazos() {
                             color={formValues[item.id]?.oferta ? "#1C9BD8" : "#CCC"} 
                         />
                     </TouchableOpacity>
+
+                    {/* Prendido/apagado: si está apagado, el vendedor no lo ve. */}
+                    <TouchableOpacity style={{ flex: 1, alignItems: 'center' }} onPress={() => toggleVisible(item.id)}>
+                        <Ionicons
+                            name={formValues[item.id]?.visible !== false ? "eye" : "eye-off"}
+                            size={22}
+                            color={formValues[item.id]?.visible !== false ? "#15803D" : "#C0392B"}
+                        />
+                    </TouchableOpacity>
                 </View>
             ))}
+            <Text style={styles.helperText}>
+                "EN APP" apagado saca ese plazo de la lista que ve el vendedor. No se borra:
+                se vuelve a prender cuando quieras.
+            </Text>
         </View>
       </ScrollView>
 

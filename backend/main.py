@@ -1700,20 +1700,47 @@ def get_clientes_del_comercial():
     finally:
         release_odoo_client(client)
 
+def _plazos_ocultos():
+    """IDs de plazos que el admin apagó desde el panel (columna 'visible')."""
+    if not DATABASE_URL:
+        return set()
+    conn = get_pg_connection()
+    if not conn:
+        return set()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT payment_term_id FROM app_payment_discounts WHERE visible = FALSE")
+        ids = {int(r[0]) for r in cur.fetchall()}
+        cur.close()
+        return ids
+    except Exception as e:
+        # Si falla, mejor mostrar de más que dejar al vendedor sin plazos.
+        log.warning(f"No pude leer los plazos apagados: {e}")
+        return set()
+    finally:
+        conn.close()
+
+
 @app.route('/plazos-pago', methods=['GET'])
 def obtener_plazos_pago():
     client = get_odoo_client()
+    # El panel de admin necesita ver TODOS (incluidos los apagados) para poder
+    # volver a prenderlos; el resto de la app ve solo los que están prendidos.
+    incluir_ocultos = str(request.args.get('incluir_ocultos', '')).lower() in ('1', 'true')
     try:
         def query():
-            # ⚠️ ACTUALIZADO: Agregados 31 y 22 a la lista permitida del backend
+            # Lista base de plazos de Odoo que la app puede llegar a ofrecer.
+            # Cuáles se muestran de verdad se decide con 'visible', desde el panel.
             ids_permitidos = [1, 21, 22, 24, 31, 12, 23, 29, 26, 28, 20] 
             domain = [('id', 'in', ids_permitidos)]
             plazos = client.env['account.payment.term'].search_read(domain, ['id', 'name'])
             plazos.sort(key=lambda x: x['name'])
-            return [{"id": p["id"], "nombre": p["name"]} for p in plazos]
+            apagados = _plazos_ocultos()          # una sola consulta, no una por plazo
+            return [{"id": p["id"], "nombre": p["name"], "visible": p["id"] not in apagados}
+                    for p in plazos if incluir_ocultos or p["id"] not in apagados]
 
         return jsonify(get_cache_or_execute(
-            "plazos_pago_filtrados_v2", # Cambié la key para forzar recarga de caché
+            "plazos_pago_todos_v3" if incluir_ocultos else "plazos_pago_visibles_v3",
             fallback_fn=query
         ))
     except Exception as e:
@@ -2333,6 +2360,16 @@ def init_discounts_table():
         except Exception:
             conn.rollback()
 
+        # Migración 3: 'visible'. Hasta ahora, para sacar un plazo de la app había
+        # que editar a mano una lista en el código y volver a deployar. Con esto se
+        # apaga desde el panel. Por defecto TRUE: lo que ya se mostraba sigue igual.
+        try:
+            cur.execute("ALTER TABLE app_payment_discounts "
+                        "ADD COLUMN visible BOOLEAN NOT NULL DEFAULT TRUE;")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+
         # Migración 2: allow_in_offer (NUEVO)
         try:
             cur.execute("ALTER TABLE app_payment_discounts ADD COLUMN allow_in_offer BOOLEAN DEFAULT FALSE;")
@@ -2362,7 +2399,8 @@ def get_payment_discounts_config():
     try:
         cur = pg_conn.cursor()
         # Traemos también allow_in_offer
-        cur.execute("SELECT payment_term_id, discount, min_amount, discount2, allow_in_offer FROM app_payment_discounts")
+        cur.execute("SELECT payment_term_id, discount, min_amount, discount2, allow_in_offer, visible "
+                    "FROM app_payment_discounts")
         rows = cur.fetchall()
         cur.close()
         
@@ -2372,7 +2410,9 @@ def get_payment_discounts_config():
                 "descuento": float(r[1]),
                 "min_compra": float(r[2]),
                 "descuento2": float(r[3] if len(r) > 3 and r[3] is not None else 0),
-                "oferta": bool(r[4] if len(r) > 4 and r[4] is not None else False) # Nuevo campo
+                "oferta": bool(r[4] if len(r) > 4 and r[4] is not None else False),
+                # Si la fila es vieja y no tiene el dato, se asume prendido.
+                "visible": bool(r[5]) if len(r) > 5 and r[5] is not None else True,
             }
         return jsonify(config)
     except Exception as e:
@@ -2392,14 +2432,15 @@ def save_payment_discounts_config():
         cur = pg_conn.cursor()
         
         sql = """
-            INSERT INTO app_payment_discounts (payment_term_id, discount, min_amount, discount2, allow_in_offer)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO app_payment_discounts (payment_term_id, discount, min_amount, discount2, allow_in_offer, visible)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (payment_term_id) 
             DO UPDATE SET 
                 discount = EXCLUDED.discount, 
                 min_amount = EXCLUDED.min_amount,
                 discount2 = EXCLUDED.discount2,
-                allow_in_offer = EXCLUDED.allow_in_offer;
+                allow_in_offer = EXCLUDED.allow_in_offer,
+                visible = EXCLUDED.visible;
         """
         
         for pid_str, vals in data.items():
@@ -2408,11 +2449,26 @@ def save_payment_discounts_config():
             min_a = float(vals.get('min_compra', 0))
             desc2 = float(vals.get('descuento2', 0))
             allow = bool(vals.get('oferta', False)) # Nuevo
-            
-            cur.execute(sql, (pid, desc1, min_a, desc2, allow))
+            # Si no viene el dato (panel viejo), el plazo queda prendido.
+            visible = bool(vals.get('visible', True))
+            # El pago contado no se puede apagar: si se apagaran todos, el
+            # vendedor se quedaría sin ninguna forma de pago para elegir.
+            if pid == 1:
+                visible = True
+
+            cur.execute(sql, (pid, desc1, min_a, desc2, allow, visible))
             
         pg_conn.commit()
         cur.close()
+
+        # El listado de plazos está cacheado: sin esto, apagar uno tardaba
+        # varios minutos en notarse.
+        try:
+            if redis_client:
+                redis_client.delete("plazos_pago_visibles_v3", "plazos_pago_todos_v3")
+        except Exception:
+            pass
+
         return jsonify({"ok": True})
     except Exception as e:
         if pg_conn: pg_conn.rollback()
